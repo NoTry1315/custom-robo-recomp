@@ -1,0 +1,9 @@
+data/
+build/
+romfs/
+__pycache__/
+*.3dsx
+*.elf
+*.smdh
+*.cia
+gen/
