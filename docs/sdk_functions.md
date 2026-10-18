@@ -582,16 +582,16 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80141fe8 | 0x88 | AIInitDMA | medium | writes DSP regs 0xCC005030/32/36 (AI DMA start/len) |
 | 0x80142070 | 0x18 | AIStartDMA | medium | DSP 0xCC005036 /= 0x8000 |
 | 0x80142088 | 0x1c | AIStopDMA | medium | DSP 0xCC005036 &= ~0x8000 |
-| 0x801420a4 | 0xd8 | AI_unk_801420a4 | unk | in module range, no name match; callers=2 hw=6c00 callees=9 |
-| 0x8014217c | 0x10 | AI_unk_8014217c | unk | in module range, no name match; callers=1 hw=6c00 callees=0 |
+| 0x801420a4 | 0xd8 | AISetStreamPlayState | high | AICR bit 0, SRC init on start |
+| 0x8014217c | 0x10 | AIGetStreamPlayState | high | AICR bit 0 |
 | 0x8014218c | 0xe0 | AISetDSPSampleRate | medium | AI regs 0xCC006C00; caller in AX init (0x8017980c) |
 | 0x8014226c | 0x14 | AIGetDSPSampleRate | medium | AI 0xCC006C00 bit 0x40 |
-| 0x80142280 | 0xd4 | AI_unk_80142280 | unk | in module range, no name match; callers=1 hw=6c00 callees=9 |
-| 0x80142354 | 0x10 | AI_unk_80142354 | unk | in module range, no name match; callers=3 hw=6c00 callees=0 |
-| 0x80142364 | 0x1c | AI_unk_80142364 | unk | in module range, no name match; callers=8 ext=1 hw=6c00 callees=0 |
-| 0x80142380 | 0x10 | AI_unk_80142380 | unk | in module range, no name match; callers=3 hw=6c04 callees=0 |
-| 0x80142390 | 0x1c | AI_unk_80142390 | unk | in module range, no name match; callers=8 ext=1 hw=6c00 callees=0 |
-| 0x801423ac | 0x10 | AI_unk_801423ac | unk | in module range, no name match; callers=3 hw=6c04 callees=0 |
+| 0x80142280 | 0xd4 | AISetStreamSampleRate | high | AICR bit 1, saves/restores play state |
+| 0x80142354 | 0x10 | AIGetStreamSampleRate | high | AICR bit 1 |
+| 0x80142364 | 0x1c | AISetStreamVolLeft | high | AIVR low byte |
+| 0x80142380 | 0x10 | AIGetStreamVolLeft | high | AIVR & 0xff |
+| 0x80142390 | 0x1c | AISetStreamVolRight | high | AIVR bits 8..15 |
+| 0x801423ac | 0x10 | AIGetStreamVolRight | high | AIVR >> 8 |
 | 0x801423bc | 0x16c | AIInit | high | OSRegisterVersion + AI string, AI regs 0xCC006C00, DSP 0xCC005000 |
 | 0x80142528 | 0x7c | __AISHandler | medium | AI stream irq; OSSetCurrentContext/OSClearContext, AI 0xCC006C00 |
 | 0x801425a4 | 0xac | __AIDHandler | high | AI DMA irq; DSP 0xCC005000, calls __AICallbackStackSwitch |
@@ -627,9 +627,9 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80144930 | 0x10 | __AXPushFreeStack | low | AXVPB.c |
 | 0x80144940 | 0x1c | __AXPushCallbackStack | low | AXVPB.c |
 | 0x8014495c | 0x94 | __AXRemoveFromStack | low | AXVPB.c |
-| 0x801449f0 | 0x80 | AX_unk_801449f0 | unk | in module range, no name match; callers=4 ext=4 callees=4 |
+| 0x801449f0 | 0x80 | AXFreeVoice | high | removes from lists, depop if running, pushes free stack 0x8041fa20 |
 | 0x80144a70 | 0x174 | AXAcquireVoice | medium | AXVPB.c; 5 ext callers from game audio |
-| 0x80144be4 | 0xa8 | AXFreeVoice | medium | AXVPB.c; 3 ext callers |
+| 0x80144be4 | 0xa8 | AXSetVoicePriority | high | moves VPB to priority list r4, stores r4 at +0xc (was AXFreeVoice) |
 | 0x80144c8c | 0xe4 | AX_unk_80144c8c | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80144d70 | 0x34 | AX_unk_80144d70 | unk | in module range, no name match; callers=2 callees=0 |
 | 0x80144da4 | 0x20 | AX_unk_80144da4 | unk | in module range, no name match; callers=1 callees=0 |
@@ -642,8 +642,8 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80144e90 | 0x1c | AX_unk_80144e90 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80144eac | 0x1c | AX_unk_80144eac | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80144ec8 | 0x23c | AX_unk_80144ec8 | unk | in module range, no name match; callers=1 callees=2 |
-| 0x80145104 | 0xc | AX_unk_80145104 | unk | in module range, no name match; callers=2 ext=2 callees=0 |
-| 0x80145110 | 0xc | AX_unk_80145110 | unk | in module range, no name match; callers=2 ext=2 callees=0 |
+| 0x80145104 | 0xc | AXRegisterAuxACallback | medium | r13 globals -0x4868/-0x4860 |
+| 0x80145110 | 0xc | AXRegisterAuxBCallback | medium | r13 globals -0x4864/-0x485c |
 | 0x8014511c | 0x8 | AX_unk_8014511c | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80145124 | 0x3c | AX_unk_80145124 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80145160 | 0x6b0 | AX_unk_80145160 | unk | in module range, no name match; callers=3 callees=13 |
@@ -668,40 +668,40 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80146e8c | 0xc | AX_unk_80146e8c | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80146e98 | 0x40 | AX_unk_80146e98 | unk | in module range, no name match; callers=2 callees=0 |
 | 0x80146ed8 | 0x200 | AX_unk_80146ed8 | unk | in module range, no name match; callers=1 callees=2 |
-| 0x801470d8 | 0xc4 | AX_unk_801470d8 | unk | in module range, no name match; callers=2 ext=2 callees=2 |
-| 0x8014719c | 0x5c | AX_unk_8014719c | unk | in module range, no name match; callers=3 ext=3 callees=2 |
-| 0x801471f8 | 0x254 | AX_unk_801471f8 | unk | in module range, no name match; callers=2 ext=2 callees=2 |
-| 0x8014744c | 0x64 | AX_unk_8014744c | unk | in module range, no name match; callers=2 ext=2 callees=2 |
-| 0x801474b0 | 0x5c | AX_unk_801474b0 | unk | in module range, no name match; callers=2 ext=2 callees=2 |
-| 0x8014750c | 0x58 | AX_unk_8014750c | unk | in module range, no name match; callers=6 ext=6 callees=2 |
-| 0x80147564 | 0x4c | AX_unk_80147564 | unk | in module range, no name match; callers=1 ext=1 callees=2 |
-| 0x801475b0 | 0x110 | AX_unk_801475b0 | unk | in module range, no name match; callers=3 ext=3 callees=2 |
-| 0x801476c0 | 0x4c | AX_unk_801476c0 | unk | in module range, no name match; callers=1 ext=1 callees=2 |
-| 0x8014770c | 0x54 | AX_unk_8014770c | unk | in module range, no name match; callers=3 ext=3 callees=2 |
-| 0x80147760 | 0x54 | AX_unk_80147760 | unk | in module range, no name match; callers=2 ext=2 callees=2 |
-| 0x801477b4 | 0x54 | AX_unk_801477b4 | unk | in module range, no name match; callers=1 ext=1 callees=2 |
-| 0x80147808 | 0xa4 | AX_unk_80147808 | unk | in module range, no name match; callers=3 ext=3 callees=2 |
-| 0x801478ac | 0x98 | AX_unk_801478ac | unk | in module range, no name match; callers=2 ext=2 callees=2 |
-| 0x80147944 | 0x98 | AX_unk_80147944 | unk | in module range, no name match; callers=1 ext=1 callees=3 |
-| 0x801479dc | 0x6c | AX_unk_801479dc | unk | in module range, no name match; callers=2 ext=2 callees=2 |
+| 0x801470d8 | 0xc4 | AXSetVoiceSrcType | high | AXVPB +0x140/+0x142, sync 0x1 |
+| 0x8014719c | 0x5c | AXSetVoiceState | high | sth +0x146, sync 0x4, depop if 0 |
+| 0x801471f8 | 0x254 | AXSetVoiceMix | high | copies AXPBMIX to +0x14a, mixerCtrl +0x144, sync 0x12 |
+| 0x8014744c | 0x64 | AXSetVoiceItdOn | high | +0x16e=1, sync 0x20 |
+| 0x801474b0 | 0x5c | AXSetVoiceItdTarget | high | +0x178/+0x17a, sync 0x40 |
+| 0x8014750c | 0x58 | AXSetVoiceVe | high | +0x19c/+0x19e, sync 0x200 |
+| 0x80147564 | 0x4c | AXSetVoiceVeDelta | high | +0x19e, sync 0x400 |
+| 0x801475b0 | 0x110 | AXSetVoiceAddr | high | 16 bytes to +0x1a6, PCM gain, sync 0x21000 |
+| 0x801476c0 | 0x4c | AXSetVoiceLoop | high | +0x1a6, sync 0x2000 |
+| 0x8014770c | 0x54 | AXSetVoiceLoopAddr | high | +0x1aa/+0x1ac, sync 0x4000 |
+| 0x80147760 | 0x54 | AXSetVoiceEndAddr | high | +0x1ae/+0x1b0, sync 0x8000 |
+| 0x801477b4 | 0x54 | AXSetVoiceCurrentAddr | high | +0x1b2/+0x1b4, sync 0x10000 |
+| 0x80147808 | 0xa4 | AXSetVoiceAdpcm | high | 0x28 bytes to +0x1b6, sync 0x20000 |
+| 0x801478ac | 0x98 | AXSetVoiceSrc | high | 7 u16 to +0x1de, sync 0x40000 |
+| 0x80147944 | 0x98 | AXSetVoiceSrcRatio | high | f1 -> 16.16 clamped 0x40000 at +0x1de, sync 0x80000 |
+| 0x801479dc | 0x6c | AXSetVoiceAdpcmLoop | high | 3 u16 to +0x1ec, sync 0x100000 |
 | 0x80147a48 | 0x48 | AX_unk_80147a48 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80147a90 | 0x588 | AX_unk_80147a90 | unk | in module range, no name match; callers=1 callees=3 |
 | 0x80148018 | 0x190 | AX_unk_80148018 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x801481a8 | 0x50c | AX_unk_801481a8 | unk | in module range, no name match; callers=3 callees=0 |
 | 0x801486b4 | 0x124 | AX_unk_801486b4 | unk | in module range, no name match; callers=5 callees=0 |
-| 0x801487d8 | 0x70 | AX_unk_801487d8 | unk | in module range, no name match; callers=1 ext=1 callees=3 |
-| 0x80148848 | 0x4c | AX_unk_80148848 | unk | in module range, no name match; callers=1 ext=1 callees=3 |
+| 0x801487d8 | 0x70 | AXFXReverbHiInit | medium | clears +0x1c4, calls 80147a90 |
+| 0x80148848 | 0x4c | AXFXReverbHiShutdown | medium | calls 801486b4, returns 1 |
 | 0x80148894 | 0x104 | AX_unk_80148894 | unk | in module range, no name match; callers=0 callees=2 |
 | 0x80148998 | 0x47c | AX_unk_80148998 | unk | in module range, no name match; callers=1 callees=3 |
 | 0x80148e14 | 0x3b4 | AX_unk_80148e14 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x801491c8 | 0x124 | AX_unk_801491c8 | unk | in module range, no name match; callers=4 callees=0 |
-| 0x801492ec | 0x6c | AX_unk_801492ec | unk | in module range, no name match; callers=1 ext=1 callees=3 |
-| 0x80149358 | 0x4c | AX_unk_80149358 | unk | in module range, no name match; callers=1 ext=1 callees=3 |
+| 0x801492ec | 0x6c | AXFXReverbStdInit | medium | clears +0x13c, calls 80148998 |
+| 0x80149358 | 0x4c | AXFXReverbStdShutdown | medium | calls 801491c8, returns 1 |
 | 0x801493a4 | 0x30 | AX_unk_801493a4 | unk | in module range, no name match; callers=0 callees=1 |
 | 0x801493d4 | 0x198 | AX_unk_801493d4 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x8014956c | 0x1ec | AX_unk_8014956c | unk | in module range, no name match; callers=1 callees=0 |
-| 0x80149758 | 0x248 | AX_unk_80149758 | unk | in module range, no name match; callers=1 ext=1 callees=3 |
-| 0x801499a0 | 0x50 | AX_unk_801499a0 | unk | in module range, no name match; callers=1 ext=1 callees=2 |
+| 0x80149758 | 0x248 | AXFXChorusInit | medium | range checks, 0x1680 alloc via AXFX hook |
+| 0x801499a0 | 0x50 | AXFXChorusShutdown | medium | frees +0 via AXFX hook |
 | 0x801499f0 | 0x110 | AX_unk_801499f0 | unk | in module range, no name match; callers=1 callees=2 |
 | 0x80149b00 | 0x350 | AX_unk_80149b00 | unk | in module range, no name match; callers=0 callees=2 |
 | 0x80149e50 | 0x1b0 | AX_unk_80149e50 | unk | in module range, no name match; callers=0 callees=0 |
@@ -711,7 +711,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x8014a330 | 0xa0 | AX_unk_8014a330 | unk | in module range, no name match; callers=3 ext=1 callees=2 |
 | 0x8014a3d0 | 0x28 | __AXAlloc | low | OSAllocFromHeap wrapper for AX |
 | 0x8014a3f8 | 0x28 | __AXFree | low | OSFreeToHeap wrapper for AX |
-| 0x8014a420 | 0xc | AX_unk_8014a420 | unk | in module range, no name match; callers=1 ext=1 callees=0 |
+| 0x8014a420 | 0xc | AXFXSetHooks | high | alloc/free hooks r13-0x55a0/-0x559c |
 | 0x8014a42c | 0x10 | DSPCheckMailToDSP | high | DSP 0xCC005000 bit 15, 40 callers |
 | 0x8014a43c | 0x10 | DSPCheckMailFromDSP | high | DSP 0xCC005004 bit 15 |
 | 0x8014a44c | 0x18 | DSPReadMailFromDSP | high | DSP 0xCC005004 read |

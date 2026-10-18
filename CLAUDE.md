@@ -71,6 +71,15 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   AXFreeVoice got a voice pool (synth.c assert otherwise). Several GX names corrected.
   127 / 788 doc SDK functions hand-written. Next: phase 6, audio (or GX fidelity:
   post-transform texmtx, multi-constant TEV, culling, CPU transform cost).
+- Phase 6 done (2026-10-18): AX voices mixed on the host like Dolphin's HLE AX
+  (`runtime/ax.c`: PB at VPB+0x138, ADPCM/PCM8/PCM16 from ARAM, loop, ve + L/R
+  volume, linear SRC) and played through ndsp (needs sdmc:/3ds/dspfirm.cdc; mix also
+  dumped to sdmc:/cr_audio.wav). Title: confirm SE plus the cubog39.hps jingle,
+  matching tools/sound.py's decode (corr 0.99) and Dolphin's audio dump (then
+  silence, as in Dolphin, until the attract movie). AXSetVoice* setters and AI stream
+  functions named; 0x80144be4 is AXSetVoicePriority (was mislabelled AXFreeVoice).
+  Not done: aux/AXFX effects, polyphase SRC, real-time pacing. 156 / 788 doc SDK
+  functions hand-written. Next: phase 7 fix pass (GX fidelity, THP attract movie).
 
 ## Build / test
 

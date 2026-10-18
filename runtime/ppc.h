@@ -165,6 +165,9 @@ void recomp_dvd_service(void);          /* runs completed DVD callbacks */
 void recomp_ar_service(void);           /* runs completed ARQ callbacks */
 u32  recomp_retrace_count(void);         /* frames so far (VI retraces) */
 void recomp_ax_service(void);           /* AX frame callbacks due since the last retrace */
+void recomp_ax_close(void);             /* flushes the WAV dump, stops ndsp */
+u32 recomp_retrace_count(void);
+u8 recomp_aram_read8(u32 a);            /* ARAM byte (runtime/ar.c) */
 void recomp_wait_point(void);           /* pending "interrupts": DVD, then ARQ */
 u64  recomp_timebase(void);             /* Gekko timebase, 40.5 MHz */
 void recomp_gx_init(void);             /* citro3d, render target, shader */

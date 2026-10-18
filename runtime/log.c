@@ -78,6 +78,7 @@ void recomp_done(const char *why) {
     if (!finished) {
         finished = 1;
         summary();
+        recomp_ax_close();
         recomp_log("# DONE %s\n", why);
     }
     longjmp(recomp_exit_jmp, 1);

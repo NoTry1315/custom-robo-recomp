@@ -14,7 +14,7 @@ int main(void) {
     cpu_init();
     recomp_gx_init();
     recomp_log_open();
-    recomp_log("# custom-robo-recomp phase 5: GX\n");
+    recomp_log("# custom-robo-recomp phase 6: audio\n");
     if (recomp_load_dol() == 0) {
         printf("main.dol loaded, running __start\n");
         if (!setjmp(recomp_exit_jmp)) {

@@ -55,3 +55,5 @@ void recomp_ar_service(void) {
     npending = 0;
     busy = 0;
 }
+
+u8 recomp_aram_read8(u32 a) { return aram ? aram[a & (ARAM_SIZE - 1)] : 0; }
