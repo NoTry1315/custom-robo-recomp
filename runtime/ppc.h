@@ -167,5 +167,7 @@ u32  recomp_retrace_count(void);         /* frames so far (VI retraces) */
 void recomp_ax_service(void);           /* AX frame callbacks due since the last retrace */
 void recomp_wait_point(void);           /* pending "interrupts": DVD, then ARQ */
 u64  recomp_timebase(void);             /* Gekko timebase, 40.5 MHz */
+void recomp_gx_init(void);             /* citro3d, render target, shader */
+void recomp_gx_fifo_write(u32 v, int size); /* WGPIPE 0xCC008000 */
 void recomp_log_open(void);
 void recomp_log_close(void);

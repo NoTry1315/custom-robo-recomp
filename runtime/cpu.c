@@ -30,6 +30,7 @@ u32 hw_read(u32 a, int size) {
     return 0;
 }
 void hw_write(u32 a, u32 v, int size) {
+    if ((a & ~7u) == 0xCC008000u) { recomp_gx_fifo_write(v, size); return; }   /* GX write-gather pipe */
     if (hw_seen(a)) recomp_log("hw_write %08lx/%d = %08lx lr=%08lx\n", (unsigned long)a, size, (unsigned long)v, (unsigned long)cpu.lr);
 }
 u32 ppc_mfspr(int n) { return cpu.spr[n & 1023]; }

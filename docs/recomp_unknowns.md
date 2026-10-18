@@ -83,6 +83,72 @@ logged here with addresses or turned into a runtime call that reports it
   SEQ_MOVIE (the code path after the second logo sets next = 2); whether Dolphin plays
   opening_a.thp first (e.g. after idling on the title) is not checked.
 
+## GX -> PICA200 (phase 5; to verify against Dolphin)
+
+runtime/gx.c. Lines starting `# gx:` in the log are the approximations below, each
+logged once when first hit.
+
+- GX state is host-side, set by the hand-written GX calls; CP/XF/BP register writes
+  in the command stream are not emulated (`raw GX command .. not emulated`). Draw
+  commands reach one parser from three places: GXBegin (opcode + count), the game's
+  own WGPIPE writes (hw_write 0xCC008000, inline GXPosition*), and GXCallDisplayList.
+  A primitive is drawn when its last byte arrives.
+- Transform, lighting and texgen run on the CPU; the PICA gets clip-space positions
+  mapped EFB -> 400x240 (the GXSetDispCopySrc rect, 640x480 on the title, scaled 0.5
+  and centred: 40 px bars) and rotated for the 3DS framebuffer. Vertex shader is
+  pass-through (runtime/vshader.v.pica). Cost: the title's tunnel is ~15k triangles
+  per frame on the CPU; real-time Citra drops well below 60 fps there (the log
+  watchdog went from 4 s to 20 s for this).
+- Depth: clip z is GX's own (both clip to [-w, 0]); the window depth uses GX's
+  `far + (far - near) * z/w` via the PICA depth map. The title passes viewport
+  near/far = 1 / 1000 (not 0..1), so depth saturates; Dolphin draws the same scene
+  correctly, so hardware clamping is assumed, not checked.
+- TEV: each GX stage becomes 1-2 PICA texenv stages (lerp, then +-d). Limits: 6 PICA
+  stages, 3 texture units, one constant per stage plus the combiner-buffer colour as a
+  second per-draw constant ("three different .. constants" when exceeded), no TEV
+  output to REG0-2, no bias, no compare ops, no 1/2 scale. Swap mode: only the default
+  swap tables, texture side only (R/G/B replicate via PICA operands; alpha unswapped).
+  Raster swap ignored. COLOR1 channel not used (only COLOR0/ALPHA0 is rasterized).
+- Texgen: MTX2x4/3x4 from POS/NRM/TEXn; projective 3x4 divided per vertex; post-
+  transform (dual) texture matrices ignored (`post-transform texture matrix 64` on the
+  title). Likely cause of the main title difference: Dolphin shows a circuit-board
+  pattern on the tunnel, we show only its blue glow streaks.
+- Culling off (`cull mode 2 drawn without culling`); GX winding vs the rotated PICA
+  framebuffer not worked out. Lines/points not drawn. Alpha compare: one comparison
+  (the one that is not ALWAYS). Logic-op blend drawn as no blend.
+- Lighting: diffuse with GX_AF_SPOT distance/angle attenuation; GX_AF_SPEC is treated
+  as no attenuation. Only 8 GXLoadLightObjImm calls seen up to the title.
+- Textures: decoded from guest RAM to RGBA8, padded to a power of two (edge repeat)
+  and cached by address/size/format with an FNV hash of the data, re-hashed once per
+  frame per texture; TLUT contents are hashed at decode only (a palette changed in
+  place at the same address mid-frame would be missed). GX texel row y is PICA
+  memory row y, sampled at v = 1 - y/H. Min/mag filter: linear or nearest only, no
+  mipmaps/LOD bias. GXInitTexObjCI with format 0 (the dialog font) decodes as I4, as
+  the hardware does.
+- GXTexObj / GXTlutObj / GXLightObj use the SDK's big-endian layouts in guest
+  memory (the game copies texobjs word by word); texobj mode1 (LOD) is not filled.
+- Frame: GXCopyDisp ends the citro3d frame; clear (copy-clear colour and z) happens
+  at the start of the next frame when the copy asked for it. GXCopyTex, EFB peeks,
+  fog, dither, z-compare location, dst alpha: not implemented (logging stubs).
+- TPLGet / TPLGetGXTexObjFromPalette(CI) (TPL library, end of the GX range) are hand-
+  written; they read the bound TPL in guest memory (the game binds it itself).
+
+## Boot path to the title (phase 5)
+
+- With no memory card (CARDProbeEx = NOCARD) the game shows "There is no Memory Card
+  in Slot A" and further dialogs before the title; Dolphin, with a card, goes straight
+  to it. Autotests press A at retraces 360/450/540/630:
+  `autotest.ps1 -Pad '360 366 100; 450 456 100; 540 546 100; 630 636 100'`
+  (sdmc:/cr_pad_script.txt, read by runtime/pad.c). Title (scene 2 sub 4) from ~600.
+- The title starts sound voices: AXAcquireVoice / AXFreeVoice are hand-written over a
+  64-voice pool at guest 0x81800000 (above the GameCube's 24 MB, unused by the game)
+  because AXInit does not build the SDK pool and both stub results (its own argument,
+  or NULL) hit the synth.c "entry" assert. Voice parameters are not mixed (phase 6).
+- Names fixed this phase in docs/sdk_functions.md: 0x80158534 is GXSetProjection (was
+  GXSetViewport), 0x8015891c GXSetViewport, 0x80156b38 __GXSetTmemConfig (was
+  GXSetTevOp), 0x80157100 GXSetTevOp, 0x801568ac GXInvalidateTexAll (was GXLoadTlut),
+  0x801566e8 GXLoadTlut, 0x801584c4 GXCallDisplayList.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 

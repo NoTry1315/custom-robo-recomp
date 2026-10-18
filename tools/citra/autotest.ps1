@@ -14,7 +14,9 @@
 # also lifts the speed limit (frame_limit 0) and turns vsync off. The
 # user's qt-config.ini is copied first and put back afterwards; Citra is
 # killed rather than closed, so it never writes its own settings over it.
-param([string]$Dir = 'build\shots', [int]$Shots = 72, [switch]$Fast, [int]$Timeout = 600)
+param([string]$Dir = 'build\shots', [int]$Shots = 72, [switch]$Fast, [int]$Timeout = 600, [string]$Pad = '')
+# -Pad '360 366 100; 420 426 100': controller 1 buttons (hex, PAD_BUTTON_*) held for
+# retraces [from, to); written to sdmc:/cr_pad_script.txt for runtime/pad.c.
 $sp = Split-Path $MyInvocation.MyCommand.Path
 $repo = Resolve-Path "$sp\..\.."
 New-Item -ItemType Directory -Force $Dir | Out-Null
@@ -30,6 +32,9 @@ $app = Join-Path $repo 'custom-robo-recomp.3dsx'
 if (Test-Path $backup) { Copy-Item $backup $config -Force }
 Copy-Item $config $backup -Force
 Remove-Item $sdLog -Force -ErrorAction SilentlyContinue
+$padFile = Join-Path $root 'user\sdmc\cr_pad_script.txt'
+Remove-Item $padFile -Force -ErrorAction SilentlyContinue
+if ($Pad) { [IO.File]::WriteAllText($padFile, (($Pad -split ';') | ForEach-Object { $_.Trim() }) -join "`n") }
 $start = Get-Date
 try {
     $text = [IO.File]::ReadAllText($config)

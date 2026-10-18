@@ -61,6 +61,16 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   Translator: MWCC runtime range fixed (__va_arg was skipped as MetroTRK).
   60 / 788 doc SDK functions hand-written. Not done: Dolphin RAM dump of boot info,
   threads/alarms (not needed yet). Next: phase 5, GX.
+- Phase 5 done (2026-10-18): the title screen is drawn on the 3DS through citro3d
+  (`runtime/gx.c`, pass-through `runtime/vshader.v.pica`): logo, robots and copyright
+  match Dolphin; the 3D tunnel background is drawn but misses its circuit-board
+  pattern (texgen/TEV approximations, see recomp_unknowns.md "GX"). GX state host-side;
+  draws from GXBegin, WGPIPE writes and GXCallDisplayList; transform/lighting/texgen on
+  the CPU; TEV -> texenv; textures decoded + hash-cached. No memory card -> dialogs
+  before the title: autotests press A with `-Pad` (see unknowns). AXAcquireVoice/
+  AXFreeVoice got a voice pool (synth.c assert otherwise). Several GX names corrected.
+  127 / 788 doc SDK functions hand-written. Next: phase 6, audio (or GX fidelity:
+  post-transform texmtx, multi-constant TEV, culling, CPU transform cost).
 
 ## Build / test
 
@@ -70,7 +80,7 @@ PYTHONUTF8=1 python tools/recomp/recomp.py                   # -> gen/
 (cd tools/recomp && PYTHONUTF8=1 python gen_sdk_log.py)      # after adding an sdk_* to runtime/
 docker run --rm -v "C:/Users/Alexander/source/repos/custom-robo-recomp:/proj" -w /proj mkw3ds-build:2026-10-09 make
 ```
-Citra: `tools/citra/autotest.ps1 -Fast -Shots 0`, never take desktop focus; log in
+Citra: `tools/citra/autotest.ps1 -Fast -Shots 0` (title: add `-Pad '360 366 100; 450 456 100; 540 546 100; 630 636 100'`), never take desktop focus; log in
 `build/cr_autotest.log`. Needs `main.dol`, `boot.bin`, `fst.bin` from `data/extracted/sys/` and the
 `data/extracted/files/` tree copied to Citra's `user/sdmc/custom-robo/` (never commit them).
 Windows: run Python with `PYTHONUTF8=1`.

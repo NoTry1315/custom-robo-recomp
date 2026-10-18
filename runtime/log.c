@@ -11,7 +11,7 @@
 
 #define LOG_PATH "sdmc:/cr_autotest.log"
 #define PER_NAME 20         /* calls logged in full per SDK function */
-#define HANG_MS 4000
+#define HANG_MS 20000      /* a 30-retrace log gap on the title's 3D background in real-time Citra exceeds 4 s */
 
 static FILE *log_fp;
 static LightLock lock;

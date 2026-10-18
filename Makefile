@@ -28,7 +28,7 @@ CFLAGS	+=	$(INCLUDE) -D__3DS__
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
-LIBS	:= -lctru -lm
+LIBS	:= -lcitro3d -lctru -lm
 LIBDIRS	:= $(CTRULIB)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
@@ -38,7 +38,10 @@ export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir))
 export DEPSDIR	:=	$(CURDIR)/$(BUILD)
 CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
 export LD	:=	$(CC)
-export OFILES	:=	$(CFILES:.c=.o)
+PICAFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.v.pica)))
+export OFILES_SRC	:=	$(CFILES:.c=.o)
+export OFILES	:=	$(PICAFILES:.v.pica=.shbin.o) $(OFILES_SRC)
+export HFILES	:=	$(PICAFILES:.v.pica=_shbin.h)
 export INCLUDE	:=	$(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 			$(foreach dir,$(LIBDIRS),-I$(dir)/include) -I$(CURDIR)/$(BUILD)
 export LIBPATHS	:=	$(foreach dir,$(LIBDIRS),-L$(dir)/lib)
@@ -56,5 +59,11 @@ clean:
 else
 $(OUTPUT).3dsx	:	$(OUTPUT).elf $(_3DSXDEPS)
 $(OUTPUT).elf	:	$(OFILES)
+$(OFILES_SRC)	:	$(HFILES)
+# vertex shaders: picasso, then embedded with bin2s (symbols <name>_shbin, _shbin_size)
+%.shbin.o %_shbin.h : %.v.pica
+	@echo $(notdir $<)
+	@picasso -o $*.shbin $<
+	@bin2s -a 4 -H $*_shbin.h $*.shbin | $(AS) -o $*.shbin.o
 -include $(DEPSDIR)/*.d
 endif

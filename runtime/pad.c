@@ -2,6 +2,7 @@
  * ports 2-4 are empty. PADStatus[4], 12 bytes each: button u16, stick x/y,
  * substick x/y (s8), trigger L/R, analog A/B (u8), err (s8). */
 #include <3ds.h>
+#include <stdio.h>
 #include "ppc.h"
 
 #define LOG() recomp_sdk_log(__func__ + 4)
@@ -19,6 +20,28 @@ static const struct { u32 key; u16 pad; } map[] = {
 /* 3DS circle pad reads about +-155; a GC stick about +-100 from centre */
 static s8 axis(int v) { v = v * 100 / 155; return v > 127 ? 127 : v < -128 ? -128 : v; }
 
+/* Autotest input: sdmc:/cr_pad_script.txt, lines "<from> <to> <buttons hex>" in
+ * retraces; the buttons are held on controller 1 for from <= retrace < to.
+ * tools/citra/autotest.ps1 -Pad writes it. */
+static struct { u32 from, to; u16 b; } script[32];
+static int script_n = -1;
+static u16 script_buttons(void) {
+    if (script_n < 0) {
+        script_n = 0;
+        FILE *f = fopen("sdmc:/cr_pad_script.txt", "r");
+        if (f) {
+            unsigned long a, z, b;
+            while (script_n < 32 && fscanf(f, "%lu %lu %lx", &a, &z, &b) == 3) { script[script_n].from = a; script[script_n].to = z; script[script_n].b = b; script_n++; }
+            fclose(f);
+            recomp_log("# pad script: %d entries\n", script_n);
+        }
+    }
+    u32 t = recomp_retrace_count();
+    u16 b = 0;
+    for (int i = 0; i < script_n; i++) if (t >= script[i].from && t < script[i].to) b |= script[i].b;
+    return b;
+}
+
 void sdk_PADRead(void) {
     LOG();
     u32 st = R[3];
@@ -32,6 +55,7 @@ void sdk_PADRead(void) {
     u32 held = hidKeysHeld();
     u16 b = 0;
     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++) if (held & map[i].key) b |= map[i].pad;
+    b |= script_buttons();
     circlePosition cp, cs;
     hidCircleRead(&cp);
     cs.dx = cs.dy = 0;

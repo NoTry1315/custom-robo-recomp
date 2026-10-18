@@ -21,7 +21,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | DVD | 0x8013a2c0-0x8013eb5c | 49 / 94 | 15 | 30 | 4 |
 | PAD | 0x801409b0-0x80141fa4 | 6 / 14 | 3 | 3 | 0 |
 | VI | 0x8013eb5c-0x801409b0 | 24 / 24 | 10 | 13 | 1 |
-| GX | 0x801516c8-0x80159530 | 96 / 165 | 46 | 50 | 0 |
+| GX | 0x801516c8-0x80159530 | 114 / 165 | 61 | 53 | 0 |
 | AI | 0x80141fa4-0x8014288c | 11 / 19 | 3 | 8 | 0 |
 | DSP/AR/ARQ/AX | 0x8014288c-0x8014af50 | 37 / 122 | 12 | 18 | 7 |
 | CARD | 0x8014af50-0x801516c8 | 17 / 84 | 6 | 11 | 0 |
@@ -29,8 +29,8 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | MTX | 0x801394c4-0x8013a2c0 | 30 / 30 | 19 | 11 | 0 |
 | THP | 0x801aeb40-0x801b65e0 | 3 / 23 | 1 | 0 | 2 |
 | other | 0x80003100-0x80169484 | 38 / 321 | 16 | 18 | 4 |
-| **SDK modules (excl. other)** | | **503 / 818** | | | |
-| **overall (incl. other)** | | **541 / 1139** | | | |
+| **SDK modules (excl. other)** | | **521 / 818** | | | |
+| **overall (incl. other)** | | **559 / 1139** | | | |
 
 "identified" means a name was assigned (any confidence); the remainder are `_unk_` rows in the module tables. Sub-module ranges: 
 - base (PPCArch): 0x80131c08-0x80131d1c
@@ -402,7 +402,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 
 ## GX
 
-93 identified of 165 functions (high 43, medium 50, low 0).
+114 identified of 165 functions (high 61, medium 53, low 0; includes the three TPL helpers at the end of the range).
 
 | address | size | name | confidence | evidence |
 |---|---|---|---|---|
@@ -446,7 +446,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x8015467c | 0x16c | GX_unk_8015467c | unk | in module range, no name match; callers=1 hw=3000 callees=2 |
 | 0x801547e8 | 0x4c | GXWaitDrawDone | high | OSDisableInterrupts, OSSleepThread loop on the draw-done flag r13-0x4720 (phase 3) |
 | 0x80154834 | 0x80 | GXDrawDone | high | writes BP 0x45000002 (PE draw-done token), flushes, clears and waits on the draw-done flag (phase 3) |
-| 0x801548b4 | 0x24 | GX_unk_801548b4 | unk | in module range, no name match; callers=5 ext=5 hw=8000 callees=0 |
+| 0x801548b4 | 0x24 | GXPixModeSync | high | writes gx peCtrl (0x1dc) as BP, no args |
 | 0x801548d8 | 0x14 | GX_unk_801548d8 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x801548ec | 0x20 | GX_unk_801548ec | unk | in module range, no name match; callers=1 callees=0 |
 | 0x8015490c | 0x18 | GX_unk_8015490c | unk | in module range, no name match; callers=1 callees=0 |
@@ -465,7 +465,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80154d50 | 0x88 | __GXSendFlushPrim | medium | FIFO cmd 0x98 + zero words |
 | 0x80154dd8 | 0x40 | GXSetLineWidth | high | gx+0x7c lpSize |
 | 0x80154e18 | 0x40 | GXSetPointSize | high | gx+0x7c lpSize |
-| 0x80154e58 | 0x48 | GX_unk_80154e58 | unk | in module range, no name match; callers=9 ext=1 hw=8000 callees=0 |
+| 0x80154e58 | 0x48 | GXSetTexCoordBias | medium | gx suTs0[coord] (0xb8+4*i) bits 18/19, BP write |
 | 0x80154ea0 | 0x44 | GXSetCullMode | high | gx+0x204 genMode, 6 ext callers |
 | 0x80154ee4 | 0x34 | GXSetCoPlanar | medium | BP 0xFE mask + genMode |
 | 0x80154f18 | 0x24 | __GXSetGenMode | medium | writes gx+0x204 as BP |
@@ -474,7 +474,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80155034 | 0x34 | GXSetDispCopyDst | high | gx+0x1e8 |
 | 0x80155068 | 0x130 | GXSetTexCopyDst | high | gx+0x1f8/0x1fc/0x200 |
 | 0x80155198 | 0x24 | GX_unk_80155198 | unk | in module range, no name match; callers=1 callees=0 |
-| 0x801551bc | 0x58 | GX_unk_801551bc | unk | in module range, no name match; callers=5 ext=4 callees=0 |
+| 0x801551bc | 0x58 | GXSetCopyClamp | high | bits 0/1 of gx 0x1ec and 0x1fc from clamp&1, clamp&2; no FIFO |
 | 0x80155214 | 0xcc | GXSetDispCopyYScale | medium | gx+0x1e4/0x1ec, calls __cvt_fp2unsigned |
 | 0x801552e0 | 0x78 | GXSetCopyClear | medium | 2 BP writes |
 | 0x80155358 | 0x208 | GXSetCopyFilter | high | BP 0x01/0x02 coef words (0x166/0x266 constants) |
@@ -482,7 +482,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80155574 | 0x168 | GXCopyDisp | high | reads cmode0/zmode/peCtrl, 4 callers |
 | 0x801556dc | 0x18c | GXCopyTex | medium | same save/restore pattern |
 | 0x80155868 | 0x38 | GXClearBoundingBox | high | BP 0x56 write constant |
-| 0x801558a0 | 0x1c | GX_unk_801558a0 | unk | in module range, no name match; callers=8 ext=8 callees=0 |
+| 0x801558a0 | 0x1c | GXInitLightAttn | high | stores 6 floats a0-a2,k0-k2 at lightobj+0x10..0x24 |
 | 0x801558bc | 0x190 | GXInitLightSpot | medium | calls cos (80169400), float math |
 | 0x80155a4c | 0xd0 | GXInitLightDistAttn | medium | GXLight.c order |
 | 0x80155b1c | 0x10 | GXInitLightPos | medium | GXLight.c order |
@@ -502,16 +502,16 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x801564c8 | 0x18 | GX_unk_801564c8 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x801564e0 | 0x17c | GXLoadTexObjPreLoaded | medium | BP tex regs |
 | 0x8015665c | 0x54 | GXLoadTexObj | high | calls GXLoadTexObjPreLoaded |
-| 0x801566b0 | 0x38 | GX_unk_801566b0 | unk | in module range, no name match; callers=7 ext=6 callees=0 |
-| 0x801566e8 | 0x98 | GX_unk_801566e8 | unk | in module range, no name match; callers=6 ext=6 hw=8000 callees=1 |
+| 0x801566b0 | 0x38 | GXInitTlutObj | high | fills GXTlutObj: fmt<<10, (lut>>5)|0x64<<24 (BP 0x64 loadtlut0), n_entries; no FIFO |
+| 0x801566e8 | 0x98 | GXLoadTlut | high | calls tlut region cb gx+0x4cc, BP loadtlut0/1 from region, updates tlut obj |
 | 0x80156780 | 0xf4 | GX_unk_80156780 | unk | in module range, no name match; callers=3 callees=0 |
 | 0x80156874 | 0x38 | GX_unk_80156874 | unk | in module range, no name match; callers=2 callees=0 |
-| 0x801568ac | 0x48 | GXLoadTlut | medium | BP tlut writes |
-| 0x801568f4 | 0x14 | GX_unk_801568f4 | unk | in module range, no name match; callers=1 callees=0 |
-| 0x80156908 | 0x14 | GX_unk_80156908 | unk | in module range, no name match; callers=1 callees=0 |
+| 0x801568ac | 0x48 | GXInvalidateTexAll | high | BP 0x66 (TX_INVALIDATE) 0x66001000 and 0x66001100 between two __GXFlushTextureState calls (was mislabelled GXLoadTlut) |
+| 0x801568f4 | 0x14 | GXSetTexRegionCallback | high | swaps gx+0x4c8, returns old |
+| 0x80156908 | 0x14 | GXSetTlutRegionCallback | high | swaps gx+0x4cc, returns old |
 | 0x8015691c | 0xa0 | GX_unk_8015691c | unk | in module range, no name match; callers=2 hw=8000 callees=0 |
 | 0x801569bc | 0x17c | GX_unk_801569bc | unk | in module range, no name match; callers=2 callees=1 |
-| 0x80156b38 | 0x354 | GXSetTevOp | medium | tev stage BP ids 0xC0/0xC1 |
+| 0x80156b38 | 0x354 | __GXSetTmemConfig | medium | switch on r3 (0..2) writing TMEM region BP regs 0x8c-0x94 (GXInit; was mislabelled GXSetTevOp) |
 | 0x80156e8c | 0x6c | GX_unk_80156e8c | unk | in module range, no name match; callers=1 hw=8000 callees=0 |
 | 0x80156ef8 | 0x144 | GX_unk_80156ef8 | unk | in module range, no name match; callers=4 hw=8000 callees=0 |
 | 0x8015703c | 0x24 | GX_unk_8015703c | unk | in module range, no name match; callers=1 callees=0 |
@@ -519,7 +519,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x801570a8 | 0x4 | GX_unk_801570a8 | unk | in module range, no name match; callers=2 callees=0 |
 | 0x801570ac | 0x30 | GX_unk_801570ac | unk | in module range, no name match; callers=4 ext=3 hw=8000 callees=0 |
 | 0x801570dc | 0x24 | GX_unk_801570dc | unk | in module range, no name match; callers=8 hw=8000 callees=0 |
-| 0x80157100 | 0x8c | GX_unk_80157100 | unk | in module range, no name match; callers=19 ext=18 hw=8000 callees=0 |
+| 0x80157100 | 0x8c | GXSetTevOp | medium | tev stage r3, mode r4 indexes color/alpha-in tables (stage0 vs later), rewrites gx tevc 0x130 / teva 0x170 + BP, 18 ext callers |
 | 0x8015718c | 0x44 | GXSetTevColorIn | high | gx tevc[stage] (0x130 + 4*stage) |
 | 0x801571d0 | 0x44 | GXSetTevAlphaIn | high | gx teva[stage] (0x170 + 4*stage) |
 | 0x80157214 | 0x68 | GXSetTevColorOp | high | gx tevc op bits |
@@ -550,27 +550,27 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80157fe4 | 0x78 | GXSetFieldMode | medium | gx lpSize + BP 0x68 |
 | 0x8015805c | 0x218 | GX_unk_8015805c | unk | in module range, no name match; callers=6 hw=8000 callees=0 |
 | 0x80158274 | 0x250 | GX_unk_80158274 | unk | in module range, no name match; callers=1 ext=1 callees=10 |
-| 0x801584c4 | 0x70 | GX_unk_801584c4 | unk | in module range, no name match; callers=1 ext=1 hw=8000 callees=2 |
-| 0x80158534 | 0xa4 | GXSetViewport | medium | XF 0x101a viewport, 13 ext callers |
-| 0x801585d8 | 0x8c | GX_unk_801585d8 | unk | in module range, no name match; callers=1 hw=8000 callees=0 |
-| 0x80158664 | 0x48 | GX_unk_80158664 | unk | in module range, no name match; callers=2 ext=2 callees=0 |
+| 0x801584c4 | 0x70 | GXCallDisplayList | high | (list r3, nbytes r4): __GXSetDirtyState if dirty, then FIFO 0x40, list, nbytes |
+| 0x80158534 | 0xa4 | GXSetProjection | high | (mtx r3, type r4): stores p[0],p[5],p[10],p[11] + p[3],p[7] if ortho (type 1) else p[2],p[6]; writes XF 0x1020 (was mislabelled GXSetViewport) |
+| 0x801585d8 | 0x8c | GXSetProjectionv | high | (f32 p[7]): p[0]==0 -> perspective, stores gx+0x4d8.., XF 0x1020 |
+| 0x80158664 | 0x48 | GXGetProjectionv | high | (f32 p[7]) getter: type then the six gx+0x4dc.. floats |
 | 0x801586ac | 0x50 | GXLoadPosMtxImm | high | XF 0x1000+id*4 write 12 floats, 19 ext callers |
 | 0x801586fc | 0x50 | GXLoadNrmMtxImm | medium | XF normal matrix 9 floats |
 | 0x8015874c | 0x34 | GXSetCurrentMtx | medium | gx matIdxA (0x80) |
 | 0x80158780 | 0xb4 | GXLoadTexMtxImm | medium | XF tex matrix |
 | 0x80158834 | 0x90 | GX_unk_80158834 | unk | in module range, no name match; callers=2 hw=8000 callees=0 |
 | 0x801588c4 | 0x58 | GX_unk_801588c4 | unk | in module range, no name match; callers=1 ext=1 callees=1 |
-| 0x8015891c | 0x48 | GX_unk_8015891c | unk | in module range, no name match; callers=15 ext=14 callees=1 |
-| 0x80158964 | 0x24 | GX_unk_80158964 | unk | in module range, no name match; callers=2 ext=2 callees=0 |
+| 0x8015891c | 0x48 | GXSetViewport | high | stores f1-f6 to gx+0x4f4..0x508 (vp left/top/wd/ht/nearz/farz), calls __GXSetViewport (XF 0x101a), 14 ext callers |
+| 0x80158964 | 0x24 | GXGetViewportv | high | paired-single loads from gx+0x4f4..0x508 into out ptr |
 | 0x80158988 | 0x78 | GXSetScissor | medium | gx suScis0/1 (0xf8/0xfc) |
-| 0x80158a00 | 0x40 | GX_unk_80158a00 | unk | in module range, no name match; callers=2 ext=1 hw=8000 callees=0 |
+| 0x80158a00 | 0x40 | GXSetScissorBoxOffset | high | BP 0x59, ((x+342)>>1, (y+342)>>1) |
 | 0x80158a40 | 0x28 | GXSetClipMode | medium | XF 0x1005 |
 | 0x80158a68 | 0x84 | GX_unk_80158a68 | unk | in module range, no name match; callers=2 hw=8000 callees=0 |
 | 0x80158aec | 0x848 | GX_unk_80158aec | unk | in module range, no name match; callers=1 hw=8000 callees=0 |
 | 0x80159334 | 0x10 | GX_unk_80159334 | unk | in module range, no name match; callers=1 callees=0 |
-| 0x80159344 | 0x10 | GX_unk_80159344 | unk | in module range, no name match; callers=6 ext=6 callees=0 |
-| 0x80159354 | 0xd4 | GX_unk_80159354 | unk | in module range, no name match; callers=4 ext=4 callees=2 |
-| 0x80159428 | 0x108 | GX_unk_80159428 | unk | in module range, no name match; callers=4 ext=4 callees=3 |
+| 0x80159344 | 0x10 | TPLGet | medium | returns pal->desc + id*8 (pal+8) |
+| 0x80159354 | 0xd4 | TPLGetGXTexObjFromPalette | medium | TPL desc: GXInitTexObj (0x801560c8) + GXInitTexObjLOD |
+| 0x80159428 | 0x108 | TPLGetGXTexObjFromPaletteCI | medium | TPL desc (pal+8, 8B/entry): GXInitTlutObj + GXInitTexObjCI + GXInitTexObjLOD |
 
 ## AI
 
@@ -1281,7 +1281,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 
 ## Open questions
 
-- GX: ~72 of 165 functions are still `GX_unk_`. The named set covers vertex descriptor/attr, TEV color/alpha in/op/order, pixel/blend/z, copy/display, channel, texobj and matrix loads. Remaining unknowns (GXTexture region/tlut helpers, bump/indirect, remaining GXLight getters, perf/stub getters) need BP/XF register-id decoding; most are tiny FIFO writers.
+- GX: 51 of 165 functions are still `GX_unk_`. The named set covers vertex descriptor/attr, TEV color/alpha in/op/order, pixel/blend/z, copy/display, channel, texobj and matrix loads. Remaining unknowns (GXTexture region/tlut helpers, bump/indirect, remaining GXLight getters, perf/stub getters) need BP/XF register-id decoding; most are tiny FIFO writers.
 - AX: voice-parameter setters (AXSetVoice*, roughly 0x801470d8-0x801479dc, Disable/Restore pattern) and the AXOut/AXAux/AXCL internals are unnamed; their order in the SDK is known but individual identity was not proven. They have ext callers only from the game audio wrapper (0x8016f-0x801a5).
 - dvd.c static state machine (stateReady, stateBusy, cbForState*, ...) 0x8013bd34-0x8013e9f4 is largely unnamed; only entry points and the DVDLow layer are named. All of it is replaced by a flat DVD shim in the runtime, so exact names matter less.
 - PAD: PADClamp, PADRead, __PADDisableRecalibration and SPEC2_MakeStatus are identified; PADInit/PADReset/PADRecalibrate/PADControlMotor/PADSetSpec are among 0x801414dc/0x801415ec/0x80141a00/0x80141ab8 but their individual names are not proven (note: no PADInit callee `OSRegisterResetFunction` was found inside the PAD range, so PADInit may be inlined in game code).

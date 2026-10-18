@@ -12,8 +12,9 @@ int main(void) {
     gfxInitDefault();
     consoleInit(GFX_BOTTOM, NULL);
     cpu_init();
+    recomp_gx_init();
     recomp_log_open();
-    recomp_log("# custom-robo-recomp phase 4: DVD, PAD, OS\n");
+    recomp_log("# custom-robo-recomp phase 5: GX\n");
     if (recomp_load_dol() == 0) {
         printf("main.dol loaded, running __start\n");
         if (!setjmp(recomp_exit_jmp)) {
