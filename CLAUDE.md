@@ -14,7 +14,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 
 ## Layout
 
-- `tools/recomp/` PPC -> C translator (to write). Output to `gen/` (ignored).
+- `tools/recomp/` PPC -> C translator (`recomp.py`, decoder `ppc.py`). Output to
+  `gen/` (ignored): `f_XXXXXXXX()` per function, `sdk_stubs.c` (weak, empty),
+  `functable.c` (`call_indirect`). Unknowns -> `docs/recomp_unknowns.md`.
+- `runtime/ppc.h` CPU state + BE memory + FP/paired-single helpers (Dolphin
+  semantics); `runtime/cpu.c` placeholders; `runtime/main.c` 3DS entry.
 - `runtime/` 3DS replacements for SDK functions, one file per SDK module.
 - `tools/` carried over: `dol.py` (xref/dis/func), `ghidra/decompile.ps1`,
   `extract_disc.py`, and asset decoders (`sound.py`, `tpl.py`, `font.py`,
@@ -33,10 +37,20 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 6. Audio.
 7. Fix pass vs Dolphin.
 
+## Status
+
+- Phase 1 done: `docs/sdk_functions.md`.
+- Phase 2 done (2026-10-18): 2718 functions translated, 1049 SDK stubs, 189
+  MetroTRK entries skipped, 52 jump tables as switch; gen/ builds for 3DS with
+  0 warnings. 459 reachable-looking words are not reached from any start (see
+  unknowns). Next: phase 3. There is no DOL loader into `ram` yet, and `main`
+  does not call `__start`.
+
 ## Build / test
 
 ```
 python tools/extract_disc.py "<disc>.iso" data/extracted   # once
+PYTHONUTF8=1 python tools/recomp/recomp.py                   # -> gen/
 docker run --rm -v "C:/Users/Alexander/source/repos/custom-robo-recomp:/proj" -w /proj mkw3ds-build:2026-10-09 make
 ```
 Citra: `tools/citra/autotest.ps1 -Fast -Shots 0`, never take desktop focus.

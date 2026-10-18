@@ -7,3 +7,5 @@ __pycache__/
 *.smdh
 *.cia
 gen/
+build.log
+*.map
