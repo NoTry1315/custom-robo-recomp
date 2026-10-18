@@ -21,7 +21,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | DVD | 0x8013a2c0-0x8013eb5c | 49 / 94 | 15 | 30 | 4 |
 | PAD | 0x801409b0-0x80141fa4 | 6 / 14 | 3 | 3 | 0 |
 | VI | 0x8013eb5c-0x801409b0 | 24 / 24 | 10 | 13 | 1 |
-| GX | 0x801516c8-0x80159530 | 93 / 165 | 43 | 50 | 0 |
+| GX | 0x801516c8-0x80159530 | 96 / 165 | 46 | 50 | 0 |
 | AI | 0x80141fa4-0x8014288c | 11 / 19 | 3 | 8 | 0 |
 | DSP/AR/ARQ/AX | 0x8014288c-0x8014af50 | 37 / 122 | 12 | 18 | 7 |
 | CARD | 0x8014af50-0x801516c8 | 17 / 84 | 6 | 11 | 0 |
@@ -29,8 +29,8 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | MTX | 0x801394c4-0x8013a2c0 | 30 / 30 | 19 | 11 | 0 |
 | THP | 0x801aeb40-0x801b65e0 | 3 / 23 | 1 | 0 | 2 |
 | other | 0x80003100-0x80169484 | 38 / 321 | 16 | 18 | 4 |
-| **SDK modules (excl. other)** | | **500 / 818** | | | |
-| **overall (incl. other)** | | **538 / 1139** | | | |
+| **SDK modules (excl. other)** | | **503 / 818** | | | |
+| **overall (incl. other)** | | **541 / 1139** | | | |
 
 "identified" means a name was assigned (any confidence); the remainder are `_unk_` rows in the module tables. Sub-module ranges: 
 - base (PPCArch): 0x80131c08-0x80131d1c
@@ -444,8 +444,8 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x8015458c | 0x94 | GX_unk_8015458c | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80154620 | 0x5c | GXFlush | medium | calls PPCSync after FIFO flush words |
 | 0x8015467c | 0x16c | GX_unk_8015467c | unk | in module range, no name match; callers=1 hw=3000 callees=2 |
-| 0x801547e8 | 0x4c | GX_unk_801547e8 | unk | in module range, no name match; callers=1 ext=1 callees=3 |
-| 0x80154834 | 0x80 | GX_unk_80154834 | unk | in module range, no name match; callers=1 ext=1 hw=8000 callees=4 |
+| 0x801547e8 | 0x4c | GXWaitDrawDone | high | OSDisableInterrupts, OSSleepThread loop on the draw-done flag r13-0x4720 (phase 3) |
+| 0x80154834 | 0x80 | GXDrawDone | high | writes BP 0x45000002 (PE draw-done token), flushes, clears and waits on the draw-done flag (phase 3) |
 | 0x801548b4 | 0x24 | GX_unk_801548b4 | unk | in module range, no name match; callers=5 ext=5 hw=8000 callees=0 |
 | 0x801548d8 | 0x14 | GX_unk_801548d8 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x801548ec | 0x20 | GX_unk_801548ec | unk | in module range, no name match; callers=1 callees=0 |
@@ -457,7 +457,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x801549dc | 0x20 | GX_unk_801549dc | unk | in module range, no name match; callers=1 callees=0 |
 | 0x801549fc | 0x44 | GX_unk_801549fc | unk | in module range, no name match; callers=1 callees=2 |
 | 0x80154a40 | 0x88 | GX_unk_80154a40 | unk | in module range, no name match; callers=0 callees=2 |
-| 0x80154ac8 | 0x44 | GX_unk_80154ac8 | unk | in module range, no name match; callers=2 ext=1 callees=2 |
+| 0x80154ac8 | 0x44 | GXSetDrawDoneCallback | high | swaps callback r13-0x4724 under OSDisableInterrupts, returns old (phase 3) |
 | 0x80154b0c | 0x80 | GX_unk_80154b0c | unk | in module range, no name match; callers=0 callees=3 |
 | 0x80154b8c | 0x74 | GX_unk_80154b8c | unk | in module range, no name match; callers=1 callees=3 |
 | 0x80154c00 | 0x80 | __GXSetDirtyState | high | calls __GXSetVCD/__GXCalculateVLim/__GXSetVAT |

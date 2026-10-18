@@ -26,6 +26,7 @@ typedef struct {
 extern CPU cpu;
 extern u8 *ram;             /* 0x80000000 mirror, RAM_MASK+1 bytes (+8 pad) */
 #define RAM_MASK 0x01FFFFFFu
+#define STACK_TOP 0x80462ac0u     /* initial r1 (crt0 table) = linker __ArenaLo */
 
 #define R cpu.gpr
 #define F cpu.fpr
@@ -151,3 +152,14 @@ typedef void (*GuestFn)(void);
 void call_indirect(u32 target);       /* function table lookup */
 void recomp_bad(u32 pc, const char *why);
 void recomp_skipped(u32 addr);        /* MetroTRK and other skipped code */
+void recomp_sdk_call(const char *name); /* logs an SDK call that runtime/ does not implement */
+
+/* ---- runtime services (runtime/log.c, runtime/dol.c) ---- */
+void recomp_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+void recomp_sdk_log(const char *name);  /* same report for hand-written SDK functions */
+void recomp_done(const char *why) __attribute__((noreturn)); /* ends the guest run */
+int  recomp_load_dol(void);             /* main.dol + boot info into ram; 0 on success */
+void recomp_call_guest(u32 fn, u32 arg); /* interrupt-style call: guest state saved around it */
+u64  recomp_timebase(void);             /* Gekko timebase, 40.5 MHz */
+void recomp_log_open(void);
+void recomp_log_close(void);

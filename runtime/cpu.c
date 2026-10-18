@@ -10,18 +10,43 @@ u8 *ram;
 void cpu_init(void) {
     ram = calloc(RAM_MASK + 1 + 8, 1);
     memset(&cpu, 0, sizeof cpu);
-    R[1] = 0x80462ac0u;
+    R[1] = STACK_TOP;
     R[2] = 0x804581a0u;
     R[13] = 0x804543c0u;
 }
 
-void recomp_bad(u32 pc, const char *why) { printf("recomp_bad %08lx: %s\n", (unsigned long)pc, why); }
-void recomp_skipped(u32 addr) { (void)addr; }
-u32 hw_read(u32 a, int size) { printf("hw_read %08lx/%d\n", (unsigned long)a, size); return 0; }
-void hw_write(u32 a, u32 v, int size) { (void)v; printf("hw_write %08lx/%d\n", (unsigned long)a, size); }
+void recomp_skipped(u32 addr) { recomp_log("recomp_skipped %08lx lr=%08lx\n", (unsigned long)addr, (unsigned long)cpu.lr); }
+
+/* hardware registers: not emulated in phase 3, each address logged a few times */
+static int hw_seen(u32 a) {
+    static u32 seen[256];
+    static u8 n[256];
+    u32 h = (a >> 1) & 255;
+    if (seen[h] != a) { seen[h] = a; n[h] = 0; }
+    return n[h] < 4 ? ++n[h] : 0;
+}
+u32 hw_read(u32 a, int size) {
+    if (hw_seen(a)) recomp_log("hw_read %08lx/%d lr=%08lx\n", (unsigned long)a, size, (unsigned long)cpu.lr);
+    return 0;
+}
+void hw_write(u32 a, u32 v, int size) {
+    if (hw_seen(a)) recomp_log("hw_write %08lx/%d = %08lx lr=%08lx\n", (unsigned long)a, size, (unsigned long)v, (unsigned long)cpu.lr);
+}
 u32 ppc_mfspr(int n) { return cpu.spr[n & 1023]; }
 void ppc_mtspr(int n, u32 v) { cpu.spr[n & 1023] = v; }
-u32 ppc_mftb(int tbr) { (void)tbr; return 0; }
+u32 ppc_mftb(int tbr) { u64 t = recomp_timebase(); return tbr == 269 ? (u32)(t >> 32) : (u32)t; }
+
+/* an interrupt-style guest call (VI retrace callback etc.): the interrupted
+ * code's registers are saved and restored around it, as OSContext does */
+void recomp_call_guest(u32 fn, u32 arg) {
+    static CPU saved;   /* not reentrant: callbacks do not nest */
+    memcpy(&saved, &cpu, sizeof cpu);
+    R[3] = arg;
+    R[1] = (R[1] - 0x200) & ~7u;
+    cpu.lr = 0;
+    call_indirect(fn);
+    memcpy(&cpu, &saved, sizeof cpu);
+}
 void ppc_mtmsr(u32 v) { cpu.msr = v; }
 void ppc_sc(u32 pc) { recomp_bad(pc, "sc"); }
 void ppc_rfi(u32 pc) { recomp_bad(pc, "rfi"); }
