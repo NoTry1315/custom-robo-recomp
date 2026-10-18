@@ -96,8 +96,15 @@ Windows: run Python with `PYTHONUTF8=1`.
 
 ## Token rules
 
-- Mechanical sweeps (SDK signatures, function boundaries) -> Sonnet/Haiku
-  subagents; only conclusions come back.
-- Logs, not screenshots. Grep decompiles, never dump whole functions.
+- Mechanical sweeps (SDK signatures, function boundaries, call inventories,
+  hot spots, first failure in a log) -> Sonnet/Haiku subagents; only
+  conclusions come back.
+- Check every name a subagent (or the doc) gives against the disassembly
+  (`tools/dol.py dis 0x<addr> 0x<count>`, both args 0x-prefixed): 0x80144be4
+  was listed as AXFreeVoice but is AXSetVoicePriority.
+- Logs, not screenshots (a few at most, for visual checks vs Dolphin). Grep
+  gen/ and decompiles, never dump them or whole functions.
+- Git Bash: build with `MSYS_NO_PATHCONV=1`. `\n` in C strings and `\` in
+  paths get mangled by python heredocs and sed: use Edit for those lines.
 - One phase per session; this file carries the state.
 - Never commit disc data or game code; `gen/` is generated from the user's disc.
