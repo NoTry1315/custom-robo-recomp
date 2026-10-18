@@ -9,6 +9,31 @@
 #include <setjmp.h>
 #include "ppc.h"
 
+/* Frame timing: ticks (SYSCLOCK_ARM11, 268 MHz) per bucket, summed over 60
+ * retraces. "game" is the rest of the frame: translated code + SDK layer. */
+u64 recomp_prof[PROF_N];
+u64 recomp_ticks(void) { return svcGetSystemTick(); }
+
+void recomp_prof_frame(u32 retrace) {
+    static u64 last, start, worst;
+    static u64 sum[PROF_N];
+    u64 now = svcGetSystemTick();
+    if (last) {
+        u64 dt = now - last;
+        if (dt > worst) worst = dt;
+    } else start = now;
+    last = now;
+    if (retrace % 60 || retrace == 0) return;
+    double ms = 1000.0 / SYSCLOCK_ARM11, wall = (now - start) * ms;
+    double vtx = (recomp_prof[PROF_GX_VTX] - sum[PROF_GX_VTX]) * ms / 60, tex = (recomp_prof[PROF_GX_TEX] - sum[PROF_GX_TEX]) * ms / 60;
+    double end = (recomp_prof[PROF_GX_END] - sum[PROF_GX_END]) * ms / 60, aud = (recomp_prof[PROF_AUDIO] - sum[PROF_AUDIO]) * ms / 60;
+    double frame = wall / 60;
+    recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx end/wait %.1f, audio %.1f\n",
+               (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - end - aud, vtx, tex, end, aud);
+    for (int i = 0; i < PROF_N; i++) sum[i] = recomp_prof[i];
+    start = now; worst = 0;
+}
+
 #define LOG_PATH "sdmc:/cr_autotest.log"
 #define PER_NAME 20         /* calls logged in full per SDK function */
 #define HANG_MS 20000      /* a 30-retrace log gap on the title's 3D background in real-time Citra exceeds 4 s */

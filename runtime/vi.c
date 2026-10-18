@@ -19,6 +19,7 @@ void sdk_VIGetDTVStatus(void) { LOG(); R[3] = 0; }    /* no component cable */
 void sdk_VIWaitForRetrace(void) {
     LOG();
     retrace++;
+    recomp_prof_frame(retrace);
     recomp_wait_point();
     recomp_ax_service();
     if (pre_cb) recomp_call_guest(pre_cb, retrace);

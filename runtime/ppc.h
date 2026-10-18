@@ -165,6 +165,11 @@ void recomp_dvd_service(void);          /* runs completed DVD callbacks */
 void recomp_ar_service(void);           /* runs completed ARQ callbacks */
 u32  recomp_retrace_count(void);         /* frames so far (VI retraces) */
 void recomp_ax_service(void);           /* AX frame callbacks due since the last retrace */
+/* frame timing (runtime/log.c): ticks spent per bucket, logged by VI */
+enum { PROF_GX_VTX, PROF_GX_TEX, PROF_GX_END, PROF_AUDIO, PROF_N };
+extern u64 recomp_prof[PROF_N];
+u64 recomp_ticks(void);
+void recomp_prof_frame(u32 retrace);
 void recomp_ax_close(void);             /* flushes the WAV dump, stops ndsp */
 u32 recomp_retrace_count(void);
 u8 recomp_aram_read8(u32 a);            /* ARAM byte (runtime/ar.c) */

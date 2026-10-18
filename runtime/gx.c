@@ -136,7 +136,9 @@ static void frame_end(void) {
     }
     st_draws = st_tris = st_tex = 0;
     /* a frame with no draws still shows the clear color (frame_begin above) */
+    u64 t0 = recomp_ticks();
     C3D_FrameEnd(0);
+    recomp_prof[PROF_GX_END] += recomp_ticks() - t0;
     frame_open = 0;
     frames++;
 }
@@ -682,7 +684,9 @@ static void draw(int prim, int fmt, const u8 *data, int n) {
         const TevStage *t = &gx.tev[si];
         if (t->map >= 8 || unit_of_map[t->map] >= 0) continue;
         if (nunits >= 3) { ONCE("more than 3 texmaps in one draw\n"); continue; }
+        u64 t0 = recomp_ticks();
         C3D_Tex *tex = tex_get(&gx.map[t->map], &tscale[nunits][0], &tscale[nunits][1]);
+        recomp_prof[PROF_GX_TEX] += recomp_ticks() - t0;
         if (!tex) continue;
         C3D_TexBind(nunits, tex);
         tcoord[nunits] = t->coord < 8 ? t->coord : -1;
@@ -697,7 +701,9 @@ static void draw(int prim, int fmt, const u8 *data, int n) {
     static PVtx pv[0x10000 / 4];
     int vs = vtx_size(fmt);
     if (n > (int)(sizeof vt / sizeof vt[0])) n = sizeof vt / sizeof vt[0];
+    u64 t0 = recomp_ticks();
     for (int i = 0; i < n; i++) { decode_vtx(data + i * vs, fmt, &vt[i]); emit(&vt[i], &pv[i], tscale, tcoord); }
+    recomp_prof[PROF_GX_VTX] += recomp_ticks() - t0;
     PVtx *o = vbuf[vb_half] + vb_used;
     int k = 0;
     for (int t = 0; t < ntri; t++) {

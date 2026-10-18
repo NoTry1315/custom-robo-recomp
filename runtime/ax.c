@@ -361,6 +361,7 @@ static void ax_frame(void) {
 
 void recomp_ax_service(void) {
     static u32 frames, done;
+    u64 t0 = recomp_ticks();
     if (ndsp_ok < 0) out_init();
     frames++;
     u32 due = frames * 10 / 3;
@@ -368,6 +369,7 @@ void recomp_ax_service(void) {
         ax_frame();
         if (ax_cb) recomp_call_guest(ax_cb, 0);
     }
+    recomp_prof[PROF_AUDIO] += recomp_ticks() - t0;
 }
 
 void recomp_ax_close(void) {

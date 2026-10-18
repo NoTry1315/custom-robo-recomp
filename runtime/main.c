@@ -15,6 +15,11 @@ int main(void) {
     recomp_gx_init();
     recomp_log_open();
     recomp_log("# custom-robo-recomp phase 6: audio\n");
+    /* New 3DS: 804 MHz + L2 cache; without this it runs in old-3DS mode (268 MHz) */
+    osSetSpeedupEnable(true);
+    bool n3ds = false;
+    APT_CheckNew3DS(&n3ds);
+    recomp_log("# system: %s, speedup requested\n", n3ds ? "New 3DS" : "old 3DS (or emulator reporting old)");
     if (recomp_load_dol() == 0) {
         printf("main.dol loaded, running __start\n");
         if (!setjmp(recomp_exit_jmp)) {
