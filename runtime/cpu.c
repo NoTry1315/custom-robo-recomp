@@ -38,10 +38,13 @@ u32 ppc_mftb(int tbr) { u64 t = recomp_timebase(); return tbr == 269 ? (u32)(t >
 
 /* an interrupt-style guest call (VI retrace callback etc.): the interrupted
  * code's registers are saved and restored around it, as OSContext does */
-void recomp_call_guest(u32 fn, u32 arg) {
-    static CPU saved;   /* not reentrant: callbacks do not nest */
+void recomp_wait_point(void) { recomp_dvd_service(); recomp_ar_service(); }
+void recomp_call_guest(u32 fn, u32 arg) { recomp_call_guest2(fn, arg, 0); }
+void recomp_call_guest2(u32 fn, u32 arg, u32 arg2) {
+    CPU saved;   /* on the host stack: a callback may reach another wait point */
     memcpy(&saved, &cpu, sizeof cpu);
     R[3] = arg;
+    R[4] = arg2;
     R[1] = (R[1] - 0x200) & ~7u;
     cpu.lr = 0;
     call_indirect(fn);

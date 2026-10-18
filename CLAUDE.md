@@ -53,18 +53,26 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   No PADRead yet. 30 / 788 doc SDK functions hand-written (OS arena/heap/time/
   interrupts/report, VI retrace, GX draw-done, PADRead). Next: phase 4, DVD
   first.
+- Phase 4 done (2026-10-18): boot reaches the title scene (SEQ_TITLE, scene 2 in
+  0x80321d88) at frame ~300 and waits there with PADRead every frame (2400-frame run).
+  Hand-written: DVD at dvdfs level (`runtime/dvd.c`, FST from sys/fst.bin, files from
+  sdmc:/custom-robo/files/), AR/ARQ (`ar.c`), AX callback tick (`ax.c`), PAD from 3DS
+  input, CARDProbeEx = no card, OSSetCurrentHeap in guest memory, reset button 0.
+  Translator: MWCC runtime range fixed (__va_arg was skipped as MetroTRK).
+  60 / 788 doc SDK functions hand-written. Not done: Dolphin RAM dump of boot info,
+  threads/alarms (not needed yet). Next: phase 5, GX.
 
 ## Build / test
 
 ```
-python tools/extract_disc.py "<disc>.iso" data/extracted   # once
+python tools/extract_disc.py "<disc>.iso" data/extracted   # once (--sys-only: sys/ only)
 PYTHONUTF8=1 python tools/recomp/recomp.py                   # -> gen/
 (cd tools/recomp && PYTHONUTF8=1 python gen_sdk_log.py)      # after adding an sdk_* to runtime/
 docker run --rm -v "C:/Users/Alexander/source/repos/custom-robo-recomp:/proj" -w /proj mkw3ds-build:2026-10-09 make
 ```
 Citra: `tools/citra/autotest.ps1 -Fast -Shots 0`, never take desktop focus; log in
-`build/cr_autotest.log`. Needs `main.dol` and `boot.bin` from `data/extracted/sys/`
-copied to Citra's `user/sdmc/custom-robo/` (never commit them).
+`build/cr_autotest.log`. Needs `main.dol`, `boot.bin`, `fst.bin` from `data/extracted/sys/` and the
+`data/extracted/files/` tree copied to Citra's `user/sdmc/custom-robo/` (never commit them).
 Windows: run Python with `PYTHONUTF8=1`.
 
 ## Token rules

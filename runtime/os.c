@@ -39,7 +39,9 @@ void sdk_OSAllocFromArenaLo(void) {
 #define MAXHEAPS 64
 static struct { s32 size; u32 free, alloc; } heaps[MAXHEAPS];
 static int nheaps;
-static s32 curheap = -1;
+/* __OSCurrHeap is a game-visible sdata variable (r13-0x5660, read inline by
+ * the OSAlloc macro), so it lives in guest memory */
+#define OS_CURR_HEAP 0x8044ed60u
 
 static u32 c_prev(u32 c) { return rd32(c); }
 static u32 c_next(u32 c) { return rd32(c + 4); }
@@ -84,7 +86,7 @@ void sdk_OSInitAlloc(void) {
     nheaps = max < MAXHEAPS ? (int)max : MAXHEAPS;
     if ((int)max > MAXHEAPS) recomp_log("# OSInitAlloc: %lu heaps, runtime keeps %d\n", (unsigned long)max, MAXHEAPS);
     for (int i = 0; i < nheaps; i++) heaps[i].size = -1, heaps[i].free = heaps[i].alloc = 0;
-    curheap = -1;
+    wr32(OS_CURR_HEAP, (u32)-1);
     R[3] = ROUNDUP(lo + 12 * max, 32);   /* HeapDesc array (12 bytes each) stays in the arena */
 }
 
@@ -104,7 +106,7 @@ void sdk_OSCreateHeap(void) {
 }
 
 void sdk_OSDestroyHeap(void) { LOG(); if (R[3] < (u32)nheaps) heaps[R[3]].size = -1; }
-void sdk_OSSetCurrentHeap(void) { LOG(); s32 old = curheap; curheap = (s32)R[3]; R[3] = (u32)old; }
+void sdk_OSSetCurrentHeap(void) { LOG(); u32 old = rd32(OS_CURR_HEAP); wr32(OS_CURR_HEAP, R[3]); R[3] = old; }
 
 void sdk_OSAllocFromHeap(void) {
     LOG();
@@ -210,3 +212,6 @@ void sdk_OSPanic(void) {
     recomp_log("OSPanic: %s:%ld: %s\n", file, (long)R[4], buf);
     recomp_done("OSPanic");
 }
+
+/* reset button never pressed; the game latches a reset request on non-zero */
+void sdk_OSGetResetButtonState(void) { LOG(); R[3] = 0; }

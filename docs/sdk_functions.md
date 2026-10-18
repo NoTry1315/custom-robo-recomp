@@ -48,8 +48,8 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 - DSP: 0x8014a42c-0x8014af50
 - CARD: 0x8014af50-0x801516c8
 - GX: 0x801516c8-0x80159530
-- MetroTRK: 0x80159530-0x8015f858
-- MWCC runtime: 0x8015f858-0x8015ff7c
+- MetroTRK: 0x80159530-0x8015f6e8
+- MWCC runtime: 0x8015f6e8-0x8015ff7c (phase 4: starts at the varargs helpers, not 0x8015f858; __va_arg is called from game code)
 - MSL C library: 0x8015ff7c-0x80169484
 - EXI: 0x80169484-0x8016beac
 - SI: 0x8016beac-0x8016d42c
@@ -362,10 +362,10 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80140f98 | 0xd8 | PAD_unk_80140f98 | unk | in module range, no name match; callers=0 callees=5 |
 | 0x80141070 | 0x32c | PAD_unk_80141070 | unk | in module range, no name match; callers=0 callees=6 |
 | 0x8014139c | 0x140 | PAD_unk_8014139c | unk | in module range, no name match; callers=0 callees=5 |
-| 0x801414dc | 0x110 | PAD_unk_801414dc | unk | in module range, no name match; callers=2 ext=1 callees=5 |
-| 0x801415ec | 0x114 | PAD_unk_801415ec | unk | in module range, no name match; callers=8 ext=8 callees=5 |
+| 0x801414dc | 0x110 | PADReset | medium | Pad.c order before PADRecalibrate; mask of channels, r13 reset bits; game calls it for empty ports |
+| 0x801415ec | 0x114 | PADRecalibrate | medium | same shape as PADReset plus recalibrate bit; next in Pad.c |
 | 0x80141700 | 0x300 | PADRead | high | Pad.c; copies SI response into PADStatus[4]; ext caller next to PADClamp |
-| 0x80141a00 | 0xb8 | PAD_unk_80141a00 | unk | in module range, no name match; callers=3 ext=3 callees=5 |
+| 0x80141a00 | 0xb8 | PADControlMotor | medium | SISetCommand + SITransferCommands with motor command, after PADRead |
 | 0x80141ab8 | 0x470 | SPEC2_MakeStatus | medium | Pad.c; no callees, reads status 8 bytes (r13 spec fn table) |
 | 0x80141f28 | 0x7c | __PADDisableRecalibration | high | toggles bit 0x40 of 0x800030E3; called by OSResetSystem |
 
@@ -656,7 +656,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80145b20 | 0x2c | AX_unk_80145b20 | unk | in module range, no name match; callers=0 callees=1 |
 | 0x80145b4c | 0xcc | AX_unk_80145b4c | unk | in module range, no name match; callers=1 callees=4 |
 | 0x80145c18 | 0x3a0 | AX_unk_80145c18 | unk | in module range, no name match; callers=1 callees=6 |
-| 0x80145fb8 | 0x44 | AX_unk_80145fb8 | unk | in module range, no name match; callers=1 ext=1 callees=2 |
+| 0x80145fb8 | 0x44 | AXRegisterCallback | medium | swaps r13 frame callback under Disable/Restore, returns old |
 | 0x80145ffc | 0x4 | AX_unk_80145ffc | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80146000 | 0x8 | AX_unk_80146000 | unk | in module range, no name match; callers=0 callees=0 |
 | 0x80146008 | 0x3f8 | AX_unk_80146008 | unk | in module range, no name match; callers=1 callees=1 |
@@ -785,7 +785,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x8014e674 | 0x8c | CARD_unk_8014e674 | unk | in module range, no name match; callers=1 callees=3 |
 | 0x8014e700 | 0x590 | CARD_unk_8014e700 | unk | in module range, no name match; callers=1 ext=1 callees=11 |
 | 0x8014ec90 | 0xcc | CARD_unk_8014ec90 | unk | in module range, no name match; callers=2 callees=0 |
-| 0x8014ed5c | 0x17c | CARD_unk_8014ed5c | unk | in module range, no name match; callers=1 ext=1 callees=6 |
+| 0x8014ed5c | 0x17c | CARDProbeEx | high | (chan, memSize*, sectorSize*): chan>=2 -> -128, EXIProbeEx -1 -> -3 NOCARD, 0x110-byte control block per channel |
 | 0x8014eed8 | 0x410 | CARD_unk_8014eed8 | unk | in module range, no name match; callers=3 callees=15 |
 | 0x8014f2e8 | 0x138 | CARD_unk_8014f2e8 | unk | in module range, no name match; callers=4 callees=5 |
 | 0x8014f420 | 0x1a0 | CARD_unk_8014f420 | unk | in module range, no name match; callers=1 ext=1 callees=8 |
@@ -1131,11 +1131,11 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x8015f634 | 0x24 | TRK_unk_8015f634 | unk | in module range, no name match; callers=0 callees=0 |
 | 0x8015f658 | 0x8 | TRK_unk_8015f658 | unk | in module range, no name match; callers=0 callees=0 |
 | 0x8015f660 | 0x88 | TRK_unk_8015f660 | unk | in module range, no name match; callers=0 callees=3 |
-| 0x8015f6e8 | 0x50 | TRK_unk_8015f6e8 | unk | in module range, no name match; callers=61 callees=0 |
-| 0x8015f738 | 0x24 | TRK_unk_8015f738 | unk | in module range, no name match; callers=2 callees=1 |
-| 0x8015f75c | 0x30 | TRK_unk_8015f75c | unk | in module range, no name match; callers=2 callees=1 |
-| 0x8015f78c | 0x4 | TRK_unk_8015f78c | unk | in module range, no name match; callers=1 callees=0 |
-| 0x8015f790 | 0xc8 | TRK_unk_8015f790 | unk | in module range, no name match; callers=16 callees=0 |
+| 0x8015f6e8 | 0x50 | __va_arg_save | low | saves r3-r10/f1-f8 for variadic callers (61 callers); mwcc runtime |
+| 0x8015f738 | 0x24 | RT_unk_8015f738 | unk | in module range, no name match; callers=2 callees=1 |
+| 0x8015f75c | 0x30 | RT_unk_8015f75c | unk | in module range, no name match; callers=2 callees=1 |
+| 0x8015f78c | 0x4 | RT_unk_8015f78c | unk | in module range, no name match; callers=1 callees=0 |
+| 0x8015f790 | 0xc8 | __va_arg | medium | va_list walk by type 1-4 (gpr/double/stack); 16 callers in game/MSL |
 | 0x8015f858 | 0x48 | RT_unk_8015f858 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x8015f8a0 | 0x5c | __cvt_fp2unsigned | medium | 93 callers, compares f1 against 0.0 and 2^32 |
 | 0x8015f8fc | 0x2c | __savefpr_14 | high | stfd f14.. -0x90(r11) save entries |

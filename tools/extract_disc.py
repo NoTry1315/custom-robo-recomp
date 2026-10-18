@@ -31,6 +31,7 @@ def main():
     a = argparse.ArgumentParser()
     a.add_argument('disc', type=Path)
     a.add_argument('output', type=Path)
+    a.add_argument('--sys-only', action='store_true', help='write sys/ only (main.dol, boot.bin, fst.bin)')
     args = a.parse_args()
     with args.disc.open('rb') as f:
         header = f.read(0x440)
@@ -52,6 +53,9 @@ def main():
         f.seek(dol_offset)
         (out / 'sys/main.dol').write_bytes(f.read(dol_size))
         (out / 'sys/boot.bin').write_bytes(header)
+        (out / 'sys/fst.bin').write_bytes(fst)   # the runtime's DVDInit loads it to 0x80000038
+        if args.sys_only:
+            return
         for name, offset, size in files:
             dest = out / 'files' / name
             dest.parent.mkdir(parents=True, exist_ok=True)

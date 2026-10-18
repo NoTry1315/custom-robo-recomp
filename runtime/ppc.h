@@ -160,6 +160,12 @@ void recomp_sdk_log(const char *name);  /* same report for hand-written SDK func
 void recomp_done(const char *why) __attribute__((noreturn)); /* ends the guest run */
 int  recomp_load_dol(void);             /* main.dol + boot info into ram; 0 on success */
 void recomp_call_guest(u32 fn, u32 arg); /* interrupt-style call: guest state saved around it */
+void recomp_call_guest2(u32 fn, u32 arg, u32 arg2);
+void recomp_dvd_service(void);          /* runs completed DVD callbacks */
+void recomp_ar_service(void);           /* runs completed ARQ callbacks */
+u32  recomp_retrace_count(void);         /* frames so far (VI retraces) */
+void recomp_ax_service(void);           /* AX frame callbacks due since the last retrace */
+void recomp_wait_point(void);           /* pending "interrupts": DVD, then ARQ */
 u64  recomp_timebase(void);             /* Gekko timebase, 40.5 MHz */
 void recomp_log_open(void);
 void recomp_log_close(void);

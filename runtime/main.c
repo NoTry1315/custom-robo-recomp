@@ -13,7 +13,7 @@ int main(void) {
     consoleInit(GFX_BOTTOM, NULL);
     cpu_init();
     recomp_log_open();
-    recomp_log("# custom-robo-recomp phase 3: stub runtime\n");
+    recomp_log("# custom-robo-recomp phase 4: DVD, PAD, OS\n");
     if (recomp_load_dol() == 0) {
         printf("main.dol loaded, running __start\n");
         if (!setjmp(recomp_exit_jmp)) {
