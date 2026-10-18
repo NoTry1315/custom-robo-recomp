@@ -180,7 +180,9 @@ mix stats every 1000 AX frames = 5 s).
   runs slower than real time the output underruns (gaps), not measured. ndspInit
   needs sdmc:/3ds/dspfirm.cdc; without it the mix still runs (WAV only). Citra: a
   placeholder file (autotest.ps1 writes it), as its HLE DSP never runs the firmware.
-- sdmc:/cr_audio.wav: the first 60 s of the mix, for checking without listening.
+- sdmc:/cr_audio.wav: the first 60 s of the mix, for checking without listening; only
+  when sdmc:/cr_audio_dump.txt exists (autotest.ps1 writes it). On a New 3DS the
+  per-frame SD writes cost ~170 ms per retrace with 4 s stalls (first hardware run).
 - Title, checked: SE at r452 (A on the no-card dialog), then cubog39.hps (stereo
   48 kHz ADPCM stream, ring of loop/end updates by the game) from r580 to r1133,
   ended by the game (non-looping HPS). Against tools/sound.py's decode of the same

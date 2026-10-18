@@ -38,6 +38,8 @@ Remove-Item $padFile -Force -ErrorAction SilentlyContinue
 # placeholder is enough there (a real 3DS needs the user's own DSP1 dump).
 $firm = Join-Path $root 'user\sdmc\3ds\dspfirm.cdc'
 if (-not (Test-Path $firm)) { New-Item -ItemType Directory -Force (Split-Path $firm) | Out-Null; [IO.File]::WriteAllBytes($firm, (New-Object byte[] 4096)) }
+# the mix is dumped to sdmc:/cr_audio.wav only when this flag exists (runtime/ax.c)
+[IO.File]::WriteAllText((Join-Path $root 'user\sdmc\cr_audio_dump.txt'), 'on')
 if ($Pad) { [IO.File]::WriteAllText($padFile, (($Pad -split ';') | ForEach-Object { $_.Trim() }) -join "`n") }
 $start = Get-Date
 try {

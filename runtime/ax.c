@@ -300,8 +300,14 @@ static void out_init(void) {
             wbuf[i].status = NDSP_WBUF_DONE;
         }
     }
-    wav = fopen("sdmc:/cr_audio.wav", "wb");
-    if (wav) { static u8 hdr[44]; fwrite(hdr, 1, 44, wav); }
+    /* opt-in (autotest.ps1 writes the flag): on hardware, small SD writes every
+     * 5 ms cost ~170 ms per retrace with multi-second stalls */
+    FILE *flag = fopen("sdmc:/cr_audio_dump.txt", "r");
+    if (flag) {
+        fclose(flag);
+        wav = fopen("sdmc:/cr_audio.wav", "wb");
+        if (wav) { static u8 hdr[44]; setvbuf(wav, NULL, _IOFBF, 256 * 1024); fwrite(hdr, 1, 44, wav); }
+    }
 }
 
 static void wav_close(void) {
