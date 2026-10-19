@@ -216,6 +216,7 @@ mix stats every 1000 AX frames = 5 s).
 | CPU transform | 139.5 | 312.5 | 165 | 22 | 2.0 |
 | PICA vertex shader | 32.1 | 100.7 | 182.7 | - | 3.3 |
 | this pass | 27.8 | 82.7 | 76.7 | 58.2 | 3.7 |
+| EFB copy textures skipped | 27.7 | 82.3 | 77.8 | 7.4 | 4.6 |
 
 - `# prof` (cpu.lr sampler, runtime/log.c): ~80% of campaign samples at lr 0x801961ac,
   i.e. inside sdk_GXCallDisplayList. "game" time was our host GX code, not translated
@@ -224,10 +225,12 @@ mix stats every 1000 AX frames = 5 s).
   3% per call site.
 - `C3D_TexInit failed`: fixed. I4/IA4 -> LA4, I8/IA8 -> LA8, RGB565 -> RGB565 (exact,
   converted straight from the GX tiles), LRU eviction and retry on failure, and a
-  texture whose contents change reuses its allocation. The failing texture was a
-  600x440 I4 at 0x81327020 in the campaign whose contents change every frame: it is now
-  drawn and re-uploaded every frame (most of the 58 ms tex). The user should check it
-  against Dolphin. Next: upload only when needed, or a faster path for it.
+  texture whose contents change reuses its allocation. The failing texture was
+  0x81327020, 600x440 I4: the destination of a GXCopyTex every frame (GXSetTexCopySrc
+  0,0,600,440; GXSetTexCopyDst fmt 0x20, believed to be the red channel at 4 bits; clear 1). EFB -> texture copies are not
+  emulated, so RAM there is stale (the dump decodes to noise); GXCopyTex destinations
+  are now not drawn (`# gx: EFB copy texture not drawn`). Dolphin draws a copy of the
+  frame there (an effect layer); emulating it = render to a PICA texture at GXCopyTex.
 - Vertex: XF matrices uploaded only after a GXLoad*MtxImm (setup 40 -> 20 ms per
   frame); decode keeps only the attributes the PICA vertex reads. Decode is ~61 ms for
   28k vertices; inlining the readers did not help in Citra. gx state (setup_tev /

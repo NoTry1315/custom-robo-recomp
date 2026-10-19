@@ -308,8 +308,14 @@ static void tex_upload(TexEntry *e, const TexMap *m, u32 W, u32 H, GPU_TEXCOLOR 
     st_upload++; st_upbytes += e->tex.size;
 }
 
+/* GXCopyTex destinations: EFB -> texture copies are not emulated, so RAM there
+ * holds stale data; such textures are not drawn (were 600x440 per-frame uploads
+ * of garbage in the campaign) */
+static u32 copy_dst[8];
+
 static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     if (!m->img || !tile_w[m->fmt & 15] || !m->w || !m->h) return NULL;
+    for (int i = 0; i < 8; i++) if (copy_dst[i] && copy_dst[i] == GUEST(m->img)) { ONCE("EFB copy texture not drawn\n"); return NULL; }
     const Tlut *tl = m->ci ? &gx.tlut[m->tlut < 20 ? m->tlut : 0] : NULL;
     /* hashed once per frame: the title draws one big texture as many strips */
     for (int i = 0; i < TEX_CACHE; i++) {
@@ -1200,6 +1206,14 @@ void sdk_GXSetAlphaUpdate(void) { LOG(); gx.alpha_update = R[3]; }
 /* ---------------------------------------------------------------- copy */
 void sdk_GXSetDispCopySrc(void) { LOG(); if (R[5] && R[6]) { gx.efb_w = R[5]; gx.efb_h = R[6]; } }
 void sdk_GXSetCopyClear(void) { LOG(); set_color(gx.clear_color, R[3]); gx.clear_z = R[4] & 0xffffff; }
+void sdk_GXCopyTex(void) {
+    LOG();
+    u32 a = GUEST(R[3]);
+    for (int i = 0; i < 8; i++) if (copy_dst[i] == a) return;
+    for (int i = 0; i < 8; i++) if (!copy_dst[i]) { copy_dst[i] = a; return; }
+    ONCE("more than 8 EFB copy destinations\n");
+}
+
 void sdk_GXCopyDisp(void) {
     LOG();
     frame_end();

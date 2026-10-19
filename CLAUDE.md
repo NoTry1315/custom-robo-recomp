@@ -83,9 +83,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 - Phase 7 perf (2026-10-18): GX transform/lighting/texgen in the PICA vertex shader
   (`runtime/vshader.v.pica`, indexed draws, per-draw uniforms); one cache flush per
   frame; compact texture formats + LRU eviction (no more C3D_TexInit failures);
-  `# prof` cpu.lr sampler in log.c. Campaign 2.0 -> 3.7 fps in Citra (see
-  recomp_unknowns.md "Performance pass"). Next: gx state per draw (49 ms), the
-  per-frame 600x440 texture upload, vertex decode. Pad line "<n> 0 0" = run length.
+  `# prof` cpu.lr sampler in log.c. GXCopyTex destinations not drawn (EFB
+  copies not emulated). Campaign 2.0 -> 4.6 fps in Citra (see
+  recomp_unknowns.md "Performance pass"). Next: gx state per draw (49 ms), vertex
+  decode, EFB -> texture copy. Pad line "<n> 0 0" = run length.
 
 ## Build / test
 

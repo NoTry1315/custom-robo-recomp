@@ -515,7 +515,6 @@ void sdk_GXSetCopyClamp(void) { recomp_sdk_call("GXSetCopyClamp"); }
 void sdk_GXSetDispCopyYScale(void) { recomp_sdk_call("GXSetDispCopyYScale"); }
 void sdk_GXSetCopyFilter(void) { recomp_sdk_call("GXSetCopyFilter"); }
 void sdk_GXSetDispCopyGamma(void) { recomp_sdk_call("GXSetDispCopyGamma"); }
-void sdk_GXCopyTex(void) { recomp_sdk_call("GXCopyTex"); }
 void sdk_GXClearBoundingBox(void) { recomp_sdk_call("GXClearBoundingBox"); }
 void sdk_GX_unk_80155ea4(void) { recomp_sdk_call("GX_unk_80155ea4"); }
 void sdk_GX_unk_80156000(void) { recomp_sdk_call("GX_unk_80156000"); }
