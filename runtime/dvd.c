@@ -177,6 +177,9 @@ static s32 host_read(u32 fi, u32 addr, u32 len, u32 off) {
     if (r != frame) { frame = r; nreads = 0; sum = 0; }
     u64 dt = recomp_ticks() - t0;
     sum += dt; nreads++;
+    if ((nreads & (nreads - 1)) == 0 && nreads >= 8)
+        recomp_log("# DVD many r%lu: %lu reads (%s off %lx len %lx)\n", (unsigned long)r, (unsigned long)nreads,
+                   paths[e] + sizeof DISC_DIR + 5, (unsigned long)off, (unsigned long)len);
     if (dt > 268111856 / 20 || (sum > 268111856 / 5 && nreads % 16 == 0))
         recomp_log("# DVD slow r%lu: %s off %lx len %lx %.0f ms (frame: %lu reads, %.0f ms)\n", (unsigned long)r,
                    paths[e] + sizeof DISC_DIR + 5, (unsigned long)off, (unsigned long)len, dt / 268111.856,
