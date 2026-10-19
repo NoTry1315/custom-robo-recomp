@@ -165,11 +165,27 @@ static s32 host_read(u32 fi, u32 addr, u32 len, u32 off) {
     static u8 seen[4096];   /* first read of each file is logged by name and frame */
     if (e < 4096 && !seen[e]) { seen[e] = 1; recomp_log("# DVD read %s (frame %lu)\n", paths[e] + sizeof DISC_DIR + 5, (unsigned long)recomp_retrace_count()); }
     u64 t0 = recomp_ticks();
-    FILE *f = fopen(paths[e], "rb");
-    if (!f) { recomp_log("# DVD: cannot open %s\n", paths[e]); return -1; }
+    /* hw run 15: fopen per read cost ~54 ms even for 0x80 bytes; keep the last few files open (LRU) */
+    enum { NHANDLES = 8 };
+    static struct { u32 e; FILE *f; u32 used; } h[NHANDLES];
+    static u32 use_clock;
+    int slot = -1, victim = 0;
+    for (int i = 0; i < NHANDLES; i++) {
+        if (h[i].f && h[i].e == e) { slot = i; break; }
+        if (!h[i].f || h[i].used < h[victim].used) victim = i;
+    }
+    if (slot < 0) {
+        slot = victim;
+        if (h[slot].f) fclose(h[slot].f);
+        h[slot].f = fopen(paths[e], "rb");
+        h[slot].e = e;
+        if (!h[slot].f) { recomp_log("# DVD: cannot open %s\n", paths[e]); return -1; }
+        setvbuf(h[slot].f, NULL, _IONBF, 0);   /* reads go straight to the guest buffer */
+    }
+    h[slot].used = ++use_clock;
+    FILE *f = h[slot].f;
     fseek(f, off, SEEK_SET);
     size_t got = fread(ram + (addr & RAM_MASK), 1, len, f);
-    fclose(f);
     /* hw run 7: the frame that first reads sound/cubog39.hps took 4 s; time every read */
     static u32 frame, nreads;
     static u64 sum;
