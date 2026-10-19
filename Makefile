@@ -59,6 +59,7 @@ export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 .PHONY: all clean
 all: $(BUILD)
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+	@python3 tools/check_3dsx.py $(TARGET).3dsx
 $(BUILD):
 	@mkdir -p $@
 clean:
@@ -67,6 +68,9 @@ else
 $(OUTPUT).3dsx	:	$(OUTPUT).elf $(_3DSXDEPS)
 $(OUTPUT).elf	:	$(OFILES)
 $(OFILES_SRC)	:	$(HFILES)
+# gen/: IVOPTS folds `ram + (p & RAM_MASK)` into `ram - 0x80000000 + k` literals, which the
+# 3dsx format cannot relocate (tools/check_3dsx.py, run after every build)
+recomp_%.o	:	CFLAGS += -fno-ivopts
 # vertex shaders: picasso, then embedded with bin2s (symbols <name>_shbin, _shbin_size)
 %.shbin.o %_shbin.h : %.v.pica
 	@echo $(notdir $<)
