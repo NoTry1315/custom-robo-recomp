@@ -94,6 +94,8 @@ try {
     Start-Sleep -Milliseconds 500
     Copy-Item $backup $config -Force
     Remove-Item $backup -Force
+    # leftover script/replay would cap and drive the user's own Citra play (runtime/vi.c, pad.c)
+    Remove-Item $padFile, $replayFile -Force -ErrorAction SilentlyContinue
 }
 if (Test-Path $sdLog) { Copy-Item $sdLog (Join-Path $repo 'build\cr_autotest.log') -Force }
 "done in {0:N0} s" -f ((Get-Date) - $start).TotalSeconds
