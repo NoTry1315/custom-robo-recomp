@@ -194,6 +194,8 @@ static void frame_begin(void) {
 }
 
 static u32 st_draws, st_tris, st_tex, st_evict, st_upload, st_upbytes, st_split;
+static u32 st_dl_calls, st_dl_prims, st_dl_hits, st_dl_misses, st_dl_slow;
+static void fb_dump(void);
 
 static int in_draw;
 static void frame_end(void) {
@@ -213,7 +215,12 @@ static void frame_end(void) {
         recomp_log("# gx vcache frame %lu: hits %lu misses %lu (draws), arena %lu KB, linear free %lu KB\n", (unsigned long)frames,
                    (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vc_top * sizeof(PVtx) >> 10), (unsigned long)(linearSpaceFree() >> 10));
     }
+    if (frames % 300 == 0)
+        recomp_log("# gx dl frame %lu: calls %lu prims %lu (%lu per call) cache hits %lu misses %lu slow %lu\n", (unsigned long)frames,
+                   (unsigned long)st_dl_calls, (unsigned long)st_dl_prims, st_dl_calls ? (unsigned long)(st_dl_prims / st_dl_calls) : 0ul,
+                   (unsigned long)st_dl_hits, (unsigned long)st_dl_misses, (unsigned long)st_dl_slow);
     vc_hits = vc_misses = 0;
+    st_dl_calls = st_dl_prims = st_dl_hits = st_dl_misses = st_dl_slow = 0;
     st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = st_merged = 0;
     /* a frame with no draws still shows the clear color (frame_begin above) */
     pend_flush();
@@ -225,6 +232,7 @@ static void frame_end(void) {
     if (vc_dhi > vc_dlo) GSPGPU_FlushDataCache(vc_arena + vc_dlo, (vc_dhi - vc_dlo) * sizeof(PVtx));
     vc_dlo = 0xffffffffu; vc_dhi = 0;
     C3D_FrameEnd(GX_CMDLIST_FLUSH);   /* buffers + textures flushed above; skips the whole-linear-heap flush */
+    fb_dump();
     recomp_prof[PROF_GX_END] += recomp_ticks() - t0;
     frame_open = 0;
     frames++;
@@ -962,7 +970,7 @@ static void decode_vtx(const u8 *p, APlan *pl, int np, const PVtx *tm, PVtx *o) 
 typedef struct {
     const u8 *data; u32 n, sig, dhash, ahash, narr, used, gen, off, checked;
     u32 ixoff, ixn, prim;   /* the draw's index list in vc_ix (ixn 0: none yet) */
-    const u8 *arr[VC_ARR]; u32 alen[VC_ARR];
+    const u8 *arr[VC_ARR]; u32 alen[VC_ARR], ah[VC_ARR];
 } VCache;
 static VCache vcache[VC_N];
 static VCache *vc_last;   /* entry of the last vc_draw, NULL if not kept */
@@ -1002,9 +1010,9 @@ static u32 arr_hash(const u8 *p, u32 len) {
     return memo[k].h;
 }
 
-static u32 vc_arrays_hash(const VCache *e) {
+static u32 vc_arrays_hash(VCache *e) {
     u32 h = 0;
-    for (u32 i = 0; i < e->narr; i++) h = (h ^ arr_hash(e->arr[i], e->alen[i])) * 0x9e3779b1u;
+    for (u32 i = 0; i < e->narr; i++) { u32 a = arr_hash(e->arr[i], e->alen[i]); e->ah[i] = a; h = (h ^ a) * 0x9e3779b1u; }
     return h;
 }
 
@@ -1045,6 +1053,18 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
         return e->off;
     }
     vc_misses++;
+    if (frames % 300 == 0) {   /* stats frames: why */
+        static u32 logged, lframe = 0xffffffffu;
+        if (lframe != frames) { lframe = frames; logged = 0; }
+        if (logged++ < 32) {
+            char a[96] = "";
+            if (same && e->dhash == dh)
+                for (u32 i = 0, p = 0; i < e->narr && p < sizeof a - 20; i++)
+                    if (arr_hash(e->arr[i], e->alen[i]) != e->ah[i]) p += snprintf(a + p, sizeof a - p, " %08lx+%lx", (unsigned long)(e->arr[i] - ram + 0x80000000u), (unsigned long)e->alen[i]);
+            recomp_log("# gx vc miss frame %lu: data %08lx n %d %s%s\n", (unsigned long)frames, (unsigned long)(data - ram + 0x80000000u), n,
+                       !same ? "new" : e->dhash != dh ? "vertex bytes" : "arrays", a);
+        }
+    }
     e->gen = 0;
     if (vc_top + n > VC_VERTS) { vc_full = 1; return VC_NONE; }
     u32 off = vc_top;
@@ -1110,14 +1130,25 @@ static void set_clip(void) {
 static u32 xf_gen = 1;   /* bumped on every XF matrix write */
 static u32 light_gen = 1;   /* bumped on every GXLoadLightObjImm */
 
+/* rows of the posm / nrmm uniforms written since their last upload (load_mtx,
+ * GXLoadNrmMtxImm); only runs of these rows are compared and uploaded */
+static u32 pos_dirty = 0x3fffffff, nrm_dirty = 0x3fffffff;
 static void set_mtx(int lit) {
-    static u32 pos_gen, nrm_gen;
     float m[30][4];
-    if (pos_gen != xf_gen) { memcpy(m, gx.xf, sizeof m); unif_set(u_pos, m, 30); pos_gen = xf_gen; }
-    if (!lit || nrm_gen == xf_gen) return;
-    nrm_gen = xf_gen;
-    for (int r = 0; r < 30; r++) { const float *n = &gx.xf[0x400 + r * 3]; m[r][0] = n[0]; m[r][1] = n[1]; m[r][2] = n[2]; m[r][3] = 0; }
-    unif_set(u_nrm, m, 30);
+    while (pos_dirty) {
+        int r0 = __builtin_ctz(pos_dirty), r1 = r0;
+        while (r1 < 30 && pos_dirty >> r1 & 1) r1++;
+        pos_dirty &= ~((1u << r1) - (1u << r0));
+        unif_set(u_pos + r0, (const float (*)[4])&gx.xf[r0 * 4], r1 - r0);
+    }
+    if (!lit) return;
+    while (nrm_dirty) {
+        int r0 = __builtin_ctz(nrm_dirty), r1 = r0;
+        while (r1 < 30 && nrm_dirty >> r1 & 1) r1++;
+        nrm_dirty &= ~((1u << r1) - (1u << r0));
+        for (int r = r0; r < r1; r++) { const float *n = &gx.xf[0x400 + r * 3]; m[r][0] = n[0]; m[r][1] = n[1]; m[r][2] = n[2]; m[r][3] = 0; }
+        unif_set(u_nrm + r0, &m[r0], r1 - r0);
+    }
 }
 
 /* texgen for PICA unit u: rows R0, R1, R2 with (s, t) = (R0.x / R2.x, R1.x / R2.x) */
@@ -1227,24 +1258,25 @@ static int set_lighting_inner(const Chan *c0, const Chan *c2, int e0, int e2) {
 }
 
 static int in_dl;   /* inside GXCallDisplayList */
-static void draw_inner(int prim, int fmt, const u8 *data, int n);
-static void draw(int prim, int fmt, const u8 *data, int n) { if (!recomp_first_draw) recomp_first_draw = recomp_ticks(); in_draw++; draw_inner(prim, fmt, data, n); in_draw--; }
-static void draw_inner(int prim, int fmt, const u8 *data, int n) {
-    if (prim >= 0xa8) { ONCE("lines/points (0x%x) not drawn\n", prim); return; }
-    frame_begin();
-    /* a full GPU command buffer is a libctru svcBreak(PANIC). The frame's buffer
-     * is one block (a C3D_FrameSplit only hands back the rest of it), so when
-     * under 1024 words (~9 draws) remain, the frame's remaining draws are skipped */
+
+/* a full GPU command buffer is a libctru svcBreak(PANIC). The frame's buffer
+ * is one block (a C3D_FrameSplit only hands back the rest of it), so when
+ * under 1024 words (~9 draws) remain, the frame's remaining draws are skipped */
+static int cmdbuf_room(int prim, int n) {
     u32 *cb_addr, cb_size, cb_off;
     GPUCMD_GetBuffer(&cb_addr, &cb_size, &cb_off);   /* words; C3D_GetCmdBufUsage is only updated per frame */
     recomp_gx_dbg[0] = cb_off; recomp_gx_dbg[1] = prim; recomp_gx_dbg[2] = n;
     if (cb_off + 1024 > cb_size) {
         if (!st_split++) recomp_log("# gx: GPU command buffer full at frame %lu: rest of the frame's draws skipped\n", (unsigned long)frames);
-        return;
+        return 0;
     }
-    /* textures: GX texmaps used by the TEV stages -> PICA units 0..2 */
-    int nunits = 0, tcoord[3] = {-1, -1, -1};
-    float tscale[3][2] = {{1, 1}, {1, 1}, {1, 1}};
+    return 1;
+}
+
+/* textures: GX texmaps used by the TEV stages -> PICA units 0..2; then TEV and
+ * pixel state. Returns the number of units. */
+static int setup_draw_state(int tcoord[3], float tscale[3][2]) {
+    int nunits = 0;
     for (int i = 0; i < 8; i++) unit_of_map[i] = -1;
     for (u32 si = 0; si < gx.n_stages; si++) {
         const TevStage *t = &gx.tev[si];
@@ -1262,15 +1294,56 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
         }
         tcoord[nunits] = t->coord < 8 ? t->coord : -1;
         unit_of_map[t->map] = nunits++;
-       
     }
     u64 ts = recomp_ticks();
-   
     setup_tev();
-   
     setup_pixel();
     recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
-    int ntri = prim == 0x80 ? n / 4 * 2 : prim == 0x90 ? n / 3 : n >= 3 ? n - 2 : 0;
+    return nunits;
+}
+
+static int tri_count(int prim, int n) { return prim == 0x80 ? n / 4 * 2 : prim == 0x90 ? n / 3 : n >= 3 ? n - 2 : 0; }
+
+/* triangle list of one primitive whose vertices start at index v0; returns the index count */
+static int gen_ix(int prim, int ntri, u32 v0, u16 *ix) {
+    int k = 0;
+    for (int t = 0; t < ntri; t++) {
+        int a, b, c;
+        if (prim == 0x80) { int q = (t / 2) * 4; if (t & 1) { a = q; b = q + 2; c = q + 3; } else { a = q; b = q + 1; c = q + 2; } }
+        else if (prim == 0x90) { a = 3 * t; b = a + 1; c = a + 2; }
+        else if (prim == 0x98) { a = t; b = t + 1; c = t + 2; if (t & 1) { int x = a; a = b; b = x; } }
+        else { a = 0; b = t + 1; c = t + 2; }
+        ix[k++] = v0 + a; ix[k++] = v0 + b; ix[k++] = v0 + c;
+    }
+    return k;
+}
+
+/* indices written at ibuf + ib_used: appended to the pending draw or issued */
+static int emit_ix(u16 *ix, int k) {
+    u64 ts = recomp_ticks();
+    if (batch_off == 2) { FILE *f = fopen("sdmc:/cr_batch_off.txt", "rb"); batch_off = f != NULL; if (f) fclose(f);
+        recomp_log("# gx: draw batching %s\n", batch_off ? "off (cr_batch_off.txt)" : "on"); }
+    int merge = last_end == ix && pend_n + k <= 0xfff0;
+    if (merge && pend_n) pend_n += k;
+    else { pend_issue(); pend_ix = ix; pend_n = k; }
+    if (batch_off) pend_issue();
+    last_end = ix + k;
+    ib_used += k;
+    recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
+    return merge;
+}
+
+static void draw_inner(int prim, int fmt, const u8 *data, int n);
+static void draw(int prim, int fmt, const u8 *data, int n) { if (!recomp_first_draw) recomp_first_draw = recomp_ticks(); in_draw++; draw_inner(prim, fmt, data, n); in_draw--; }
+static void draw_inner(int prim, int fmt, const u8 *data, int n) {
+    if (prim >= 0xa8) { ONCE("lines/points (0x%x) not drawn\n", prim); return; }
+    if (in_dl) st_dl_prims++;
+    frame_begin();
+    if (!cmdbuf_room(prim, n)) return;
+    int tcoord[3] = {-1, -1, -1};
+    float tscale[3][2] = {{1, 1}, {1, 1}, {1, 1}};
+    int nunits = setup_draw_state(tcoord, tscale);
+    int ntri = tri_count(prim, n);
     if (!ntri) return;
     static u32 full_logged;
     if (ib_used + ntri * 3 > IB_INDICES) {
@@ -1284,11 +1357,8 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     s8 tsrc[3];
     u64 tu = recomp_ticks();
     set_clip();
-   
     int lit = set_lighting();
-   
     set_mtx(lit);
-   
     set_texgen(tscale, tcoord, tsrc, data, pl, np);
     u64 td = recomp_ticks();
     recomp_prof[PROF_VX_UNIF] += td - tu;
@@ -1312,16 +1382,10 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     u16 *ix = ibuf[vb_half] + ib_used;
     int k = 0;
     VCache *ve = co != VC_NONE ? vc_last : NULL;
-    if (ve && ve->ixn && ve->prim == (u32)prim) { memcpy(ix, vc_ix + ve->ixoff, ve->ixn * 2); k = ve->ixn; ntri = 0; }
-    for (int t = 0; t < ntri; t++) {
-        int a, b, c;
-        if (prim == 0x80) { int q = (t / 2) * 4; if (t & 1) { a = q; b = q + 2; c = q + 3; } else { a = q; b = q + 1; c = q + 2; } }
-        else if (prim == 0x90) { a = 3 * t; b = a + 1; c = a + 2; }
-        else if (prim == 0x98) { a = t; b = t + 1; c = t + 2; if (t & 1) { int x = a; a = b; b = x; } }
-        else { a = 0; b = t + 1; c = t + 2; }
-        ix[k++] = v0 + a; ix[k++] = v0 + b; ix[k++] = v0 + c;
-    }
-    if (ve && ntri && vc_ixtop + k <= VC_IX) {   /* keep the list for the entry's next hits */
+    int kept = ve && ve->ixn && ve->prim == (u32)prim;
+    if (kept) { memcpy(ix, vc_ix + ve->ixoff, ve->ixn * 2); k = ve->ixn; }
+    else k = gen_ix(prim, ntri, v0, ix);
+    if (ve && !kept && vc_ixtop + k <= VC_IX) {   /* keep the list for the entry's next hits */
         memcpy(vc_ix + vc_ixtop, ix, k * 2); ve->ixoff = vc_ixtop; ve->ixn = k; ve->prim = prim; vc_ixtop += k;
     }
     ntri = k / 3;
@@ -1329,17 +1393,203 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     recomp_prof[PROF_GX_VTX] += t0;
     if (in_dl) recomp_prof[PROF_VX_DL] += t0;
     st_draws++; st_tris += ntri; if (nunits) st_tex++;
-    ts = recomp_ticks();
-    if (batch_off == 2) { FILE *f = fopen("sdmc:/cr_batch_off.txt", "rb"); batch_off = f != NULL; if (f) fclose(f);
-        recomp_log("# gx: draw batching %s\n", batch_off ? "off (cr_batch_off.txt)" : "on"); }
-    int merge = last_end == ix && pend_n + k <= 0xfff0;
-    if (merge) st_merged++;
-    if (merge && pend_n) pend_n += k;
-    else { pend_issue(); pend_ix = ix; pend_n = k; }
-    if (batch_off) pend_issue();
-    last_end = ix + k;
-    recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
-    vb_used += vadd; ib_used += k;
+    if (emit_ix(ix, k)) st_merged++;
+    vb_used += vadd;
+}
+
+/* ---------------------------------------------------------------- display-list cache
+ * parse_cmds does not emulate CP/XF/BP writes, so all primitives of a display
+ * list without nested calls share the GX state of the GXCallDisplayList. A
+ * whole list is set up once (textures, TEV, pixel, uniforms, vertex plan),
+ * keyed by (list address, size, plan signature); its primitives are decoded
+ * into the vertex cache arena once and their merged triangle list kept in
+ * vc_ix. A hit copies that list as one draw. Valid while the arena generation,
+ * the list bytes and the indexed arrays (checked once per frame, as in the
+ * vertex cache) match. Lists with nested calls, other commands, mixed vertex
+ * formats, lines/points or per-vertex texture matrices take the per-primitive
+ * path (entry marked slow). sdmc:/cr_dlcache_off.txt disables it. */
+#define DL_N 4096   /* 2-way */
+#define DL_ARR 12
+typedef struct {
+    const u8 *list; u32 n, sig, gen, slow, lhash, ahash, checked, used, narr, off, ixoff, ixn, prims, tris;
+    const u8 *arr[DL_ARR]; u32 alen[DL_ARR], ah[DL_ARR];
+} DlCache;
+static DlCache dlcache[DL_N];
+static int dl_off = 2;
+static u32 dl_logged, dl_logframe = 0xffffffffu;
+
+static u32 dl_arrays_hash(DlCache *e, int keep) {
+    u32 h = 0;
+    for (u32 i = 0; i < e->narr; i++) { u32 a = arr_hash(e->arr[i], e->alen[i]); if (keep) e->ah[i] = a; h = (h ^ a) * 0x9e3779b1u; }
+    return h;
+}
+
+static void dl_log_miss(const u8 *list, u32 n, const char *why, DlCache *e) {
+    if (frames % 300) return;   /* stats frames only */
+    if (dl_logframe != frames) { dl_logframe = frames; dl_logged = 0; }
+    if (dl_logged++ >= 32) return;
+    char a[96] = "";
+    if (e && !strcmp(why, "arrays"))
+        for (u32 i = 0, p = 0; i < e->narr && p < sizeof a - 20; i++)
+            if (arr_hash(e->arr[i], e->alen[i]) != e->ah[i]) p += snprintf(a + p, sizeof a - p, " %08lx+%lx", (unsigned long)(e->arr[i] - ram + 0x80000000u), (unsigned long)e->alen[i]);
+    recomp_log("# gx dl miss frame %lu: list %08lx size %lu %s%s\n", (unsigned long)frames, (unsigned long)(list - ram + 0x80000000u), (unsigned long)n, why, a);
+}
+
+/* 1 = drawn (or skipped) here; 0 = the caller parses the list per primitive */
+static int dl_draw(const u8 *list, u32 len) {
+    if (dl_off == 2) { FILE *f = fopen("sdmc:/cr_dlcache_off.txt", "rb"); dl_off = f != NULL; if (f) fclose(f);
+        recomp_log("# gx: display-list cache %s\n", dl_off ? "off (cr_dlcache_off.txt)" : "on"); }
+    if (dl_off || !vc_arena || len > 0x40000) return 0;
+    u32 p0 = 0;
+    while (p0 < len && !list[p0]) p0++;
+    if (len - p0 < 3) return 0;
+    u8 op0 = list[p0];
+    if (op0 < 0x80 || op0 >= 0xa8) return 0;
+    int fmt = op0 & 7;
+    frame_begin();
+    if (!cmdbuf_room(op0 & 0xf8, 0)) return 1;
+    int tcoord[3] = {-1, -1, -1};
+    float tscale[3][2] = {{1, 1}, {1, 1}, {1, 1}};
+    int nunits = setup_draw_state(tcoord, tscale);
+    for (int u = 0; u < 3; u++) if (tcoord[u] >= 0 && tcoord[u] < 8 && gx.desc[1 + tcoord[u]]) return 0;   /* per-vertex texture matrix */
+    u64 tp = recomp_ticks();
+    APlan pl[21];
+    int vs, np = make_plan(fmt, pl, &vs);
+    s8 tsrc[3];
+    u64 tu = recomp_ticks();
+    set_clip();
+    int lit = set_lighting();
+    set_mtx(lit);
+    set_texgen(tscale, tcoord, tsrc, list + p0 + 3, pl, np);
+    u64 td = recomp_ticks();
+    recomp_prof[PROF_VX_UNIF] += td - tu;
+    np = trim_plan(pl, np, tsrc);
+    PVtx tm;
+    plan_finish(pl, np, &tm);
+    u32 sig = plan_sig(pl, np, vs, &tm) ^ ((u32)fmt << 28 | (u32)mat_vtx[0] | (u32)mat_vtx[3] << 1) * 0x85ebca6bu;
+    u32 slot = ((u32)(uintptr_t)list * 0x9e3779b1u ^ sig ^ len * 0x85ebca6bu) >> 19 & (DL_N - 1);
+    DlCache *e = &dlcache[slot & ~1u], *f = e + 1;
+    if (e->gen != vc_gen) e->gen = 0;
+    if (f->gen != vc_gen) f->gen = 0;
+    if (!(e->gen && e->list == list && e->n == len && e->sig == sig)) {
+        if (f->gen && f->list == list && f->n == len && f->sig == sig) e = f;
+        else if (e->gen && (!f->gen || f->used < e->used)) e = f;
+    }
+    int same = e->gen && e->list == list && e->n == len && e->sig == sig;
+    const char *why = same ? NULL : "new";
+    if (same && e->checked != frames + 1) {
+        if (hash_mem(list, len, 0x811c9dc5u) != e->lhash) why = "list bytes";
+        else if (!e->slow && dl_arrays_hash(e, 0) != e->ahash) why = "arrays";
+        else e->checked = frames + 1;
+    }
+    u32 w;
+    if (!why) {   /* hit */
+        e->used = frames;
+        if (e->slow) { recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; st_dl_slow++; return 0; }
+        st_dl_hits++;
+    } else {
+        st_dl_misses++;
+        dl_log_miss(list, len, why, same ? e : NULL);
+        e->gen = 0;
+        /* walk: one vertex format, triangle primitives and NOPs only */
+        u32 pos = p0, nv = 0, nix = 0, slow = 0;
+        while (pos < len) {
+            u8 op = list[pos];
+            if (!op) { pos++; continue; }
+            if (op < 0x80 || op >= 0xa8 || (op & 7) != fmt || len - pos < 3) { slow = 1; break; }
+            u32 n = list[pos + 1] << 8 | list[pos + 2];
+            if (len - pos < 3 + n * vs) { slow = 1; break; }
+            nv += n; nix += tri_count(op & 0xf8, n) * 3;
+            pos += 3 + n * vs;
+        }
+        if (nv > 0x8000) slow = 1;
+        e->list = list; e->n = len; e->sig = sig; e->used = frames; e->checked = frames + 1;
+        e->lhash = hash_mem(list, len, 0x811c9dc5u);
+        if (slow) { e->slow = 1; e->gen = vc_gen; recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; st_dl_slow++; return 0; }
+        if (vc_top + nv > VC_VERTS || vc_ixtop + nix > VC_IX) { vc_full = 1; recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; return 0; }
+        u32 off = vc_top;
+        vc_top += nv;
+        w = off & ~0x7fffu;
+        u64 tdec = recomp_ticks();
+        PVtx *o = vc_arena + off;
+        u16 *ix = vc_ix + vc_ixtop;
+        u32 v = 0, k = 0, prims = 0;
+        for (pos = p0; pos < len;) {
+            u8 op = list[pos];
+            if (!op) { pos++; continue; }
+            u32 n = list[pos + 1] << 8 | list[pos + 2];
+            const u8 *d = list + pos + 3;
+            for (u32 i = 0; i < n; i++) decode_vtx(d + i * vs, pl, np, &tm, &o[v + i]);
+            int nt = tri_count(op & 0xf8, n);
+            if (nt) { k += gen_ix(op & 0xf8, nt, off - w + v, ix + k); prims++; }
+            v += n;
+            pos += 3 + n * vs;
+        }
+        recomp_prof[PROF_VX_DEC] += recomp_ticks() - tdec;
+        if (off < vc_dlo) vc_dlo = off;
+        if (vc_top > vc_dhi) vc_dhi = vc_top;
+        u32 narr = 0;
+        for (int i = 0; i < np; i++) if (pl[i].d >= 2 && pl[i].kind != K_PNMTX) {
+            u32 al = pl[i].imax * pl[i].stride + pl[i].size, j;
+            for (j = 0; j < narr && e->arr[j] != pl[i].base; j++) ;
+            if (j < narr) { if (al > e->alen[j]) e->alen[j] = al; continue; }
+            if (narr == DL_ARR) { narr = DL_ARR + 1; break; }
+            e->arr[narr] = pl[i].base; e->alen[narr++] = al;
+        }
+        e->ixoff = vc_ixtop; e->ixn = k; e->prims = prims; e->tris = k / 3; e->off = off; e->slow = 0;
+        vc_ixtop += k;
+        if (narr <= DL_ARR) { e->narr = narr; e->ahash = dl_arrays_hash(e, 1); e->gen = vc_gen; }   /* else drawn once, not kept */
+    }
+    w = e->off & ~0x7fffu;
+    if (!e->ixn) { recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; return 1; }
+    static u32 full_logged;
+    if (ib_used + e->ixn > IB_INDICES) {
+        if (full_logged < 8) { full_logged++; recomp_log("# gx: index buffer full at frame %lu (display list %lu indices, used %lu)\n",
+            (unsigned long)frames, (unsigned long)e->ixn, (unsigned long)ib_used); }
+        return 1;
+    }
+    use_buf(vc_arena + w);
+    u16 *ix = ibuf[vb_half] + ib_used;
+    memcpy(ix, vc_ix + e->ixoff, e->ixn * 2);
+    u32 prims = e->prims, tris = e->tris;
+    u64 dt = recomp_ticks() - tp;
+    recomp_prof[PROF_GX_VTX] += dt; recomp_prof[PROF_VX_DL] += dt;
+    st_dl_prims += prims; st_draws += prims; st_tris += tris; if (nunits) st_tex += prims;
+    st_merged += prims - 1 + emit_ix(ix, e->ixn);
+    return 1;
+}
+
+/* ---------------------------------------------------------------- framebuffer dump
+ * sdmc:/cr_fbdump.txt = GX frame numbers (copies), one per line: after that
+ * frame the render target is written to sdmc:/cr_fb_<frame>.bmp (240x400
+ * as stored, i.e. rotated), for deterministic before/after image compares. */
+static void fb_dump(void) {
+    static int loaded; static u32 want[64], nwant; static u8 *buf;
+    if (!loaded) {
+        loaded = 1;
+        FILE *f = fopen("sdmc:/cr_fbdump.txt", "rb");
+        if (!f) return;
+        unsigned long v;
+        while (nwant < 64 && fscanf(f, "%lu", &v) == 1) want[nwant++] = v;
+        fclose(f);
+        recomp_log("# gx: framebuffer dump at %lu frames\n", (unsigned long)nwant);
+    }
+    u32 i;
+    for (i = 0; i < nwant && want[i] != frames; i++) ;
+    if (i == nwant) return;
+    if (!buf && !(buf = linearAlloc(240 * 400 * 3))) return;
+    C3D_SyncDisplayTransfer((u32 *)target->frameBuf.colorBuf, GX_BUFFER_DIM(240, 400), (u32 *)buf, GX_BUFFER_DIM(240, 400),
+        GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) |
+        GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
+    GSPGPU_InvalidateDataCache(buf, 240 * 400 * 3);
+    char name[64];
+    snprintf(name, sizeof name, "sdmc:/cr_fb_%lu.bmp", (unsigned long)frames);
+    FILE *f = fopen(name, "wb");
+    if (!f) return;
+    u8 h[54] = {'B', 'M'};
+    u32 sz = 54 + 240 * 400 * 3, w = 240, hh = 400;
+    memcpy(h + 2, &sz, 4); h[10] = 54; h[14] = 40; memcpy(h + 18, &w, 4); memcpy(h + 22, &hh, 4); h[26] = 1; h[28] = 24;
+    fwrite(h, 1, 54, f); fwrite(buf, 1, 240 * 400 * 3, f); fclose(f);
 }
 
 /* ---------------------------------------------------------------- FIFO */
@@ -1390,8 +1640,17 @@ static u32 parse_cmds(const u8 *buf, u32 len) {
 static void call_display_list(u32 addr, u32 n) {
     static int depth;
     if (depth > 2 || n > 0x1000000) { ONCE("display list nesting/size\n"); return; }
+    const u8 *list = ram + (GUEST(addr) & RAM_MASK);
+    if (!depth) {
+        st_dl_calls++;
+        if (!recomp_first_draw) recomp_first_draw = recomp_ticks();
+        in_draw++;
+        int done = dl_draw(list, n);
+        in_draw--;
+        if (done) return;
+    }
     depth++; in_dl++;
-    u32 used = parse_cmds(ram + (GUEST(addr) & RAM_MASK), n);
+    u32 used = parse_cmds(list, n);
     if (used < n) ONCE("display list with a truncated command\n");
     depth--; in_dl--;
 }
@@ -1452,6 +1711,7 @@ void sdk_GXInvalidateVtxCache(void) { LOG(); }
 /* ---------------------------------------------------------------- transform */
 static void load_mtx(u32 src, u32 addr, int rows, int cols) {
     xf_gen++;
+    for (u32 r = addr / 4; r <= (addr + rows * cols - 1) / 4 && r < 30; r++) pos_dirty |= 1u << r;
     for (int r = 0; r < rows; r++) for (int c = 0; c < cols; c++)
         if (addr + r * cols + c < 0x600) gx.xf[addr + r * cols + c] = u2f(rd32(src + (r * cols + c) * 4));
 }
@@ -1459,6 +1719,8 @@ void sdk_GXLoadPosMtxImm(void) { LOG(); load_mtx(R[3], R[4] * 4, 3, 4); }
 void sdk_GXLoadNrmMtxImm(void) {   /* source is a 3x4 matrix, the 3x3 part is used */
     LOG();
     xf_gen++;
+    for (u32 r = R[4]; r < R[4] + 3 && r < 30; r++) nrm_dirty |= 1u << r;
+    if (R[4] * 3 + 9 > 0x200) { ONCE("normal matrix %lu out of range\n", (unsigned long)R[4]); return; }
     for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) gx.xf[0x400 + R[4] * 3 + r * 3 + c] = u2f(rd32(R[3] + (r * 4 + c) * 4));
 }
 void sdk_GXLoadTexMtxImm(void) {

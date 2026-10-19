@@ -156,6 +156,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   in place, vcache entries checked once per frame. Citra battle 5.4 -> 6.5 fps (gx tex 27 -> 14,
   gx state 31 -> 14 ms; gx vertex 61 unchanged, its decode is real misses), campaign 8.9 -> 10.0;
   replays identical. Not yet on hardware. Details: unknowns "GX CPU cost".
+- DL cache (2026-10-19): whole-display-list cache (`dl_draw`: one setup + one cached merged draw
+  per GXCallDisplayList, sdmc:/cr_dlcache_off.txt disables) and dirty-row matrix uploads. Citra battle
+  6.6 -> 11.4 fps (gx vertex+tex+state 86 -> 36 ms), campaign 11.1 -> 19.8 fps; replays identical,
+  framebuffer dumps (sdmc:/cr_fbdump.txt -> cr_fb_<frame>.bmp) identical cache off vs on. Not yet on
+  hardware. Details: unknowns "Display-list cache".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
