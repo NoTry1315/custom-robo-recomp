@@ -103,7 +103,11 @@ void sdk_PADRead(void) {
     cs.dx = cs.dy = 0;
     if (irrst > 0) { irrstScanInput(); irrstCstickRead(&cs); }
     int port = held & KEY_SELECT ? 1 : 0;   /* SELECT: this input goes to controller 2 */
-    s8 sx = axis(cp.dx), sy = axis(cp.dy), cx = axis(cs.dx), cy = axis(cs.dy);
+    /* circle pad both axes negated: played on hardware, up/down and left/right
+     * were reversed in battle and on the field (user report, 2026-10-19; not yet
+     * checked against Dolphin). Live input only: logged/replayed values are what
+     * the game got, so older replay logs still drive it the same way. */
+    s8 sx = axis(-cp.dx), sy = axis(-cp.dy), cx = axis(cs.dx), cy = axis(cs.dy);
     replay_apply(&b, &port, &sx, &sy, &cx, &cy);
     st += 12 * port;
     wr16(st, b);
