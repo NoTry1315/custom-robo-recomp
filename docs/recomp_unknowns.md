@@ -196,6 +196,28 @@ logged once when first hit.
   names each texture drawn without its image and why.
 - Vertex buffer: 0x18000 vertices per half, u16 indices rebased past 0x10000.
 
+## Vertex cache (2026-10-18, Citra replays)
+
+- Profile before (battle r3600): gx vertex 124 ms = uniforms 24 (set_clip/lighting/
+  mtx/texgen), decode 86, rest 14; 99% of it from GXCallDisplayList draws.
+- Display-list draws go through `vc_draw` (runtime/gx.c): 16384-slot 2-way cache keyed
+  by vertex data address + count + signature (trimmed plan, template vertex: current
+  matrix, register material, texcoord defaults). A hit needs the hash of the draw's
+  vertex bytes and of every indexed array to match. Each array base is hashed once per
+  frame over the largest extent any cached draw read (assumption: the game does not
+  rewrite a vertex array between two display-list draws of one frame that read it).
+- Decoded vertices live in a 0x14000-vertex linear arena (5.4 MB) drawn from directly
+  (attribute buffer switched per 32k-vertex window, cmdbuf +1%). Bump allocation; the
+  arena is emptied at a frame start when 3/4 full or after it filled (C3D_FRAME_SYNCDRAW:
+  the GPU is done with the previous frame). vbuf shrank to 0x6000 vertices per half
+  (immediate draws, cache overflow): linear memory is tight (65 KB free in battle), a
+  bigger arena made C3D_TexInit fail. Arena reset frames are slower (worst ~290 ms).
+- decode_vtx: template vertex copy, fixed float destination per attribute, no switch.
+- Battle ~48 misses/frame (vertex data that changes per frame). Results, gx vertex:
+  battle 124 -> 63 ms, campaign 84 -> 39, title 28 -> 7 (30 fps). Battle, campaign and
+  title logs identical to the pre-change build except cmdbuf %.
+- Next: uniform setup per draw (24 ms battle), the hit path's list hash.
+
 ## Translator performance (2026-10-18, Citra replays)
 
 - Guest registers are C locals inside each translated function (`localize()` in

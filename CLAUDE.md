@@ -117,6 +117,13 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   5.5 fps; replays identical. `make FNPROF=1` = per-function `# prof`. Details and the
   EABI assumption: unknowns "Translator performance". Not yet on hardware.
   Next: vertex decode caching (gx vertex 120 ms in Citra battle).
+- Vertex cache (2026-10-18): display-list draws are decoded once into a linear-memory
+  arena the GPU reads directly (key: data address, count, plan/state signature; valid
+  while a hash of the list bytes and of each vertex array still matches), decode has no
+  per-attribute switches. Citra gx vertex: battle 124 -> 63 ms (3.7 -> 4.5-4.8 fps),
+  campaign 84 -> 39 ms (5.4 -> 7.4 fps), title 28 -> 7 ms (15 -> 30 fps); replays give
+  identical logs. `# time r<n> gx vertex:` splits uniforms/decode; uniforms (24 ms in
+  battle) are next. Not yet on hardware. Details: unknowns "Vertex cache".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

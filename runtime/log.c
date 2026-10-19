@@ -86,6 +86,12 @@ void recomp_prof_frame(u32 retrace) {
     double frame = wall / 60;
     recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, audio %.1f\n",
                (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - aud, vtx, tex, st, end, aud);
+    if (retrace % 300 == 0) {
+        double un = (recomp_prof[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (recomp_prof[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
+        double dl = (recomp_prof[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;
+        recomp_log("# time r%lu gx vertex: uniforms %.1f, decode %.1f, rest %.1f; display lists %.1f, immediate %.1f\n",
+                   (unsigned long)retrace, un, dec, vtx - un - dec, dl, vtx - dl);
+    }
     for (int i = 0; i < PROF_N; i++) sum[i] = recomp_prof[i];
     start = now; worst = 0;
     if (retrace % 300 == 0) sampler_dump(retrace);
