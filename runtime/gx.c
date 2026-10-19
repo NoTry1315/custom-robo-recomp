@@ -176,9 +176,23 @@ static void use_buf(const PVtx *p) {
 }
 static void vc_frame_begin(void);
 
+/* Frame pacing. C3D_FRAME_SYNCDRAW runs C3D_FrameSync, which always waits for the
+ * next vblank: every frame idled up to 16.7 ms at its first draw, counted as game
+ * time (hw run 13 battle: ~14 of 53.6 ms). Now a frame waits for a vblank only when
+ * none has passed since the previous frame began (a 60 Hz cap), then only for the
+ * GPU to finish the previous frame. sdmc:/cr_vsync_on.txt = the old wait. */
+static int vsync_on = 2;
+static u32 last_vbl;
+
 static void frame_begin(void) {
     if (frame_open) return;
-    if (!C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
+    if (vsync_on == 2) { FILE *f = fopen("sdmc:/cr_vsync_on.txt", "rb"); vsync_on = f != NULL; if (f) fclose(f);
+        recomp_log("# gx: frame pacing %s\n", vsync_on ? "vblank wait every frame (cr_vsync_on.txt)" : "60 Hz cap only"); }
+    u64 ts = recomp_ticks();
+    if (!vsync_on && C3D_FrameCounter(0) == last_vbl) C3D_FrameSync();
+    if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
+    last_vbl = C3D_FrameCounter(0);
+    recomp_prof[PROF_GX_SYNC] += recomp_ticks() - ts;
     if (!C3D_FrameDrawOn(target)) recomp_log("# gx: C3D_FrameDrawOn failed at frame %lu\n", (unsigned long)frames);
     frame_open = 1;
     vb_half = frames & 1; vb_used = ib_used = 0;
