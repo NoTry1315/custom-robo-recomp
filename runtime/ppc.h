@@ -229,8 +229,9 @@ u32  recomp_retrace_count(void);         /* frames so far (VI retraces) */
 void recomp_ax_service(void);           /* AX frame callbacks due since the last retrace */
 /* frame timing (runtime/log.c): ticks spent per bucket, logged by VI */
 enum { PROF_GX_VTX, PROF_GX_TEX, PROF_GX_END, PROF_AUDIO, PROF_GX_STATE,
-       PROF_VX_UNIF, PROF_VX_DEC, PROF_VX_DL, PROF_LOG, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others) */
+       PROF_VX_UNIF, PROF_VX_DEC, PROF_VX_DL, PROF_LOG, PROF_PREDRAW, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others) */
 extern u64 recomp_prof[PROF_N];
+extern u64 recomp_first_draw;   /* tick of the frame's first GX draw (0 = none yet); PROF_PREDRAW: frame time before it */
 extern u32 recomp_run_frames;
 u64 recomp_ticks(void);
 void recomp_prof_frame(u32 retrace);

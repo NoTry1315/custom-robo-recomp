@@ -136,6 +136,17 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   play, no time limit (`runtime/vi.c`); autotest.ps1 always writes a script, so its runs keep
   2400. Hw run 7: the frame that first reads sound/cubog39.hps (title jingle) took ~4 s
   (run 6 too); `# DVD slow` lines in dvd.c time the reads, cause not yet confirmed.
+- Perf wins (2026-10-19): C3D_FrameEnd(GX_CMDLIST_FLUSH) (gx.c flushes its own vbuf/
+  ibuf/vc_arena ranges and textures; no more whole-linear-heap flush per frame); log
+  helper threads on core 2 (else core 1 at 30% via APT_SetAppCpuTimeLimit, else 0;
+  logged "# log: helper threads on core"); memcpy/memset/sqrt native (`runtime/libc.c`,
+  recomp.py NATIVE; sqrt keeps the guest errno/NaN cases). `# time r<n> split:` = frame
+  time before the first GX draw vs after. Citra replays identical (only a dead r4 at
+  DBInit differs); Citra fps unchanged (battle 8.0, campaign 7.5, title 29.9) and the
+  split shows nearly all game time runs between draws (battle 3 ms before first draw).
+  Hardware run 8: battle 105-122 ms = 8-9.5 fps (was 165 ms / 6 fps in run 4): game 45-60,
+  gx vertex 27, gx state 21, gx tex 11; title 60 fps; one 3.5 s boot stall on the first
+  snr_map.BIN read (unknowns "Perf wins 2026-10-19").
 - Draw batching (2026-10-19): same-state consecutive GX draws merged into one
   C3D_DrawElements (91% of battle draws, 2200 -> ~190 per frame); Citra battle 4.6 -> 5.4
   fps (gx state 64 -> 31 ms), campaign 7.5 -> 8.5; replays identical. sdmc:/cr_batch_off.txt

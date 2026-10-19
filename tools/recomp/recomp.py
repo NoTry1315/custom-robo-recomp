@@ -24,6 +24,8 @@ FUNCS_PER_FILE = 250
 STUB_MODULES = {'base', 'OS', 'DB', 'DVD', 'VI', 'PAD', 'AI', 'AR', 'ARQ', 'AX', 'DSP', 'CARD', 'GX',
                 'EXI', 'SI', 'THP'}
 SKIP_MODULES = {'MetroTRK'}
+# C library functions outside STUB_MODULES replaced natively in runtime/libc.c
+NATIVE = {0x8000540c: 'memset', 0x800054f4: 'memcpy', 0x80169168: 'sqrt'}
 
 
 # ---------------------------------------------------------------- input
@@ -82,6 +84,8 @@ class Program:
         if not self.dol.in_text(a):
             return None
         m = self.module(a)
+        if a in NATIVE:
+            return 'stub'
         return 'stub' if m in STUB_MODULES else 'skip' if m in SKIP_MODULES else 'tr'
 
     def insn(self, a):

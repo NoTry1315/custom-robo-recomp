@@ -224,7 +224,7 @@ static void frame_end(void) {
     if (ib_used) GSPGPU_FlushDataCache(ibuf[vb_half], ib_used * 2);
     if (vc_dhi > vc_dlo) GSPGPU_FlushDataCache(vc_arena + vc_dlo, (vc_dhi - vc_dlo) * sizeof(PVtx));
     vc_dlo = 0xffffffffu; vc_dhi = 0;
-    C3D_FrameEnd(0);
+    C3D_FrameEnd(GX_CMDLIST_FLUSH);   /* buffers + textures flushed above; skips the whole-linear-heap flush */
     recomp_prof[PROF_GX_END] += recomp_ticks() - t0;
     frame_open = 0;
     frames++;
@@ -1203,7 +1203,7 @@ static int set_lighting_inner(const Chan *c0, const Chan *c2, int e0, int e2) {
 
 static int in_dl;   /* inside GXCallDisplayList */
 static void draw_inner(int prim, int fmt, const u8 *data, int n);
-static void draw(int prim, int fmt, const u8 *data, int n) { in_draw++; draw_inner(prim, fmt, data, n); in_draw--; }
+static void draw(int prim, int fmt, const u8 *data, int n) { if (!recomp_first_draw) recomp_first_draw = recomp_ticks(); in_draw++; draw_inner(prim, fmt, data, n); in_draw--; }
 static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     if (prim >= 0xa8) { ONCE("lines/points (0x%x) not drawn\n", prim); return; }
     frame_begin();
