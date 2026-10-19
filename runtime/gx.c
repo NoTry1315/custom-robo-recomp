@@ -94,6 +94,7 @@ static u8 mat_vtx[4], mat_reg[4];   /* material colour per component: vertex CLR
 static float ushadow[96][4];        /* last value written per float uniform */
 static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop;
 static int frame_open, clear_pending = 1;
+static int scissor_lost = 1;   /* C3D_FrameDrawOn -> C3D_SetViewport disables the scissor: resend it */
 
 /* Draw batching: a draw's indices are appended to the pending C3D_DrawElements
  * while no PICA state changed since the previous draw (same vertex buffer,
@@ -107,6 +108,7 @@ static u32 pend_n, st_merged, batch_off = 2;
 static void pend_issue(void) {
     if (!pend_n) return;
     C3D_DrawElements(GPU_TRIANGLES, pend_n, C3D_UNSIGNED_SHORT, pend_ix);
+    recomp_prof[PROF_GPU_DRAWS]++; recomp_prof[PROF_GPU_IDX] += pend_n;
     pend_n = 0;
 }
 static void pend_flush(void) { last_end = NULL; pend_issue(); }
@@ -196,7 +198,7 @@ static void frame_begin(void) {
     /* the previous frame's queue (draws + display transfer) is finished here: its GPU time, in ms */
     if (frames) recomp_prof[PROF_GPU] += (u64)(C3D_GetDrawingTime() * (SYSCLOCK_ARM11 / 1000.0));
     if (!C3D_FrameDrawOn(target)) recomp_log("# gx: C3D_FrameDrawOn failed at frame %lu\n", (unsigned long)frames);
-    frame_open = 1;
+    frame_open = 1; scissor_lost = 1;
     vb_half = frames & 1; vb_used = ib_used = 0;
     vb_base = 0; cur_buf = NULL;
     use_buf(vbuf[vb_half]);
@@ -790,7 +792,7 @@ static void setup_pixel(void) {
     /* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated) */
     static s32 sk[8]; static int sk_valid;
     const s32 cur[8] = {(s32)gx.sc[0], (s32)gx.sc[1], (s32)gx.sc[2], (s32)gx.sc[3], (s32)gx.sc_off[0], (s32)gx.sc_off[1], (s32)gx.efb_w, (s32)gx.efb_h};
-    if (sk_valid && !memcmp(sk, cur, sizeof cur)) return;
+    if (sk_valid && !scissor_lost && !memcmp(sk, cur, sizeof cur)) return;
     memcpy(sk, cur, sizeof cur); sk_valid = 1;
     float s = efb_scale(), x0 = efb_x0(), y0 = efb_y0();
     float l = x0 + (gx.sc[0] - gx.sc_off[0]) * s, t = y0 + (gx.sc[1] - gx.sc_off[1]) * s;
@@ -800,7 +802,19 @@ static void setup_pixel(void) {
     r = r > 400 - x0 ? 400 - x0 : r < l ? l : r;
     b = b > 240 - y0 ? 240 - y0 : b < t ? t : b;
     u32 s0 = (u32)(240 - b), s1 = (u32)(400 - r), s2 = (u32)(240 - t), s3 = (u32)(400 - l);
-    SET_IF_CHANGED(C3D_SetScissor(GPU_SCISSOR_NORMAL, s0, s1, s2, s3), s0, s1, s2, s3);
+    /* GPU test: sdmc:/cr_gpu_quarter.txt clips drawing to the centre quarter of the screen (same vertex
+     * work, 1/4 of the pixels); if gpu ms drops ~4x the frame is fill-bound, if not, vertex-bound */
+    static int quarter = 2;
+    if (quarter == 2) { FILE *f = fopen("sdmc:/cr_gpu_quarter.txt", "rb"); quarter = f != NULL; if (f) fclose(f);
+        recomp_log("# gx: gpu quarter-screen test %s\n", quarter ? "on (cr_gpu_quarter.txt)" : "off"); }
+    if (quarter) {
+        s0 = s0 < 60 ? 60 : s0; s2 = s2 > 180 ? 180 : s2; s1 = s1 < 100 ? 100 : s1; s3 = s3 > 300 ? 300 : s3;
+        if (s2 < s0) s2 = s0;
+        if (s3 < s1) s3 = s1;
+    }
+    pend_flush();
+    C3D_SetScissor(GPU_SCISSOR_NORMAL, s0, s1, s2, s3);
+    scissor_lost = 0;
 }
 
 /* ---------------------------------------------------------------- vertices */

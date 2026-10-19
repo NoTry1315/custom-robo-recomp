@@ -121,8 +121,9 @@ void recomp_prof_frame(u32 retrace) {
                (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - sync - aud, vtx, tex, st, end, sync, aud,
                (recomp_prof[PROF_LOG] - sum[PROF_LOG]) * ms / 60);
     double pre = (recomp_prof[PROF_PREDRAW] - sum[PROF_PREDRAW]) * ms / 60, gpu = (recomp_prof[PROF_GPU] - sum[PROF_GPU]) * ms / 60;
-    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (queue: draws + display transfer, parallel to the CPU)\n",
-               (unsigned long)retrace, pre, frame - pre, gpu);
+    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (queue: draws + display transfer, parallel to the CPU); %.0f draw calls, %.0f indices per frame\n",
+               (unsigned long)retrace, pre, frame - pre, gpu, (recomp_prof[PROF_GPU_DRAWS] - sum[PROF_GPU_DRAWS]) / 60.0,
+               (recomp_prof[PROF_GPU_IDX] - sum[PROF_GPU_IDX]) / 60.0);
     if (retrace % 300 == 0) {
         double un = (recomp_prof[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (recomp_prof[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
         double dl = (recomp_prof[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;

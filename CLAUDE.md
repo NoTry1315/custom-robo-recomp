@@ -195,6 +195,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   unbuffered). Citra replay: SDK calls and scenes identical, fps unchanged (Citra SD is fast, so no signal
   there). Hardware run 16 (with register spills): boot fast, DVD slow lines 253 -> 24, longest read
   3633 -> 187 ms, no # stall lines (log cr_autotest_2026-10-19_hw-run16-dvd-handles.log). Next: campaign GPU (scene 8 gpu 17.8 ms), battle game CPU.
+- GPU-bound test (2026-10-19): scene 8 = campaign (pause-ok replay). Scissor fix: C3D_FrameDrawOn ->
+  C3D_SetViewport disables the scissor and gx.c never resent it, so the game's scissor was ignored after
+  frame 1; now resent every frame (campaign frame 2100: only y 40-359 drawn, was full height; not yet
+  checked against Dolphin). `# time .. split` ends with draw calls / indices per frame (Citra: campaign
+  60 / 55.7k, battle 69 / 63.4k). sdmc:/cr_gpu_quarter.txt clips drawing to the centre quarter: if gpu ms
+  drops ~4x on hardware the frame is fill-bound, else vertex-bound. Not yet on hardware.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
