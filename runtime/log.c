@@ -120,8 +120,9 @@ void recomp_prof_frame(u32 retrace) {
     recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, gx sync %.1f, audio %.1f (log writes %.1f, inside the others)\n",
                (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - sync - aud, vtx, tex, st, end, sync, aud,
                (recomp_prof[PROF_LOG] - sum[PROF_LOG]) * ms / 60);
-    double pre = (recomp_prof[PROF_PREDRAW] - sum[PROF_PREDRAW]) * ms / 60;
-    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f\n", (unsigned long)retrace, pre, frame - pre);
+    double pre = (recomp_prof[PROF_PREDRAW] - sum[PROF_PREDRAW]) * ms / 60, gpu = (recomp_prof[PROF_GPU] - sum[PROF_GPU]) * ms / 60;
+    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (queue: draws + display transfer, parallel to the CPU)\n",
+               (unsigned long)retrace, pre, frame - pre, gpu);
     if (retrace % 300 == 0) {
         double un = (recomp_prof[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (recomp_prof[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
         double dl = (recomp_prof[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;
