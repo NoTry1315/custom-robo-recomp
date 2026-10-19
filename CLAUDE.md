@@ -86,7 +86,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   `# prof` cpu.lr sampler in log.c. GXCopyTex destinations not drawn (EFB
   copies not emulated). Campaign 2.0 -> 4.6 fps in Citra (see
   recomp_unknowns.md "Performance pass"). Next: gx state per draw (49 ms), vertex
-  decode, EFB -> texture copy. Pad line "<n> 0 0" = run length.
+  decode, EFB -> texture copy. Hardware (run 3): campaign 9-11 fps; pause hangs
+  (ARQ callback needs interrupt delivery at loop back-edges, see unknowns). Pad line "<n> 0 0" = run length.
 
 ## Build / test
 
