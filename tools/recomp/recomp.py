@@ -36,6 +36,9 @@ MTX_NATIVE = {0x801394c4, 0x801394f0, 0x80139524, 0x801395f0, 0x80139640, 0x8013
 # Whole ranges: every instruction must be 'tr', not only the entry (else recomp_bad).
 TRANSLATE_SDK_RANGES = [(0x801409b0, 0x80140c64)]   # ClampStick 0x1a8 + PADClamp 0x10c
 TRANSLATE_SDK = {0x80140b58, 0x801409b0}
+# Functions only reached through pointers the scans miss (leaf, no prologue; address built
+# far from its addi). Seen as recomp_bad call_indirect in a played log.
+EXTRA_STARTS = {0x800fbc1c}   # campaign scene 6, called from 0x80091af4
 
 
 # ---------------------------------------------------------------- input
@@ -186,7 +189,7 @@ class Program:
 
     # -- function starts
     def find_starts(self):
-        st = {self.dol.entry} | {a for a in self.docnames if self.dol.in_text(a)}
+        st = {self.dol.entry} | {a for a in self.docnames if self.dol.in_text(a)} | EXTRA_STARTS
         for a, w in self.all_text_words():
             d = decode(w)
             if d in ('b', 'bc') and w & 1:
