@@ -144,7 +144,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   time before the first GX draw vs after. Citra replays identical (only a dead r4 at
   DBInit differs); Citra fps unchanged (battle 8.0, campaign 7.5, title 29.9) and the
   split shows nearly all game time runs between draws (battle 3 ms before first draw).
-  Hardware log for this build requested (unknowns "Perf wins 2026-10-19").
+  Hardware run 8: battle 105-122 ms = 8-9.5 fps (was 165 ms / 6 fps in run 4): game 45-60,
+  gx vertex 27, gx state 21, gx tex 11; title 60 fps; one 3.5 s boot stall on the first
+  snr_map.BIN read (unknowns "Perf wins 2026-10-19").
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
