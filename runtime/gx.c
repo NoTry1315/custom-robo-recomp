@@ -576,8 +576,30 @@ static void place_srcs(Src *s, int alpha, int pstage, u8 sc[4], int *scu) {
     }
 }
 
+/* everything setup_tev reads: unchanged since the last draw -> the texenv is too */
+static int tev_changed(void) {
+    static u8 last[sizeof gx.tev + 64 + sizeof unit_of_map + sizeof gx.chan + 16];
+    static int valid;
+    u8 key[sizeof last], *k = key;
+    memset(key, 0, sizeof key);
+    u32 n = gx.n_stages < 16 ? gx.n_stages : 16;
+    memcpy(k, &n, 4); k += 4;
+    memcpy(k, gx.tev, n * sizeof(TevStage)); k += sizeof gx.tev;
+    memcpy(k, gx.tev_reg, 16); k += 16;
+    memcpy(k, gx.kcolor, 16); k += 16;
+    memcpy(k, unit_of_map, sizeof unit_of_map); k += sizeof unit_of_map;
+    memcpy(k, gx.chan, sizeof gx.chan); k += sizeof gx.chan;
+    memcpy(k, gx.mat[1], 4); k += 4;
+    memcpy(k, gx.amb[1], 4); k += 4;
+    memcpy(k, &gx.n_chans, 4);
+    if (valid && !memcmp(key, last, sizeof key)) return 0;
+    memcpy(last, key, sizeof key); valid = 1;
+    return 1;
+}
+
 static void setup_tev(void) {
     int pstage = 0;
+    if (!tev_changed()) return;
     memset(tr, 0, sizeof tr);
     for (int x = 0; x < 2; x++) { tr[x].prev_reg = tr[x].buf_reg = -1; tr[x].buf_ready = 99; }
     for (u32 si = 0; si < gx.n_stages && si < 16; si++) {
@@ -651,30 +673,36 @@ static GPU_BLENDFACTOR blend_factor(int f, int dst) {
     }
 }
 
+/* PICA state set only when its arguments changed (citro3d re-sends every state
+ * that was set, changed or not, at the next draw) */
+#define SET_IF_CHANGED(call, ...) do { static u32 last_[16]; static int valid_; \
+    const u32 cur_[] = {__VA_ARGS__}; \
+    if (!valid_ || memcmp(last_, cur_, sizeof cur_)) { memcpy(last_, cur_, sizeof cur_); valid_ = 1; call; } } while (0)
+static u32 fbits(float f) { u32 u; memcpy(&u, &f, 4); return u; }
+
 static void setup_pixel(void) {
     u32 mask = (gx.color_update ? GPU_WRITE_COLOR : 0) | (gx.alpha_update ? GPU_WRITE_ALPHA : 0);
-    if (gx.z_enable) {
-        if (gx.z_update) mask |= GPU_WRITE_DEPTH;
-        C3D_DepthTest(true, test_func(gx.z_func), (GPU_WRITEMASK)mask);
-    } else C3D_DepthTest(false, GPU_ALWAYS, (GPU_WRITEMASK)mask);
+    int zt = gx.z_enable, zf = zt ? test_func(gx.z_func) : GPU_ALWAYS;
+    if (zt && gx.z_update) mask |= GPU_WRITE_DEPTH;
+    SET_IF_CHANGED(C3D_DepthTest(zt, (GPU_TESTFUNC)zf, (GPU_WRITEMASK)mask), zt, zf, mask);
     /* GX window depth = far + (far - near) * z/w, clamped to [0, 1] by the depth buffer */
-    C3D_DepthMap(true, gx.vp[5] - gx.vp[4], gx.vp[5]);
-    if (gx.blend_type == 1)
-        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, blend_factor(gx.blend_src, 0), blend_factor(gx.blend_dst, 1),
-                       blend_factor(gx.blend_src, 0), blend_factor(gx.blend_dst, 1));
-    else if (gx.blend_type == 3)
-        C3D_AlphaBlend(GPU_BLEND_REVERSE_SUBTRACT, GPU_BLEND_REVERSE_SUBTRACT, GPU_ONE, GPU_ONE, GPU_ONE, GPU_ONE);
-    else {
-        if (gx.blend_type == 2) ONCE("logic op blend %d\n", gx.logic_op);
-        C3D_AlphaBlend(GPU_BLEND_ADD, GPU_BLEND_ADD, GPU_ONE, GPU_ZERO, GPU_ONE, GPU_ZERO);
-    }
+    float zs = gx.vp[5] - gx.vp[4], zo = gx.vp[5];
+    SET_IF_CHANGED(C3D_DepthMap(true, zs, zo), fbits(zs), fbits(zo));
+    GPU_BLENDEQUATION eq = GPU_BLEND_ADD;
+    GPU_BLENDFACTOR bs = GPU_ONE, bd = GPU_ZERO;
+    if (gx.blend_type == 1) { bs = blend_factor(gx.blend_src, 0); bd = blend_factor(gx.blend_dst, 1); }
+    else if (gx.blend_type == 3) { eq = GPU_BLEND_REVERSE_SUBTRACT; bs = bd = GPU_ONE; }
+    else if (gx.blend_type == 2) ONCE("logic op blend %d\n", gx.logic_op);
+    SET_IF_CHANGED(C3D_AlphaBlend(eq, eq, bs, bd, bs, bd), eq, bs, bd);
     /* alpha compare: PICA has one test; take whichever GX comparison is not ALWAYS */
     u8 *ac = gx.alpha_cmp;
     if (ac[0] != 7 && ac[3] != 7 && !(ac[2] == 0 && (ac[0] == 7 || ac[3] == 7))) ONCE("two-sided alpha compare %d %d op %d\n", ac[0], ac[3], ac[2]);
-    if (ac[0] != 7) C3D_AlphaTest(true, test_func(ac[0]), ac[1]);
-    else if (ac[3] != 7) C3D_AlphaTest(true, test_func(ac[3]), ac[4]);
-    else C3D_AlphaTest(false, GPU_ALWAYS, 0);
-    C3D_CullFace(GPU_CULL_NONE);
+    int at = 1, af = GPU_ALWAYS, ar = 0;
+    if (ac[0] != 7) { af = test_func(ac[0]); ar = ac[1]; }
+    else if (ac[3] != 7) { af = test_func(ac[3]); ar = ac[4]; }
+    else at = 0;
+    SET_IF_CHANGED(C3D_AlphaTest(at, (GPU_TESTFUNC)af, ar), at, af, ar);
+    SET_IF_CHANGED(C3D_CullFace(GPU_CULL_NONE), 0);
     if (gx.cull) ONCE("cull mode %d drawn without culling\n", gx.cull);
     /* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated) */
     float s = efb_scale(), x0 = efb_x0(), y0 = efb_y0();
@@ -684,7 +712,8 @@ static void setup_pixel(void) {
     t = t < y0 ? y0 : t;
     r = r > 400 - x0 ? 400 - x0 : r < l ? l : r;
     b = b > 240 - y0 ? 240 - y0 : b < t ? t : b;
-    C3D_SetScissor(GPU_SCISSOR_NORMAL, (u32)(240 - b), (u32)(400 - r), (u32)(240 - t), (u32)(400 - l));
+    u32 s0 = (u32)(240 - b), s1 = (u32)(400 - r), s2 = (u32)(240 - t), s3 = (u32)(400 - l);
+    SET_IF_CHANGED(C3D_SetScissor(GPU_SCISSOR_NORMAL, s0, s1, s2, s3), s0, s1, s2, s3);
 }
 
 /* ---------------------------------------------------------------- vertices */
@@ -974,7 +1003,11 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
         C3D_Tex *tex = tex_get(&gx.map[t->map], &tscale[nunits][0], &tscale[nunits][1]);
         recomp_prof[PROF_GX_TEX] += recomp_ticks() - t0;
         if (!tex) continue;
-        C3D_TexBind(nunits, tex);
+        static const C3D_Tex *bound[3]; static u32 bound_param[3]; static void *bound_data[3];
+        if (bound[nunits] != tex || bound_param[nunits] != tex->param || bound_data[nunits] != tex->data) {
+            C3D_TexBind(nunits, tex);
+            bound[nunits] = tex; bound_param[nunits] = tex->param; bound_data[nunits] = tex->data;
+        }
         tcoord[nunits] = t->coord < 8 ? t->coord : -1;
         unit_of_map[t->map] = nunits++;
        

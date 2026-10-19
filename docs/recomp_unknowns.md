@@ -213,8 +213,16 @@ Functions translated: 2723. SDK stubs: 1049. MetroTRK entries skipped: 184. Jump
   C3D_FrameSplit does not help (it hands back the rest of the same buffer: the size
   shrank 262144 -> 912 -> 120 words). Now C3D_Init 2 MB (56% used) and a frame that
   still fills it skips its remaining draws ("# gx: GPU command buffer full").
-- Real fix (also the perf target, gx state 100 ms in battle): send only changed
-  state per draw (TEV/blend/depth/uniform dirty tracking).
+- GX state dirty tracking (2026-10-18): setup_tev runs only when its inputs (stages,
+  TEV/K colours, texmap->unit, COLOR1 state) changed; depth test/map, blend, alpha
+  test, cull, scissor and texture binds are set only when their arguments changed
+  (citro3d re-sends every state that was set at the next draw). Uniforms were
+  already shadowed. Side effect: `# gx gaps` counts of TEV gaps now count TEV
+  changes, not draws. Replays at r3000-3600 (Citra):
+  battle 2.7 -> 3.1 fps, gx state 113.6 -> 64.9 ms, cmdbuf 55% -> 18% of 2 MB;
+  campaign 4.3 -> 4.6 fps, gx state 56 -> 39 ms, cmdbuf 33% -> 11%.
+  The rest of gx state is C3D_DrawElements (attribute/uniform upload per draw);
+  gx vertex (~120 ms battle) and game (~118 ms) are now the larger costs.
 - White robo skins, launch cannons, robo cubes (fixed): the robo TEV program is
   REG2 = tex0 * K2a (+ C0); REG2 *= COLOR0; PREV = tex1 * K1a (+ C1);
   PREV = PREV * COLOR1 + REG2 (diffuse texture + specular-lit second texture).
