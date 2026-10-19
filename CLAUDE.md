@@ -128,6 +128,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   seconds were SD log writes: log now buffered in memory, written by a background
   thread. 2x supersampling tried and reverted (too slow on hardware; jaggies still
   open). See unknowns "Hardware stalls and jaggies".
+- Run length (2026-10-19): no sdmc:/cr_pad_script.txt and no cr_pad_replay.txt = interactive
+  play, no time limit (`runtime/vi.c`); autotest.ps1 always writes a script, so its runs keep
+  2400. Hw run 7: the frame that first reads sound/cubog39.hps (title jingle) took ~4 s
+  (run 6 too); `# DVD slow` lines in dvd.c time the reads, cause not yet confirmed.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
