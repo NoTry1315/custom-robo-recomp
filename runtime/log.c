@@ -13,9 +13,10 @@
 /* Frame timing: ticks (SYSCLOCK_ARM11, 268 MHz) per bucket, summed over 60
  * retraces. "game" is the rest of the frame: translated code + SDK layer. */
 u64 recomp_prof[PROF_N];
+u64 recomp_first_draw;
 u64 recomp_ticks(void) { return svcGetSystemTick(); }
 
-/* Sampling profiler: a higher-priority thread on the guest's core wakes every
+/* Sampling profiler: a thread on another core (aux_thread) wakes every
  * 0.5 ms and counts cpu.lr, the return address of the last guest call. The
  * time is in that callee (a leaf, or an SDK function) or in its caller after
  * it returned; gen/ shows the callee at "cpu.lr = 0x<lr>u; f_...". Logged as
@@ -48,10 +49,26 @@ static void sampler(void *arg) {
     }
 }
 
+/* Helper threads (sampler, watchdog, log writer) run off the game's core 0:
+ * core 2 (New 3DS) if threadCreate there works, else core 1 after
+ * APT_SetAppCpuTimeLimit(30), else core 0. Probed once, like mGBA. */
+static int aux_core = -3;
+static void aux_probe_fn(void *arg) { (void)arg; }
+static Thread aux_thread(ThreadFunc f, size_t stack, int prio) {
+    if (aux_core == -3) {
+        Thread t = threadCreate(aux_probe_fn, NULL, 0x1000, 0x30, 2, false);
+        if (t) aux_core = 2;
+        else if (R_SUCCEEDED(APT_SetAppCpuTimeLimit(30)) && (t = threadCreate(aux_probe_fn, NULL, 0x1000, 0x30, 1, false))) aux_core = 1;
+        else aux_core = 0;
+        if (t) { threadJoin(t, U64_MAX); threadFree(t); }
+    }
+    return threadCreate(f, NULL, stack, prio, aux_core, true);
+}
+
 void recomp_prof_sampler_start(void) {
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    threadCreate(sampler, NULL, 0x1000, prio - 1, -2, true);
+    aux_thread(sampler, 0x1000, prio - 1);
 }
 
 static void sampler_dump(u32 retrace) {
@@ -78,6 +95,7 @@ void recomp_prof_frame(u32 retrace) {
     static u64 fsum[PROF_N];   /* per-frame snapshot, for the stall line */
     if (last) {
         u64 dt = now - last;
+        recomp_prof[PROF_PREDRAW] += recomp_first_draw > last ? recomp_first_draw - last : (recomp_first_draw ? 0 : dt);
         if (dt > worst) worst = dt;
         if (dt > SYSCLOCK_ARM11 / 2) {   /* one frame over 0.5 s: where it went */
             double m = 1000.0 / SYSCLOCK_ARM11;
@@ -90,6 +108,7 @@ void recomp_prof_frame(u32 retrace) {
         }
     } else start = now;
     last = now;
+    recomp_first_draw = 0;
     for (int i = 0; i < PROF_N; i++) fsum[i] = recomp_prof[i];
     log_worst = 0;
     if (retrace % 60 || retrace == 0) return;
@@ -101,6 +120,8 @@ void recomp_prof_frame(u32 retrace) {
     recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, audio %.1f (log writes %.1f, inside the others)\n",
                (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - aud, vtx, tex, st, end, aud,
                (recomp_prof[PROF_LOG] - sum[PROF_LOG]) * ms / 60);
+    double pre = (recomp_prof[PROF_PREDRAW] - sum[PROF_PREDRAW]) * ms / 60;
+    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f\n", (unsigned long)retrace, pre, frame - pre);
     if (retrace % 300 == 0) {
         double un = (recomp_prof[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (recomp_prof[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
         double dl = (recomp_prof[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;
@@ -322,8 +343,9 @@ void recomp_log_open(void) {
     threadOnException(on_exception, RUN_HANDLER_ON_FAULTING_STACK, WRITE_DATA_TO_HANDLER_STACK);
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    threadCreate(watchdog, NULL, 0x2000, prio - 1, -2, true);
-    threadCreate(log_writer, NULL, 0x2000, prio + 1, -2, true);   /* below the game: runs while it waits */
+    aux_thread(watchdog, 0x2000, prio - 1);
+    aux_thread(log_writer, 0x2000, prio + 1);
+    recomp_log("# log: helper threads on core %d\n", aux_core);
 }
 
 void recomp_log_close(void) {
