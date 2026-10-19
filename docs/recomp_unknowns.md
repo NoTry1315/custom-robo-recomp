@@ -232,7 +232,7 @@ logged once when first hit.
 
 ## Translator performance (2026-10-18, Citra replays)
 
-- Guest registers are C locals inside each translated function (`localize()` in
+- Guest registers are C locals inside each translated function (`Func`, `localize_line()` in
   recomp.py): r0-r31 as `rN`, FPRs as `PS fpN`, each CR field as `crN` (low 4 bits,
   compares write `cmp_s/cmp_u/fcmp_v | so`), CTR, XER[CA] (`ca`, helpers `addc_l`,
   `sraw_l`, `srawi_l`) and XER[SO]. Loaded at entry, stored to `cpu` / reloaded around
@@ -246,7 +246,8 @@ logged once when first hit.
   (interrupts), recomp_bad, sc/trap/rfi/mtmsr store and reload everything. Breaks if
   translated code reads a caller's non-volatile register through `cpu` (OSSaveContext /
   thread switches, setjmp-style code): if threads are emulated later, make the context
-  switch go through a full spill.
+  switch go through a full spill. (Since 2026-10-19 the fixed sets are only upper bounds:
+  see "Register spills per call site".)
 - Single and paired madd (`fmadds`, `ps_madd`, `ps_madds0/1`, n/msub) use `a*c + b`
   (`fmadd_s`) instead of `fma()`: libm fma is software on VFPv2. Exact when `a` is a
   single (24-bit) and `c` went through f25 (25 bits): the product fits a double, so one
@@ -262,8 +263,54 @@ logged once when first hit.
   battle game 118.4 -> 75.4 (locals) -> 69.5 (EABI calls) -> 58.7 ms (fmadd_s, stack);
   campaign 4.6 -> 5.4-5.7 fps (game 38-45 ms); title 15 fps, game 21.7 ms.
   Battle and campaign replays give the same scene/SDK-call log as their recordings.
-- Not done: dirty tracking of spills inside a function (each call still stores every
-  written volatile register), `| so` in every compare, HW check on non-stack accesses.
+- Not done: `| so` in every compare, HW check on non-stack accesses. (Dirty tracking of
+  spills: done 2026-10-19, see "Register spills per call site".)
+
+## Register spills per call site (2026-10-19)
+
+recomp.py now translates every function to a per-instruction form (`Func`), computes
+interprocedural register summaries and emits each call's stores/reloads separately
+(`Summaries`, `analyze`, `dirty_sites`, `emit`):
+
+- in(F): CALLU registers (r0, r1, r3-r12, f1-f8, cr1, so) whose `cpu` value at entry F
+  (or its callees, transitively) may read before writing; clob(F): registers whose `cpu`
+  value F may change (its stores plus its callees' clob). Least fixpoint over the call
+  graph (worklist; recursion fine). call_indirect: in = CALLU, clob = all volatiles.
+- SDK natives (runtime/, sdk_stubs.c): in = CALLU (LOG() prints r3-r6), clob = r3, r4, f1.
+  Checked at generation time: `check_native_writes()` fails the run if runtime/*.c writes
+  any other guest register (allowed: cpu.c boot and recomp_call_guest, which saves and
+  restores all of cpu; mtx.c bench, same). memcpy/memset in r3-r5 clob none, sqrt f1/f1;
+  MTX natives = the translated body's summary plus r3-r5/f1-f3 read, r3/r6/f1 written.
+- Call site: store a register only if it is dirty (written since the last store or reload,
+  forward may-analysis) and either the callee may read it or the callee may change it and
+  it is still needed afterwards. Reload a volatile register only if the callee may change
+  it and a later read or store needs it; otherwise its value stays in `cpu` and the stale
+  local counts as clean, so it is never stored back (this keeps a callee's r3 return value
+  on paths like `li r3,0; beq 1f; bl G; 1: blr`). Stores count as reads for that decision
+  (iterated per function until stable).
+- Returns store only dirty RETU registers; tail branches only dirty CALLU | RETU (before:
+  every written register, non-volatiles included); recomp_bad/sc/trap/rfi/mtmsr still store
+  every dirty register and reload all. Polls (loop back-edges) store only r1 and reload
+  nothing: recomp_poll_events runs callbacks through recomp_call_guest, which uses R[1] for
+  the callback stack and restores all of cpu afterwards.
+- The old fixed sets stay the universes, so a store is only ever skipped, never added, and
+  every skipped store is of a value `cpu` already holds. New assumption (EABI, as for the
+  non-volatile registers before): a volatile register the callee may change is dead after
+  the call unless it is a value the caller reads; before, r0/r3-r12 were exact across calls
+  (f0/f9-f13/cr0/cr5-7/ctr/ca were already trashed). Volatiles the callee cannot change are
+  now kept in locals (machine-exact where the old code reloaded stale copies).
+- MWCC's _savegpr_N/_restgpr_N/_savefpr_N/_restfpr_N (0x8015f8fc-0x8015fa28; ~170 + ~170
+  call sites, mostly gpr) are emitted inline at each `bl` (same stw/lwz/stfd/lfd on r11, on
+  the caller's locals, cpu.lr still set). The saved values are the same as before: the
+  caller's locals for r14-r31 equal the (possibly stale, see above) `cpu` copies at that
+  point in the prologue; _restgpr now loads into the caller's locals, which are dead after it.
+- Static counts (13214 call sites): register stores 151596 -> 53779, reloads 183950 ->
+  43905. custom-robo-recomp.3dsx 10.65 -> 6.73 MB.
+- Found on the way, not changed: 5 functions start executing below their entry address
+  (body has code under the entry and the C function begins at the lowest address):
+  f_80020004 (at 8001fbb0), f_8009adc4, f_800b0004, f_80120010, f_80120030; printed by
+  recomp.py as `note:`.
+- Citra replays: @@CITRA@@
 
 ## Perf wins 2026-10-19
 
@@ -374,15 +421,15 @@ Profile (Citra battle replay r3600, `make FNPROF=1`): game-side top 0x801a4558 1
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
-Functions translated: 2720. SDK stubs: 1070. MetroTRK entries skipped: 184. Jump tables as switch: 52.
+Functions translated: 2723. SDK stubs: 1068. MetroTRK entries skipped: 184. Jump tables as switch: 52.
 
 ### flow into non-translated code that is not a known entry (1)
 
 0x801aea48 -> 0x801346c8
 
-### fres/frsqrte estimate (needs Dolphin table) (99)
+### fres/frsqrte estimate (needs Dolphin table) (100)
 
-0x800082ec frsqrte, 0x8001b5dc frsqrte, 0x8001b824 frsqrte, 0x8001c03c frsqrte, 0x8001c678 frsqrte, 0x8001c79c frsqrte, 0x8001cbb4 frsqrte, 0x80043848 frsqrte, 0x80043980 frsqrte, 0x80048c4c frsqrte, 0x8004a69c frsqrte, 0x8004cbc4 frsqrte, 0x8005fdcc frsqrte, 0x8006bab4 frsqrte, 0x8006c2c8 frsqrte, 0x8006c468 frsqrte, 0x8006d2b8 frsqrte, 0x8006d778 frsqrte, 0x80076d00 frsqrte, 0x80076e00 frsqrte, 0x800979fc frsqrte, 0x80097e58 frsqrte, 0x800e5604 frsqrte, 0x800e5734 frsqrte, 0x801396b4 fres, 0x801397ac fres, 0x80139950 frsqrte, 0x80139ac8 fres, 0x8013a1e0 frsqrte, 0x8013a244 frsqrte, 0x8016d8bc frsqrte, 0x8016d924 frsqrte, 0x8016d97c frsqrte, 0x8016d9e8 frsqrte, 0x8016ddc8 frsqrte, 0x8016de30 frsqrte, 0x8016de88 frsqrte, 0x8016def4 frsqrte, 0x8016f700 frsqrte, 0x8016f768 frsqrte, 0x8016f7c0 frsqrte, 0x8016f82c frsqrte, 0x801707f8 frsqrte, 0x801708b8 frsqrte, 0x8017094c frsqrte, 0x80170a10 frsqrte, 0x80179a14 frsqrte, 0x8017ae10 frsqrte, 0x8017b080 frsqrte, 0x8017b26c frsqrte, 0x8017b2d8 frsqrte, 0x8017e664 frsqrte, 0x8017f56c frsqrte, 0x8017fb84 frsqrte, 0x80180404 frsqrte, 0x80181094 frsqrte, 0x80181104 frsqrte, 0x80183060 frsqrte, 0x801830e8 frsqrte, 0x801909f0 frsqrte, 0x80190a8c frsqrte, 0x80191140 frsqrte, 0x801911dc frsqrte, 0x80199ec4 frsqrte, 0x80199f44 frsqrte, 0x80199ffc frsqrte, 0x8019a068 frsqrte, 0x8019a144 frsqrte, 0x8019a3d0 frsqrte, 0x8019a4c0 frsqrte, 0x8019a6d0 frsqrte, 0x8019a900 frsqrte, 0x8019b578 frsqrte, 0x8019b5f0 frsqrte, 0x8019b860 frsqrte, 0x8019b8d8 frsqrte, 0x8019b944 frsqrte, 0x8019bb4c frsqrte, 0x8019bbc4 frsqrte, 0x8019bd24 frsqrte, 0x8019becc frsqrte, 0x8019bf44 frsqrte, 0x8019bfbc frsqrte, 0x8019e694 frsqrte, 0x8019e748 frsqrte, 0x8019e804 frsqrte, 0x8019e8ac frsqrte, 0x8019efe4 frsqrte, 0x8019f068 frsqrte, 0x8019f0ec frsqrte, 0x8019f65c frsqrte, 0x8019f728 frsqrte, 0x8019f814 frsqrte, 0x8019f938 frsqrte, 0x8019f9e0 frsqrte, 0x801a1290 frsqrte, 0x801a1310 frsqrte, 0x801a19bc frsqrte, 0x801a66ac frsqrte
+0x800082ec frsqrte, 0x8001b5dc frsqrte, 0x8001b824 frsqrte, 0x8001c03c frsqrte, 0x8001c678 frsqrte, 0x8001c79c frsqrte, 0x8001cbb4 frsqrte, 0x80043848 frsqrte, 0x80043980 frsqrte, 0x80048c4c frsqrte, 0x8004a69c frsqrte, 0x8004cbc4 frsqrte, 0x8005fdcc frsqrte, 0x8006bab4 frsqrte, 0x8006c2c8 frsqrte, 0x8006c468 frsqrte, 0x8006d2b8 frsqrte, 0x8006d778 frsqrte, 0x80076d00 frsqrte, 0x80076e00 frsqrte, 0x800979fc frsqrte, 0x80097e58 frsqrte, 0x800e5604 frsqrte, 0x800e5734 frsqrte, 0x801396b4 fres, 0x801397ac fres, 0x80139950 frsqrte, 0x80139ac8 fres, 0x8013a1e0 frsqrte, 0x8013a244 frsqrte, 0x80140a88 frsqrte, 0x8016d8bc frsqrte, 0x8016d924 frsqrte, 0x8016d97c frsqrte, 0x8016d9e8 frsqrte, 0x8016ddc8 frsqrte, 0x8016de30 frsqrte, 0x8016de88 frsqrte, 0x8016def4 frsqrte, 0x8016f700 frsqrte, 0x8016f768 frsqrte, 0x8016f7c0 frsqrte, 0x8016f82c frsqrte, 0x801707f8 frsqrte, 0x801708b8 frsqrte, 0x8017094c frsqrte, 0x80170a10 frsqrte, 0x80179a14 frsqrte, 0x8017ae10 frsqrte, 0x8017b080 frsqrte, 0x8017b26c frsqrte, 0x8017b2d8 frsqrte, 0x8017e664 frsqrte, 0x8017f56c frsqrte, 0x8017fb84 frsqrte, 0x80180404 frsqrte, 0x80181094 frsqrte, 0x80181104 frsqrte, 0x80183060 frsqrte, 0x801830e8 frsqrte, 0x801909f0 frsqrte, 0x80190a8c frsqrte, 0x80191140 frsqrte, 0x801911dc frsqrte, 0x80199ec4 frsqrte, 0x80199f44 frsqrte, 0x80199ffc frsqrte, 0x8019a068 frsqrte, 0x8019a144 frsqrte, 0x8019a3d0 frsqrte, 0x8019a4c0 frsqrte, 0x8019a6d0 frsqrte, 0x8019a900 frsqrte, 0x8019b578 frsqrte, 0x8019b5f0 frsqrte, 0x8019b860 frsqrte, 0x8019b8d8 frsqrte, 0x8019b944 frsqrte, 0x8019bb4c frsqrte, 0x8019bbc4 frsqrte, 0x8019bd24 frsqrte, 0x8019becc frsqrte, 0x8019bf44 frsqrte, 0x8019bfbc frsqrte, 0x8019e694 frsqrte, 0x8019e748 frsqrte, 0x8019e804 frsqrte, 0x8019e8ac frsqrte, 0x8019efe4 frsqrte, 0x8019f068 frsqrte, 0x8019f0ec frsqrte, 0x8019f65c frsqrte, 0x8019f728 frsqrte, 0x8019f814 frsqrte, 0x8019f938 frsqrte, 0x8019f9e0 frsqrte, 0x801a1290 frsqrte, 0x801a1310 frsqrte, 0x801a19bc frsqrte, 0x801a66ac frsqrte
 
 ### invalid instruction reached (2)
 
@@ -412,7 +459,7 @@ Functions translated: 2720. SDK stubs: 1070. MetroTRK entries skipped: 184. Jump
 
 0x80003408 mtmsr
 
-### valid code not reached from any function start (616)
+### valid code not reached from any function start (605)
 
 0x800034b0, 0x800034b4, 0x800034b8, 0x800034bc, 0x800034c0, 0x800034c4, 0x800034c8, 0x800034cc, 0x800034d0, 0x800034d4, 0x800034d8, 0x800035ac, 0x800036ac, 0x800036b0, 0x800036b4, 0x800036b8, 0x800036bc, 0x800036c0, 0x800036c4, 0x800036c8, 0x800036cc, 0x800036d0, 0x800036d4, 0x800036d8, 0x800036dc, 0x800036e0, 0x800036e4, 0x800036e8, 0x800036ec, 0x800036f0, 0x800036f4, 0x800037ac, 0x800037b0, 0x800037b4, 0x800037b8, 0x800037bc, 0x800037c0, 0x800037c4, 0x800037c8, 0x800037cc, 0x800037d0, 0x800037d4, 0x800037d8, 0x800037dc, 0x800038ac, 0x800038b0, 0x800038b4, 0x800038b8, 0x800038bc, 0x800038c0, 0x800038c4, 0x800038c8, 0x800038cc, 0x800038d0, 0x800038d4, 0x800038d8, 0x800038dc, 0x800039ac, 0x800039b0, 0x800039b4, 0x800039b8, 0x800039bc, 0x800039c0, 0x800039c4, 0x800039c8, 0x800039cc, 0x800039d0, 0x800039d4, 0x800039d8, 0x800039dc, 0x80003aac, 0x80003ab0, 0x80003ab4, 0x80003ab8, 0x80003abc, 0x80003ac0, 0x80003ac4, 0x80003ac8, 0x80003acc, 0x80003ad0, 0x80003ad4, 0x80003ad8, 0x80003adc, 0x80003bac, 0x80003bb0, 0x80003bb4, 0x80003bb8, 0x80003bbc, 0x80003bc0, 0x80003bc4, 0x80003bc8, 0x80003bcc, 0x80003bd0, 0x80003bd4, 0x80003bd8, 0x80003bdc, 0x80003cac, 0x80003cb0, 0x80003cb4, 0x80003cb8, 0x80003cbc, 0x80003cc0, 0x80003cc4, 0x80003cc8, 0x80003ccc, 0x80003cd0, 0x80003cd4, 0x80003cd8, 0x80003cdc, 0x80003dac, 0x80003db0, 0x80003db4, 0x80003db8, 0x80003dbc, 0x80003dc0, 0x80003dc4, 0x80003dc8, 0x80003dcc, 0x80003dd0, 0x80003dd4, 0x80003dd8, 0x80003ddc, 0x800040ac, 0x800040b0, 0x800040b4, 0x800040b8, 0x800040bc, 0x800040c0, 0x800040c4, 0x800040c8, 0x800040cc, 0x800040d0, 0x800040d4, 0x800040d8, 0x800040dc, 0x800041ac, 0x800041b0, 0x800041b4, 0x800041b8, 0x800041bc, 0x800041c0, 0x800041c4, 0x800041c8, 0x800041cc, 0x800041d0, 0x800041d4, 0x800041d8, 0x800041dc, 0x800042ac, 0x800042b0, 0x800042b4, 0x800042b8, 0x800042bc, 0x800042c0, 0x800042c4, 0x800042c8, 0x800042cc, 0x800042d0, 0x800042d4, 0x800042d8, 0x800042dc, 0x800043ac, 0x800043cc, 0x800043d0, 0x800043d4, 0x800043d8, 0x800043dc, 0x800043e0, 0x800043e4, 0x800043e8, 0x800043ec, 0x800043f0, 0x800043f4, 0x800043f8, 0x800043fc, 0x80004400, 0x80004404, 0x80004408, 0x8000440c, 0x80004410, 0x80004414, 0x80004418, 0x8000441c, 0x80004420, 0x80004424, 0x80004428, 0x8000442c, 0x80004430, 0x800044ac, 0x800044b0, 0x800044b4, 0x800044b8, 0x800044bc, 0x800044c0, 0x800044c4, 0x800044c8, 0x800044cc, 0x800044d0, 0x800044d4, 0x800044d8 ...
 
