@@ -152,6 +152,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   fps (gx state 64 -> 31 ms), campaign 7.5 -> 8.5; replays identical. sdmc:/cr_batch_off.txt
   disables it. Uniform setters skip unchanged inputs: battle 5.5 fps, campaign 8.8 (Citra
   uniforms 26 -> 20 ms). Not yet on hardware.
+- GX CPU cost (2026-10-19): per-frame texture index + wrap/filter memo, TEV/scissor compared
+  in place, vcache entries checked once per frame. Citra battle 5.4 -> 6.5 fps (gx tex 27 -> 14,
+  gx state 31 -> 14 ms; gx vertex 61 unchanged, its decode is real misses), campaign 8.9 -> 10.0;
+  replays identical. Not yet on hardware. Details: unknowns "GX CPU cost".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

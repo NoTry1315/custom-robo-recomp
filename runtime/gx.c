@@ -301,7 +301,7 @@ static void tex_decode(u32 *out, u32 src, int w, int h, int fmt, const Tlut *tl)
 
 static u32 pow2(u32 v) { u32 p = 8; while (p < v && p < 1024) p <<= 1; return p; }
 
-typedef struct { u32 img, tlut_addr, hash, last; u16 w, h; u8 fmt, tlut_fmt, used; C3D_Tex tex; } TexEntry;
+typedef struct { u32 img, tlut_addr, hash, last, pkey; u16 w, h; u8 fmt, tlut_fmt, used; C3D_Tex tex; } TexEntry;
 #define TEX_CACHE 192
 static TexEntry tcache[TEX_CACHE];
 static u32 *decode_buf;
@@ -401,11 +401,19 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     if (!m->w || !m->h) { tex_miss("zero size", m); return NULL; }
     for (int i = 0; i < 8; i++) if (copy_dst[i] && copy_dst[i] == GUEST(m->img)) { ONCE("EFB copy texture not drawn\n"); tex_miss("EFB copy destination", m); return NULL; }
     const Tlut *tl = m->ci ? &gx.tlut[m->tlut < 20 ? m->tlut : 0] : NULL;
-    /* hashed once per frame: the title draws one big texture as many strips */
+    /* hashed once per frame: the title draws one big texture as many strips.
+     * Entries used this frame are found through a direct-mapped index (they are
+     * not evicted or reused within the frame) */
+    static TexEntry *fidx[256];
+    u32 tla = tl ? tl->addr : 0;
+    u32 fk = (m->img * 0x9e3779b1u ^ (u32)m->w << 20 ^ (u32)m->h << 8 ^ m->fmt ^ tla * 0x85ebca6bu) >> 24;
+    TexEntry *t = fidx[fk];
+    if (t && t->used && t->last == frames && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt &&
+        t->tlut_addr == tla) return tex_bind_params(t, m, su, sv);
     for (int i = 0; i < TEX_CACHE; i++) {
-        TexEntry *t = &tcache[i];
+        t = &tcache[i];
         if (t->used && t->last == frames && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt &&
-            t->tlut_addr == (tl ? tl->addr : 0)) return tex_bind_params(t, m, su, sv);
+            t->tlut_addr == tla) { fidx[fk] = t; return tex_bind_params(t, m, su, sv); }
     }
     u32 n = tex_bytes(m->w, m->h, m->fmt), hash = hash_bytes(m->img, n);
     if (tl) hash ^= hash_bytes(tl->addr, tl->n * 2) * 31 + tl->fmt;
@@ -441,21 +449,26 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
         }
         tex_upload(e, m, W, H, pf, tl);
         e->img = m->img; e->w = m->w; e->h = m->h; e->fmt = m->fmt; e->hash = hash; e->used = 1;
+        e->pkey = 0;
     }
     e->last = frames;
-    e->tlut_addr = tl ? tl->addr : 0;
+    e->tlut_addr = tla;
+    fidx[fk] = e;
     return tex_bind_params(e, m, su, sv);
 }
 
 static C3D_Tex *tex_bind_params(TexEntry *e, const TexMap *m, float *su, float *sv) {
     static const GPU_TEXTURE_WRAP_PARAM wrap[4] = {GPU_CLAMP_TO_EDGE, GPU_REPEAT, GPU_MIRRORED_REPEAT, GPU_REPEAT};
+    *su = (float)m->w / e->tex.width; *sv = (float)m->h / e->tex.height;
+    u32 pk = (u32)(m->wrap_s & 3) | (u32)(m->wrap_t & 3) << 2 | (u32)m->mag_f << 4 | (u32)m->min_f << 8;
+    if (e->pkey == pk + 1) return &e->tex;   /* wrap/filter already set */
+    e->pkey = pk + 1;
     u32 param = e->tex.param;
     C3D_TexSetWrap(&e->tex, wrap[m->wrap_s & 3], wrap[m->wrap_t & 3]);
     C3D_TexSetFilter(&e->tex, m->mag_f ? GPU_LINEAR : GPU_NEAREST, (m->min_f == 0 || m->min_f == 2 || m->min_f == 3) ? GPU_NEAREST : GPU_LINEAR);
     if (e->tex.param != param && pend_n) {   /* a pending draw may use the old parameters */
         u32 nw = e->tex.param; e->tex.param = param; pend_flush(); e->tex.param = nw;
     }
-    *su = (float)m->w / e->tex.width; *sv = (float)m->h / e->tex.height;
     return &e->tex;
 }
 
@@ -625,22 +638,20 @@ static void place_srcs(Src *s, int alpha, int pstage, u8 sc[4], int *scu) {
 
 /* everything setup_tev reads: unchanged since the last draw -> the texenv is too */
 static int tev_changed(void) {
-    static u8 last[sizeof gx.tev + 64 + sizeof unit_of_map + sizeof gx.chan + 16];
+    static TevStage tev[16];
+    static u8 reg[16], kc[16], mat[4], amb[4];
+    static int uom[8];
+    static Chan chan[4];
+    static u32 n, nch;
     static int valid;
-    u8 key[sizeof last], *k = key;
-    memset(key, 0, sizeof key);
-    u32 n = gx.n_stages < 16 ? gx.n_stages : 16;
-    memcpy(k, &n, 4); k += 4;
-    memcpy(k, gx.tev, n * sizeof(TevStage)); k += sizeof gx.tev;
-    memcpy(k, gx.tev_reg, 16); k += 16;
-    memcpy(k, gx.kcolor, 16); k += 16;
-    memcpy(k, unit_of_map, sizeof unit_of_map); k += sizeof unit_of_map;
-    memcpy(k, gx.chan, sizeof gx.chan); k += sizeof gx.chan;
-    memcpy(k, gx.mat[1], 4); k += 4;
-    memcpy(k, gx.amb[1], 4); k += 4;
-    memcpy(k, &gx.n_chans, 4);
-    if (valid && !memcmp(key, last, sizeof key)) return 0;
-    memcpy(last, key, sizeof key); valid = 1;
+    u32 ns = gx.n_stages < 16 ? gx.n_stages : 16;
+    if (valid && ns == n && gx.n_chans == nch && !memcmp(tev, gx.tev, ns * sizeof(TevStage)) &&
+        !memcmp(reg, gx.tev_reg, 16) && !memcmp(kc, gx.kcolor, 16) && !memcmp(uom, unit_of_map, sizeof uom) &&
+        !memcmp(chan, gx.chan, sizeof chan) && !memcmp(mat, gx.mat[1], 4) && !memcmp(amb, gx.amb[1], 4)) return 0;
+    n = ns; nch = gx.n_chans;
+    memcpy(tev, gx.tev, ns * sizeof(TevStage)); memcpy(reg, gx.tev_reg, 16); memcpy(kc, gx.kcolor, 16);
+    memcpy(uom, unit_of_map, sizeof uom); memcpy(chan, gx.chan, sizeof chan); memcpy(mat, gx.mat[1], 4); memcpy(amb, gx.amb[1], 4);
+    valid = 1;
     return 1;
 }
 
@@ -753,6 +764,10 @@ static void setup_pixel(void) {
     SET_IF_CHANGED(C3D_CullFace(GPU_CULL_NONE), 0);
     if (gx.cull) ONCE("cull mode %d drawn without culling\n", gx.cull);
     /* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated) */
+    static s32 sk[8]; static int sk_valid;
+    const s32 cur[8] = {(s32)gx.sc[0], (s32)gx.sc[1], (s32)gx.sc[2], (s32)gx.sc[3], (s32)gx.sc_off[0], (s32)gx.sc_off[1], (s32)gx.efb_w, (s32)gx.efb_h};
+    if (sk_valid && !memcmp(sk, cur, sizeof cur)) return;
+    memcpy(sk, cur, sizeof cur); sk_valid = 1;
     float s = efb_scale(), x0 = efb_x0(), y0 = efb_y0();
     float l = x0 + (gx.sc[0] - gx.sc_off[0]) * s, t = y0 + (gx.sc[1] - gx.sc_off[1]) * s;
     float r = l + gx.sc[2] * s, b = t + gx.sc[3] * s;
@@ -945,7 +960,7 @@ static void decode_vtx(const u8 *p, APlan *pl, int np, const PVtx *tm, PVtx *o) 
 #define VC_ARR 6
 #define VC_NONE 0xffffffffu
 typedef struct {
-    const u8 *data; u32 n, sig, dhash, ahash, narr, used, gen, off;
+    const u8 *data; u32 n, sig, dhash, ahash, narr, used, gen, off, checked;
     u32 ixoff, ixn, prim;   /* the draw's index list in vc_ix (ixn 0: none yet) */
     const u8 *arr[VC_ARR]; u32 alen[VC_ARR];
 } VCache;
@@ -1012,8 +1027,18 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
         if (f->gen && f->data == data && f->n == (u32)n && f->sig == sig) e = f;
         else if (e->gen && (!f->gen || f->used < e->used)) e = f;   /* replace the empty or least recently used way */
     }
+    /* the list bytes and arrays are checked once per frame per entry (same
+     * assumption as arr_hash: not rewritten between two draws of a frame) */
+    int same = e->gen && e->data == data && e->n == (u32)n && e->sig == sig;
+    if (same && e->checked == frames + 1) {
+        e->used = frames;
+        vc_hits++;
+        vc_last = e;
+        return e->off;
+    }
     u32 dh = hash_mem(data, (u32)n * vs, 0x811c9dc5u);
-    if (e->gen && e->data == data && e->n == (u32)n && e->sig == sig && e->dhash == dh && vc_arrays_hash(e) == e->ahash) {
+    if (same && e->dhash == dh && vc_arrays_hash(e) == e->ahash) {
+        e->checked = frames + 1;
         e->used = frames;
         vc_hits++;
         vc_last = e;
@@ -1036,7 +1061,7 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
     }
     e->data = data; e->n = n; e->sig = sig; e->dhash = dh; e->narr = narr; e->off = off;
     e->ahash = vc_arrays_hash(e);
-    e->used = frames; e->gen = vc_gen; e->ixn = 0;
+    e->used = frames; e->gen = vc_gen; e->ixn = 0; e->checked = frames + 1;
     vc_last = e;
     return off;
 }
