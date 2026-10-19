@@ -193,6 +193,8 @@ static void frame_begin(void) {
     if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
     last_vbl = C3D_FrameCounter(0);
     recomp_prof[PROF_GX_SYNC] += recomp_ticks() - ts;
+    /* the previous frame's queue (draws + display transfer) is finished here: its GPU time, in ms */
+    if (frames) recomp_prof[PROF_GPU] += (u64)(C3D_GetDrawingTime() * (SYSCLOCK_ARM11 / 1000.0));
     if (!C3D_FrameDrawOn(target)) recomp_log("# gx: C3D_FrameDrawOn failed at frame %lu\n", (unsigned long)frames);
     frame_open = 1;
     vb_half = frames & 1; vb_used = ib_used = 0;
