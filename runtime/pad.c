@@ -1,8 +1,10 @@
-/* PAD module: controller 1 is the 3DS (buttons, circle pad, C-stick),
- * ports 2-4 are empty. PADStatus[4], 12 bytes each: button u16, stick x/y,
+/* PAD module: controller 1 is the 3DS (buttons, circle pad, C-stick);
+ * while SELECT is held the 3DS drives controller 2 instead (P1 vs P2 tests).
+ * Port 2 is always connected (idle when not driven), ports 3-4 are empty. PADStatus[4], 12 bytes each: button u16, stick x/y,
  * substick x/y (s8), trigger L/R, analog A/B (u8), err (s8). */
 #include <3ds.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include "ppc.h"
 
 #define LOG() recomp_sdk_log(__func__ + 4)
@@ -45,12 +47,49 @@ static u16 script_buttons(void) {
     return b;
 }
 
+/* Replay: sdmc:/cr_pad_replay.txt holds "# pad r<n> buttons ..." lines copied
+ * from a played log (tools/citra/replay.ps1). Each state holds from retrace n
+ * until the next line; live 3DS input is added on top (buttons OR'd, a live
+ * stick wins when moved). */
+typedef struct { u32 r; u16 b; s8 port, sx, sy, cx, cy; } ReplayEv;
+static ReplayEv *rp;
+static int rp_n = -1, rp_i;
+static void replay_load(void) {
+    rp_n = 0;
+    FILE *f = fopen("sdmc:/cr_pad_replay.txt", "r");
+    if (!f) return;
+    int cap = 0;
+    char line[160];
+    while (fgets(line, sizeof line, f)) {
+        unsigned long r, b; int p = 1, sx = 0, sy = 0, cx = 0, cy = 0;
+        int k = sscanf(line, "# pad r%lu buttons %lx p%d stick %d %d cstick %d %d", &r, &b, &p, &sx, &sy, &cx, &cy);
+        if (k < 2) continue;
+        if (k == 2 && strstr(line, " p2")) p = 2;   /* older log format */
+        if (rp_n == cap) { cap = cap ? cap * 2 : 1024; rp = realloc(rp, cap * sizeof *rp); }
+        rp[rp_n++] = (ReplayEv){ r, b, p - 1, sx, sy, cx, cy };
+    }
+    fclose(f);
+    recomp_log("# pad replay: %d events, last at r%lu\n", rp_n, rp_n ? (unsigned long)rp[rp_n - 1].r : 0ul);
+}
+static void replay_apply(u16 *b, int *port, s8 *sx, s8 *sy, s8 *cx, s8 *cy) {
+    if (rp_n < 0) replay_load();
+    if (!rp_n) return;
+    u32 t = recomp_retrace_count();
+    while (rp_i + 1 < rp_n && rp[rp_i + 1].r <= t) rp_i++;
+    const ReplayEv *e = &rp[rp_i];
+    if (e->r > t) return;
+    *b |= e->b;
+    if (!*b || e->b) *port = e->port;
+    if (!*sx && !*sy) { *sx = e->sx; *sy = e->sy; }
+    if (!*cx && !*cy) { *cx = e->cx; *cy = e->cy; }
+}
+
 void sdk_PADRead(void) {
     LOG();
     u32 st = R[3];
     for (int i = 0; i < 4; i++) {
         for (int k = 0; k < 12; k += 4) wr32(st + 12 * i + k, 0);
-        if (i) wr8(st + 12 * i + 10, PAD_ERR_NO_CONTROLLER);
+        if (i > 1) wr8(st + 12 * i + 10, PAD_ERR_NO_CONTROLLER);
     }
     static int irrst;
     if (!irrst) irrst = irrstInit() == 0 ? 1 : -1;   /* C-stick: New 3DS */
@@ -63,14 +102,25 @@ void sdk_PADRead(void) {
     hidCircleRead(&cp);
     cs.dx = cs.dy = 0;
     if (irrst > 0) { irrstScanInput(); irrstCstickRead(&cs); }
+    int port = held & KEY_SELECT ? 1 : 0;   /* SELECT: this input goes to controller 2 */
+    s8 sx = axis(cp.dx), sy = axis(cp.dy), cx = axis(cs.dx), cy = axis(cs.dy);
+    replay_apply(&b, &port, &sx, &sy, &cx, &cy);
+    st += 12 * port;
     wr16(st, b);
-    static u16 last_b;   /* hardware runs: shows what was pressed when */
-    if (b != last_b) { recomp_log("# pad r%lu buttons %04x\n", (unsigned long)recomp_retrace_count(), b); last_b = b; }
-    wr8(st + 2, (u8)axis(cp.dx)); wr8(st + 3, (u8)axis(cp.dy));
-    wr8(st + 4, (u8)axis(cs.dx)); wr8(st + 5, (u8)axis(cs.dy));
+    /* every input change is logged, so a played log replays (cr_pad_replay.txt);
+     * sticks in steps of 8 to keep the log small */
+    static u16 last_b; static int last_port; static s8 last_q[4];
+    s8 q[4] = { sx & ~7, sy & ~7, cx & ~7, cy & ~7 };
+    if (b != last_b || port != last_port || memcmp(q, last_q, 4)) {
+        recomp_log("# pad r%lu buttons %04x p%d stick %d %d cstick %d %d\n", (unsigned long)recomp_retrace_count(), b, port + 1,
+                   sx, sy, cx, cy);
+        last_b = b; last_port = port; memcpy(last_q, q, 4);
+    }
+    wr8(st + 2, (u8)sx); wr8(st + 3, (u8)sy);
+    wr8(st + 4, (u8)cx); wr8(st + 5, (u8)cy);
     wr8(st + 6, b & PAD_L ? 0xff : 0); wr8(st + 7, b & PAD_R ? 0xff : 0);
     wr8(st + 8, b & PAD_A ? 0xff : 0); wr8(st + 9, b & PAD_B ? 0xff : 0);
-    R[3] = 1u << 31;   /* PAD_CHAN0_BIT: mask of connected ports (see recomp_unknowns.md) */
+    R[3] = 3u << 30;   /* PAD_CHAN0_BIT | PAD_CHAN1_BIT: mask of connected ports (see recomp_unknowns.md) */
 }
 
 /* SI-level port control: nothing to do for a host controller; all return TRUE */

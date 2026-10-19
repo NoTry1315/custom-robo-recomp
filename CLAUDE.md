@@ -93,6 +93,17 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   and delivered there when MSR[EE] is set (wait points still deliver all). Pause
   menu (Start in the bedroom, scene c) now works in Citra; title/campaign unchanged.
   Pad script holds up to 128 entries. Not yet tested on hardware.
+- Battle reached (2026-10-18): Vs. Mode -> P1 vs P2 -> customize -> battle (scene 4)
+  runs in Citra; SELECT held = 3DS drives controller 2 (port 2 always connected).
+  Spawn crash was the GPU command buffer (>1 MB per battle frame, ~112 words/draw,
+  2200 draws): now 2 MB, and a full buffer skips the rest of the frame (logged).
+  Robo/cannon/cube skins draw white (suspect TEV REG1-3 outputs). 2.7 fps in Citra.
+- Testing without the user: every pad change is logged ("# pad r<n> buttons .. p1|p2
+  stick x y cstick x y"); `autotest.ps1 -Replay <log>` replays a played log
+  deterministically (same crash retrace each run). Recording to battle:
+  Citra sdmc cr_autotest_2026-10-18_rec-to-battle.log (battle from ~r1900).
+  Crashes end the log with "# CRASH" (assert/abort/ARM exception/svcBreak via
+  --wrap, with gpucmd state and a stack scan to addr2line) and "# DONE crash".
 
 ## Build / test
 

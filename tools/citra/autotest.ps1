@@ -14,9 +14,11 @@
 # also lifts the speed limit (frame_limit 0) and turns vsync off. The
 # user's qt-config.ini is copied first and put back afterwards; Citra is
 # killed rather than closed, so it never writes its own settings over it.
-param([string]$Dir = 'build\shots', [int]$Shots = 72, [switch]$Fast, [int]$Timeout = 600, [string]$Pad = '')
+param([string]$Dir = 'build\shots', [int]$Shots = 72, [switch]$Fast, [int]$Timeout = 600, [string]$Pad = '', [string]$Replay = '')
 # -Pad '360 366 100; 420 426 100': controller 1 buttons (hex, PAD_BUTTON_*) held for
 # retraces [from, to); written to sdmc:/cr_pad_script.txt for runtime/pad.c.
+# -Replay <log>: the "# pad r<n> ..." lines of a played log are replayed from
+# sdmc:/cr_pad_replay.txt (same retraces, both controllers, sticks).
 $sp = Split-Path $MyInvocation.MyCommand.Path
 $repo = Resolve-Path "$sp\..\.."
 New-Item -ItemType Directory -Force $Dir | Out-Null
@@ -34,6 +36,9 @@ Copy-Item $config $backup -Force
 Remove-Item $sdLog -Force -ErrorAction SilentlyContinue
 $padFile = Join-Path $root 'user\sdmc\cr_pad_script.txt'
 Remove-Item $padFile -Force -ErrorAction SilentlyContinue
+$replayFile = Join-Path $root 'user\sdmc\cr_pad_replay.txt'
+Remove-Item $replayFile -Force -ErrorAction SilentlyContinue
+if ($Replay) { Select-String -Path $Replay -Pattern '^# pad r' | ForEach-Object { $_.Line } | Set-Content -Encoding ascii $replayFile }
 # ndspInit needs sdmc:/3ds/dspfirm.cdc; Citra's HLE DSP never runs it, so a
 # placeholder is enough there (a real 3DS needs the user's own DSP1 dump).
 $firm = Join-Path $root 'user\sdmc\3ds\dspfirm.cdc'

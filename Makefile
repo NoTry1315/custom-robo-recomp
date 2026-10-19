@@ -27,7 +27,7 @@ CFLAGS	:=	-g -Wall -Wno-unused-label -Wno-unused-but-set-variable -O2 -mword-rel
 CFLAGS	+=	$(INCLUDE) -D__3DS__
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 ASFLAGS	:=	-g $(ARCH)
-LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=svcBreak
 LIBS	:= -lcitro3d -lctru -lm
 LIBDIRS	:= $(CTRULIB)
 

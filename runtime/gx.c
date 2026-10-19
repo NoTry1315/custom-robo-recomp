@@ -18,7 +18,23 @@
 #include "vshader_shbin.h"
 
 #define LOG() recomp_sdk_log(__func__ + 4)
-#define ONCE(...) do { static int once_; if (!once_) { once_ = 1; recomp_log("# gx: " __VA_ARGS__); } } while (0)
+/* unemulated GX features: the first hit is logged with its frame, and every
+ * site's hit count goes into the "# gx gaps" line with the frame stats */
+#define GAP_SITES 64
+static struct { const char *fmt; u32 n; } gap[GAP_SITES];
+static int gap_n;
+static u32 frames;
+u32 recomp_gx_dbg[3];
+#define ONCE(...) do { static int id_ = -1; \
+    if (id_ < 0) { id_ = gap_n < GAP_SITES ? gap_n++ : GAP_SITES - 1; gap[id_].fmt = #__VA_ARGS__; \
+        recomp_log("# gx: frame %lu: ", (unsigned long)frames); recomp_log(__VA_ARGS__); } \
+    gap[id_].n++; } while (0)
+static void gap_dump(void) {
+    if (!gap_n) return;
+    recomp_log("# gx gaps (hits since start):");
+    for (int i = 0; i < gap_n; i++) recomp_log(" [%lu] %.40s;", (unsigned long)gap[i].n, gap[i].fmt + 1);
+    recomp_log("\n");
+}
 #define GUEST(a) (((a) & RAM_MASK) | 0x80000000u)
 
 /* ---------------------------------------------------------------- state */
@@ -59,8 +75,8 @@ static struct {
 } gx;
 
 /* ---------------------------------------------------------------- PICA side */
-#define VB_VERTS 0xC000      /* per frame half; drawn indexed (u16), so at most 0x10000 */
-#define IB_INDICES 0x30000   /* per frame half */
+#define VB_VERTS 0x18000     /* per frame half; u16 indices are relative to vb_base (rebased) */
+#define IB_INDICES 0x48000   /* per frame half */
 typedef struct { float pos[4]; u8 mat[4]; float nrm[3], tc[3][3]; } PVtx;   /* vshader.v.pica inputs */
 
 static C3D_RenderTarget *target;
@@ -73,10 +89,9 @@ static u8 mat_vtx[4], mat_reg[4];   /* material colour per component: vertex CLR
 static float ushadow[96][4];        /* last value written per float uniform */
 static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop;
 static int frame_open, clear_pending = 1;
-static u32 frames;
 
 void recomp_gx_init(void) {
-    C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 4);
+    C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 8);   /* 2 MB: battle frames need over 1 MB (~112 words per draw) */
     target = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
     C3D_RenderTargetSetOutput(target, GFX_TOP, GFX_LEFT,
         GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) |
@@ -97,6 +112,7 @@ void recomp_gx_init(void) {
     vbuf[0] = linearAlloc(sizeof(PVtx) * VB_VERTS * 2);
     vbuf[1] = vbuf[0] + VB_VERTS;
     ibuf[0] = linearAlloc(2 * IB_INDICES * 2);
+    if (!vbuf[0] || !ibuf[0]) { recomp_log("# gx: linearAlloc of vertex/index buffers failed (linear free %lu)\n",(unsigned long)linearSpaceFree()); abort(); }
     ibuf[1] = ibuf[0] + IB_INDICES;
     shaderInstance_s *si = vsh.vertexShader;
     u_clip = shaderInstanceGetUniformLocation(si, "clipm"); u_pos = shaderInstanceGetUniformLocation(si, "posm");
@@ -124,15 +140,22 @@ static float efb_scale(void) {
 static float efb_x0(void) { return (400 - gx.efb_w * efb_scale()) * 0.5f; }
 static float efb_y0(void) { return (240 - gx.efb_h * efb_scale()) * 0.5f; }
 
+/* u16 indices reach 0x10000 vertices: past that, later draws index from a new base */
+static u32 vb_base;
+static void set_vb_base(u32 base) {
+    vb_base = base;
+    C3D_BufInfo *bi = C3D_GetBufInfo();
+    BufInfo_Init(bi);
+    BufInfo_Add(bi, vbuf[vb_half] + base, sizeof(PVtx), 6, 0x543210);
+}
+
 static void frame_begin(void) {
     if (frame_open) return;
-    C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-    C3D_FrameDrawOn(target);
+    if (!C3D_FrameBegin(C3D_FRAME_SYNCDRAW)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
+    if (!C3D_FrameDrawOn(target)) recomp_log("# gx: C3D_FrameDrawOn failed at frame %lu\n", (unsigned long)frames);
     frame_open = 1;
     vb_half = frames & 1; vb_used = ib_used = 0;
-    C3D_BufInfo *bi = C3D_GetBufInfo();   /* indices are relative to this half */
-    BufInfo_Init(bi);
-    BufInfo_Add(bi, vbuf[vb_half], sizeof(PVtx), 6, 0x543210);
+    set_vb_base(0);
     if (clear_pending) {
         u32 c = gx.clear_color[0] << 24 | gx.clear_color[1] << 16 | gx.clear_color[2] << 8 | gx.clear_color[3];
         C3D_RenderTargetClear(target, C3D_CLEAR_ALL, c, gx.clear_z);
@@ -140,16 +163,20 @@ static void frame_begin(void) {
     }
 }
 
-static u32 st_draws, st_tris, st_tex, st_evict, st_upload, st_upbytes;
+static u32 st_draws, st_tris, st_tex, st_evict, st_upload, st_upbytes, st_split;
 
+static int in_draw;
 static void frame_end(void) {
+    if (in_draw) recomp_log("# gx: frame ended inside a draw at frame %lu (guest lr %08lx)\n", (unsigned long)frames, (unsigned long)cpu.lr);
     frame_begin();
     if (frames % 300 == 0) {   /* draw stats every 300 copies */
-        recomp_log("# gx frame %lu: draws %lu tris %lu textured %lu evicted %lu uploads %lu (%lu KB) efb %dx%d clear %02x%02x%02x%02x\n", (unsigned long)frames,
+        recomp_log("# gx frame %lu: draws %lu tris %lu textured %lu evicted %lu uploads %lu (%lu KB) efb %dx%d clear %02x%02x%02x%02x cmdbuf-full skips %lu, cmdbuf %d%%\n", (unsigned long)frames,
             (unsigned long)st_draws, (unsigned long)st_tris, (unsigned long)st_tex, (unsigned long)st_evict, (unsigned long)st_upload, (unsigned long)(st_upbytes >> 10), gx.efb_w, gx.efb_h,
-            gx.clear_color[0], gx.clear_color[1], gx.clear_color[2], gx.clear_color[3]);
+            gx.clear_color[0], gx.clear_color[1], gx.clear_color[2], gx.clear_color[3],
+            (unsigned long)st_split, (int)(C3D_GetCmdBufUsage() * 100));
     }
-    st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = 0;
+    if (frames % 300 == 0) gap_dump();
+    st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = 0;
     /* a frame with no draws still shows the clear color (frame_begin above) */
     u64 t0 = recomp_ticks();
     /* one flush per frame: the GPU reads the buffers only at C3D_FrameEnd */
@@ -313,9 +340,24 @@ static void tex_upload(TexEntry *e, const TexMap *m, u32 W, u32 H, GPU_TEXCOLOR 
  * of garbage in the campaign) */
 static u32 copy_dst[8];
 
+/* a texmap that draws without its texture (TEXC then reads white): each
+ * distinct image is logged once, up to 48 */
+static void tex_miss(const char *why, const TexMap *m) {
+    static u32 seen[48];
+    static int n;
+    u32 key = GUEST(m->img) ^ (u32)m->fmt << 28 ^ (u32)m->w << 16 ^ m->h;
+    for (int i = 0; i < n; i++) if (seen[i] == key) return;
+    if (n == 48) return;
+    seen[n++] = key;
+    recomp_log("# gx tex miss: %s img %08lx fmt %d %dx%d ci %d frame %lu\n", why, (unsigned long)GUEST(m->img),
+               m->fmt, m->w, m->h, m->ci, (unsigned long)frames);
+}
+
 static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
-    if (!m->img || !tile_w[m->fmt & 15] || !m->w || !m->h) return NULL;
-    for (int i = 0; i < 8; i++) if (copy_dst[i] && copy_dst[i] == GUEST(m->img)) { ONCE("EFB copy texture not drawn\n"); return NULL; }
+    if (!m->img) { tex_miss("no image", m); return NULL; }
+    if (!tile_w[m->fmt & 15]) { tex_miss("format not decoded", m); return NULL; }
+    if (!m->w || !m->h) { tex_miss("zero size", m); return NULL; }
+    for (int i = 0; i < 8; i++) if (copy_dst[i] && copy_dst[i] == GUEST(m->img)) { ONCE("EFB copy texture not drawn\n"); tex_miss("EFB copy destination", m); return NULL; }
     const Tlut *tl = m->ci ? &gx.tlut[m->tlut < 20 ? m->tlut : 0] : NULL;
     /* hashed once per frame: the title draws one big texture as many strips */
     for (int i = 0; i < TEX_CACHE; i++) {
@@ -340,7 +382,7 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
         tex_upload(e, m, e->tex.width, e->tex.height, pica_fmt(m->fmt), tl);
         e->hash = hash;
     } else if (!e) {
-        if (!victim) { ONCE("texture cache full\n"); return NULL; }
+        if (!victim) { ONCE("texture cache full\n"); tex_miss("cache full", m); return NULL; }
         e = victim;
         if (e->used) C3D_TexDelete(&e->tex);
         e->used = 0;
@@ -350,7 +392,7 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
             TexEntry *old = NULL;
             for (int i = 0; i < TEX_CACHE; i++)
                 if (tcache[i].used && tcache[i].last < frames && (!old || tcache[i].last < old->last)) old = &tcache[i];
-            if (!old) { ONCE("C3D_TexInit failed with nothing left to evict\n"); return NULL; }
+            if (!old) { ONCE("C3D_TexInit failed with nothing left to evict\n"); tex_miss("C3D_TexInit failed", m); return NULL; }
             C3D_TexDelete(&old->tex); old->used = 0;
             st_evict++;
         }
@@ -832,9 +874,21 @@ static int set_lighting(void) {
     return 1;
 }
 
-static void draw(int prim, int fmt, const u8 *data, int n) {
+static void draw_inner(int prim, int fmt, const u8 *data, int n);
+static void draw(int prim, int fmt, const u8 *data, int n) { in_draw++; draw_inner(prim, fmt, data, n); in_draw--; }
+static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     if (prim >= 0xa8) { ONCE("lines/points (0x%x) not drawn\n", prim); return; }
     frame_begin();
+    /* a full GPU command buffer is a libctru svcBreak(PANIC). The frame's buffer
+     * is one block (a C3D_FrameSplit only hands back the rest of it), so when
+     * under 1024 words (~9 draws) remain, the frame's remaining draws are skipped */
+    u32 *cb_addr, cb_size, cb_off;
+    GPUCMD_GetBuffer(&cb_addr, &cb_size, &cb_off);   /* words; C3D_GetCmdBufUsage is only updated per frame */
+    recomp_gx_dbg[0] = cb_off; recomp_gx_dbg[1] = prim; recomp_gx_dbg[2] = n;
+    if (cb_off + 1024 > cb_size) {
+        if (!st_split++) recomp_log("# gx: GPU command buffer full at frame %lu: rest of the frame's draws skipped\n", (unsigned long)frames);
+        return;
+    }
     /* textures: GX texmaps used by the TEV stages -> PICA units 0..2 */
     int nunits = 0, tcoord[3] = {-1, -1, -1};
     float tscale[3][2] = {{1, 1}, {1, 1}, {1, 1}};
@@ -842,7 +896,7 @@ static void draw(int prim, int fmt, const u8 *data, int n) {
     for (u32 si = 0; si < gx.n_stages; si++) {
         const TevStage *t = &gx.tev[si];
         if (t->map >= 8 || unit_of_map[t->map] >= 0) continue;
-        if (nunits >= 3) { ONCE("more than 3 texmaps in one draw\n"); continue; }
+        if (nunits >= 3) { ONCE("more than 3 texmaps in one draw\n"); tex_miss("4th texmap in a draw", &gx.map[t->map]); continue; }
         u64 t0 = recomp_ticks();
         C3D_Tex *tex = tex_get(&gx.map[t->map], &tscale[nunits][0], &tscale[nunits][1]);
         recomp_prof[PROF_GX_TEX] += recomp_ticks() - t0;
@@ -850,22 +904,36 @@ static void draw(int prim, int fmt, const u8 *data, int n) {
         C3D_TexBind(nunits, tex);
         tcoord[nunits] = t->coord < 8 ? t->coord : -1;
         unit_of_map[t->map] = nunits++;
+       
     }
     u64 ts = recomp_ticks();
+   
     setup_tev();
+   
     setup_pixel();
     recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
     int ntri = prim == 0x80 ? n / 4 * 2 : prim == 0x90 ? n / 3 : n >= 3 ? n - 2 : 0;
     if (!ntri) return;
-    if (vb_used + n > VB_VERTS || ib_used + ntri * 3 > IB_INDICES) { ONCE("vertex buffer full\n"); return; }
+    if (vb_used + n > VB_VERTS || ib_used + ntri * 3 > IB_INDICES) {
+        static u32 full_logged;
+        if (full_logged < 8) { full_logged++; recomp_log("# gx: vertex buffer full at frame %lu (verts %lu + %d, indices %lu)\n",
+            (unsigned long)frames, (unsigned long)vb_used, n, (unsigned long)ib_used); }
+        return;
+    }
+    if (vb_used + n - vb_base > 0x10000) set_vb_base(vb_used);
     u64 t0 = recomp_ticks();
     APlan pl[21];
     int vs, np = make_plan(fmt, pl, &vs);
     s8 tsrc[3];
+   
     set_clip();
+   
     int lit = set_lighting();
+   
     set_mtx(lit);
+   
     set_texgen(tscale, tcoord, tsrc, data, pl, np);
+   
     np = trim_plan(pl, np, tsrc);
     PVtx *o = vbuf[vb_half] + vb_used;
     for (int i = 0; i < n; i++) decode_vtx(data + i * vs, pl, np, &o[i]);
@@ -877,11 +945,12 @@ static void draw(int prim, int fmt, const u8 *data, int n) {
         else if (prim == 0x90) { a = 3 * t; b = a + 1; c = a + 2; }
         else if (prim == 0x98) { a = t; b = t + 1; c = t + 2; if (t & 1) { int x = a; a = b; b = x; } }
         else { a = 0; b = t + 1; c = t + 2; }
-        ix[k++] = vb_used + a; ix[k++] = vb_used + b; ix[k++] = vb_used + c;
+        u32 v0 = vb_used - vb_base; ix[k++] = v0 + a; ix[k++] = v0 + b; ix[k++] = v0 + c;
     }
     recomp_prof[PROF_GX_VTX] += recomp_ticks() - t0;
     st_draws++; st_tris += ntri; if (nunits) st_tex++;
     ts = recomp_ticks();
+   
     C3D_DrawElements(GPU_TRIANGLES, k, C3D_UNSIGNED_SHORT, ix);
     recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
     vb_used += n; ib_used += k;

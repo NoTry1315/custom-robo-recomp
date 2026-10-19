@@ -173,9 +173,65 @@ static void watchdog(void *arg) {
     }
 }
 
+/* Crashes end the log too: a failed assert(), abort() (malloc/citro3d
+ * failures end there) or an ARM exception logs why, the host pc/lr, the
+ * guest lr and the last SDK calls, then "# DONE crash". */
+Result __real_svcBreak(UserBreakType reason);
+static __attribute__((noreturn)) void crash(const char *why, u32 pc, u32 lr) {
+    if (!finished) {
+        finished = 1;
+        recomp_log("# CRASH %s host pc=%08lx lr=%08lx retrace %lu\n", why, (unsigned long)pc, (unsigned long)lr,
+                   (unsigned long)recomp_retrace_count());
+        summary();
+        recomp_log("# DONE crash\n");
+    }
+    __real_svcBreak(USERBREAK_PANIC);
+    for (;;) svcSleepThread(1000000000LL);
+}
+
+/* libctru/citro3d panic with svcBreak (GPU command buffer or GX queue full,
+ * ndsp, heap setup): linked with --wrap=svcBreak so the caller is logged;
+ * look the lr up in custom-robo-recomp.map / objdump */
+Result __wrap_svcBreak(UserBreakType reason) {
+    char buf[200];
+    u32 *a, size, off;
+    GPUCMD_GetBuffer(&a, &size, &off);
+    snprintf(buf, sizeof buf, "svcBreak(%d) gpucmd %lu/%lu words, last draw entered at %lu (prim %lx n %lu)", (int)reason,
+             (unsigned long)off, (unsigned long)size, (unsigned long)recomp_gx_dbg[0], (unsigned long)recomp_gx_dbg[1],
+             (unsigned long)recomp_gx_dbg[2]);
+    /* heuristic backtrace: stack words that point into .text (addr2line them) */
+    extern char __etext[] __attribute__((weak));
+    u32 lo = 0x100000, hi = __etext ? (u32)__etext : 0x1000000;
+    u32 *sp = __builtin_frame_address(0);
+    recomp_log("# CRASH stack:");
+    for (int i = 0, k = 0; i < 1024 && k < 24; i++) {
+        u32 v = sp[i];
+        if (v > lo && v < hi && (v & 1) == 0 && (v & 3) == 0) { recomp_log(" %08lx", (unsigned long)v); k++; }
+    }
+    recomp_log("\n");
+    crash(buf, 0, (u32)__builtin_return_address(0));
+}
+
+void __assert_func(const char *file, int line, const char *func, const char *expr) {
+    char buf[200];
+    snprintf(buf, sizeof buf, "assert %s:%d %s: %s", file, line, func ? func : "", expr);
+    crash(buf, 0, (u32)__builtin_return_address(0));
+}
+
+void abort(void) { crash("abort", 0, (u32)__builtin_return_address(0)); }
+
+static void on_exception(ERRF_ExceptionInfo *e, CpuRegisters *r) {
+    static const char *const names[] = { "prefetch abort", "data abort", "undefined insn", "vfp" };
+    char buf[96];
+    snprintf(buf, sizeof buf, "%s far=%08lx sp=%08lx", e->type < 4 ? names[e->type] : "exception",
+             (unsigned long)e->far, (unsigned long)r->sp);
+    crash(buf, r->pc, r->lr);
+}
+
 void recomp_log_open(void) {
     LightLock_Init(&lock);
     log_fp = fopen(LOG_PATH, "w");
+    threadOnException(on_exception, RUN_HANDLER_ON_FAULTING_STACK, WRITE_DATA_TO_HANDLER_STACK);
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     threadCreate(watchdog, NULL, 0x2000, prio - 1, -2, true);

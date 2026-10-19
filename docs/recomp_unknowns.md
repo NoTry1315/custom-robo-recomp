@@ -205,3 +205,19 @@ Functions translated: 2723. SDK stubs: 1049. MetroTRK entries skipped: 184. Jump
   title path is as before. DVD completions are still wait-point only.
 - Citra (user-driven): after the campaign intro, Start opens the pause menu (scene c);
   Return to Game etc. shown. Hardware not yet tested.
+
+## Battle (2026-10-18, Citra, replay of a played log)
+
+- P1 vs P2 reaches the battle. Spawn crash: libctru GPUCMD_AddInternal svcBreak, the
+  GPU command buffer (1 MB) full; a battle frame is ~2200 draws x ~112 words. A
+  C3D_FrameSplit does not help (it hands back the rest of the same buffer: the size
+  shrank 262144 -> 912 -> 120 words). Now C3D_Init 2 MB (56% used) and a frame that
+  still fills it skips its remaining draws ("# gx: GPU command buffer full").
+- Real fix (also the perf target, gx state 100 ms in battle): send only changed
+  state per draw (TEV/blend/depth/uniform dirty tracking).
+- White robo skins, launch cannons, robo cubes: not texture misses (only the EFB
+  copy destination misses). Top gaps: TEV output to REG1-3 (~446k hits), cull mode
+  (771k), three colour constants (360k), lines/points (70k), post-transform texmtx.
+- `# gx gaps` (every 300 frames) counts hits per unemulated feature; `# gx tex miss`
+  names each texture drawn without its image and why.
+- Vertex buffer: 0x18000 vertices per half, u16 indices rebased past 0x10000.

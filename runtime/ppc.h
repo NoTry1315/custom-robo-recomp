@@ -181,6 +181,7 @@ u8 recomp_aram_read8(u32 a);            /* ARAM byte (runtime/ar.c) */
 void recomp_wait_point(void);           /* pending "interrupts": DVD, then ARQ */
 u64  recomp_timebase(void);             /* Gekko timebase, 40.5 MHz */
 void recomp_gx_init(void);             /* citro3d, render target, shader */
+extern u32 recomp_gx_dbg[3];           /* last draw: gpucmd offset at entry, prim, vertex count */
 void recomp_gx_fifo_write(u32 v, int size); /* WGPIPE 0xCC008000 */
 void recomp_log_open(void);
 void recomp_log_close(void);
