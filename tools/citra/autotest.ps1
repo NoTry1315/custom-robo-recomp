@@ -45,7 +45,9 @@ $firm = Join-Path $root 'user\sdmc\3ds\dspfirm.cdc'
 if (-not (Test-Path $firm)) { New-Item -ItemType Directory -Force (Split-Path $firm) | Out-Null; [IO.File]::WriteAllBytes($firm, (New-Object byte[] 4096)) }
 # the mix is dumped to sdmc:/cr_audio.wav only when this flag exists (runtime/ax.c)
 [IO.File]::WriteAllText((Join-Path $root 'user\sdmc\cr_audio_dump.txt'), 'on')
+# always write a pad script: without one (or a replay) the runtime has no run length (runtime/vi.c)
 if ($Pad) { [IO.File]::WriteAllText($padFile, (($Pad -split ';') | ForEach-Object { $_.Trim() }) -join "`n") }
+elseif (-not $Replay) { [IO.File]::WriteAllText($padFile, '') }
 $start = Get-Date
 try {
     $text = [IO.File]::ReadAllText($config)

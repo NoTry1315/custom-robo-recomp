@@ -164,11 +164,23 @@ static s32 host_read(u32 fi, u32 addr, u32 len, u32 off) {
     }
     static u8 seen[4096];   /* first read of each file is logged by name and frame */
     if (e < 4096 && !seen[e]) { seen[e] = 1; recomp_log("# DVD read %s (frame %lu)\n", paths[e] + sizeof DISC_DIR + 5, (unsigned long)recomp_retrace_count()); }
+    u64 t0 = recomp_ticks();
     FILE *f = fopen(paths[e], "rb");
     if (!f) { recomp_log("# DVD: cannot open %s\n", paths[e]); return -1; }
     fseek(f, off, SEEK_SET);
     size_t got = fread(ram + (addr & RAM_MASK), 1, len, f);
     fclose(f);
+    /* hw run 7: the frame that first reads sound/cubog39.hps took 4 s; time every read */
+    static u32 frame, nreads;
+    static u64 sum;
+    u32 r = recomp_retrace_count();
+    if (r != frame) { frame = r; nreads = 0; sum = 0; }
+    u64 dt = recomp_ticks() - t0;
+    sum += dt; nreads++;
+    if (dt > 268111856 / 20 || (sum > 268111856 / 5 && nreads % 16 == 0))
+        recomp_log("# DVD slow r%lu: %s off %lx len %lx %.0f ms (frame: %lu reads, %.0f ms)\n", (unsigned long)r,
+                   paths[e] + sizeof DISC_DIR + 5, (unsigned long)off, (unsigned long)len, dt / 268111.856,
+                   (unsigned long)nreads, sum / 268111.856);
     if (got < len) memset(ram + ((addr + got) & RAM_MASK), 0, len - got);   /* padding past EOF */
     wr32(fi + 0x10, off); wr32(fi + 0x14, len); wr32(fi + 0x18, addr);
     wr32(fi + 0x20, len);

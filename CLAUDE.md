@@ -132,6 +132,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   in slot A at the CARD API level (`runtime/card.c`): one file per save in
   sdmc:/custom-robo/save/ (.bin + .stat), async calls finish at once; save + reload
   confirmed in Citra. sdmc:/cr_card_off.txt = no card (old dialog path for autotests).
+- Run length (2026-10-19): no sdmc:/cr_pad_script.txt and no cr_pad_replay.txt = interactive
+  play, no time limit (`runtime/vi.c`); autotest.ps1 always writes a script, so its runs keep
+  2400. Hw run 7: the frame that first reads sound/cubog39.hps (title jingle) took ~4 s
+  (run 6 too); `# DVD slow` lines in dvd.c time the reads, cause not yet confirmed.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
