@@ -88,6 +88,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   recomp_unknowns.md "Performance pass"). Next: gx state per draw (49 ms), vertex
   decode, EFB -> texture copy. Hardware (run 3): campaign 9-11 fps; pause hangs
   (ARQ callback needs interrupt delivery at loop back-edges, see unknowns). Pad line "<n> 0 0" = run length.
+- Phase 7 interrupts (2026-10-18): translator emits RECOMP_POLL() at every loop
+  back-edge; ARQ completions are due after a modelled DMA time (400 + len/2 ticks)
+  and delivered there when MSR[EE] is set (wait points still deliver all). Pause
+  menu (Start in the bedroom, scene c) now works in Citra; title/campaign unchanged.
+  Pad script holds up to 128 entries. Not yet tested on hardware.
 
 ## Build / test
 

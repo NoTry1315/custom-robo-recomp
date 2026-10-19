@@ -163,6 +163,9 @@ void recomp_call_guest(u32 fn, u32 arg); /* interrupt-style call: guest state sa
 void recomp_call_guest2(u32 fn, u32 arg, u32 arg2);
 void recomp_dvd_service(void);          /* runs completed DVD callbacks */
 void recomp_ar_service(void);           /* runs completed ARQ callbacks */
+extern volatile u32 recomp_event_pending; /* an ARQ completion is in flight */
+void recomp_poll_events(void);          /* delivers due events if MSR[EE] */
+#define RECOMP_POLL() do { if (__builtin_expect(recomp_event_pending, 0)) recomp_poll_events(); } while (0)
 u32  recomp_retrace_count(void);         /* frames so far (VI retraces) */
 void recomp_ax_service(void);           /* AX frame callbacks due since the last retrace */
 /* frame timing (runtime/log.c): ticks spent per bucket, logged by VI */

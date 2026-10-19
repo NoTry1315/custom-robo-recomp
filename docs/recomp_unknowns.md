@@ -150,94 +150,6 @@ logged once when first hit.
   0x801566e8 GXLoadTlut, 0x801584c4 GXCallDisplayList.
 
 <!-- generated -->
-## Audio: AX -> ndsp (phase 6; to verify against Dolphin)
-
-runtime/ax.c, runtime/ai.c. Log lines `# AX:` (per-voice events, capped at 400, and
-mix stats every 1000 AX frames = 5 s).
-
-- The voice setters (AXSetVoice*, 0x801470d8..0x801479dc) are hand-written and store
-  into the AXVPB at the SDK's offsets, read from their disassembly; the AXPB is at
-  VPB+0x138 in Dolphin's field order (srcSelect +0x140, state +0x146, mix +0x14a, ve
-  +0x19c, addr +0x1a6, adpcm +0x1b6, src +0x1de, adpcm loop +0x1ec). Sync bits are set
-  as the SDK does and cleared for every acquired voice at the start of each AX frame.
-- Frame order follows the SDK's AX interrupt: consume sync + render, THEN the user
-  callback. Callback first trips synth.c:2323 (assert AX_SYNC_USER_VE clear before
-  AXSetVoiceVeDelta).
-- 0x80144be4 was named AXFreeVoice in the doc; it is AXSetVoicePriority (moves the
-  VPB to priority list r4, stores r4 at +0xc). AXFreeVoice is 0x801449f0. Phase 5's
-  runtime freed a voice on every priority change.
-- Mixer: ADPCM (nibble addresses, header byte at each 16-nibble frame start, loop
-  context from the ADPCM-loop block; yn1/yn2 only for non-stream voices), PCM16,
-  PCM8; end -> loop or stop (state 0). Resampling is LINEAR for every src type
-  (Dolphin uses the polyphase filter for type 0/1). Volume: ve (1.15, delta per
-  sample) times main L/R (1.15, delta per sample). Aux A/B buses, surround, ITD,
-  depop, LPF and the AXFX reverb/chorus callbacks are not mixed. Output 32000 Hz
-  (Dolphin: 32028).
-- Written back to the PB each frame: state, current address, pred_scale/yn1/yn2,
-  src fraction and history, ve and L/R volumes.
-- Output: ndsp channel 0, stereo PCM16, 8 x 20 ms buffers; a frame is dropped if the
-  buffer is still playing. The game steps per retrace, not by the clock, so when it
-  runs slower than real time the output underruns (gaps), not measured. ndspInit
-  needs sdmc:/3ds/dspfirm.cdc; without it the mix still runs (WAV only). Citra: a
-  placeholder file (autotest.ps1 writes it), as its HLE DSP never runs the firmware.
-- sdmc:/cr_audio.wav: the first 60 s of the mix, for checking without listening; only
-  when sdmc:/cr_audio_dump.txt exists (autotest.ps1 writes it). On a New 3DS the
-  per-frame SD writes cost ~170 ms per retrace with 4 s stalls (first hardware run).
-- Title, checked: SE at r452 (A on the no-card dialog), then cubog39.hps (stereo
-  48 kHz ADPCM stream, ring of loop/end updates by the game) from r580 to r1133,
-  ended by the game (non-looping HPS). Against tools/sound.py's decode of the same
-  file: correlation 0.99 both channels, gain 0.345 (the voice volume). Dolphin
-  (DumpAudio): same jingle, rms ~4.6k vs ours 4.5-5.1k, then ~22 s of silence, then
-  the attract movie (THP, not implemented). DTK (AI disc stream) is silent in Dolphin
-  and unused; ai.c only keeps its registers.
-- Only one of the four A presses on the no-card dialogs makes a sound; Dolphin, with
-  a card, never shows those dialogs, so this is not compared.
-
-## First New 3DS runs (2026-10-18, `# time` lines, ms per frame)
-
-- Run 1 was dominated by the audio WAV dump (SD writes, now opt-in).
-- Run 2 (manual input, logo -> title -> mode select (scene 5) -> scenario (scene 8,
-  first campaign scene, cubog08c.hps)): logo/dialogs 57 fps (game ~14 ms); title
-  ~9 fps (gx vertex 52 ms, game 45); campaign scene 4.2 fps (gx vertex 131.5,
-  game 100, tex 8; 968 draws, 16384 tris = the vertex buffer cap). Hardware runs our
-  CPU vertex path FASTER than Citra (title: 52 vs 140 ms); Citra is not a lower bound.
-- Campaign scene logs `vertex buffer full` (geometry past 16384 triangles dropped) and
-  `C3D_TexInit failed` (linear/VRAM exhausted?). Not investigated.
-- Audio is choppy only because the game steps per retrace at 4-9 fps (AX frames are
-  tied to retraces); ndsp itself never dropped a buffer.
-- Next: vertex transform/lighting in the PICA vertex shader; find the campaign's 100 ms
-  of game time (translated code vs SDK layer, e.g. MTX); vertex buffer and texture
-  memory limits.
-
-## Performance pass (2026-10-18, Citra -Fast `# time`, ms per frame)
-
-| | title vtx | campaign vtx | campaign game | campaign tex | campaign fps |
-|---|---|---|---|---|---|
-| CPU transform | 139.5 | 312.5 | 165 | 22 | 2.0 |
-| PICA vertex shader | 32.1 | 100.7 | 182.7 | - | 3.3 |
-| this pass | 27.8 | 82.7 | 76.7 | 58.2 | 3.7 |
-| EFB copy textures skipped | 27.7 | 82.3 | 77.8 | 7.4 | 4.6 |
-
-- `# prof` (cpu.lr sampler, runtime/log.c): ~80% of campaign samples at lr 0x801961ac,
-  i.e. inside sdk_GXCallDisplayList. "game" time was our host GX code, not translated
-  game code: two GSPGPU_FlushDataCache syscalls per draw (~1260 draws). Now one flush
-  of the used vertex/index range per frame (frame_end). The rest of game code: under
-  3% per call site.
-- `C3D_TexInit failed`: fixed. I4/IA4 -> LA4, I8/IA8 -> LA8, RGB565 -> RGB565 (exact,
-  converted straight from the GX tiles), LRU eviction and retry on failure, and a
-  texture whose contents change reuses its allocation. The failing texture was
-  0x81327020, 600x440 I4: the destination of a GXCopyTex every frame (GXSetTexCopySrc
-  0,0,600,440; GXSetTexCopyDst fmt 0x20, believed to be the red channel at 4 bits; clear 1). EFB -> texture copies are not
-  emulated, so RAM there is stale (the dump decodes to noise); GXCopyTex destinations
-  are now not drawn (`# gx: EFB copy texture not drawn`). Dolphin draws a copy of the
-  frame there (an effect layer); emulating it = render to a PICA texture at GXCopyTex.
-- Vertex: XF matrices uploaded only after a GXLoad*MtxImm (setup 40 -> 20 ms per
-  frame); decode keeps only the attributes the PICA vertex reads. Decode is ~61 ms for
-  28k vertices; inlining the readers did not help in Citra. gx state (setup_tev /
-  setup_pixel / C3D_DrawElements, ~39 us per draw) is 49 ms: next target (dirty flags).
-- The campaign's first dialog appears after some beeps. At 3-4 fps the autotest needs
-  ~3000 retraces and A pressed every 120 retraces (held 30) to reach and advance it.
-
 ## Generated by tools/recomp/recomp.py
 
 Functions translated: 2723. SDK stubs: 1049. MetroTRK entries skipped: 184. Jump tables as switch: 52.
@@ -283,19 +195,13 @@ Functions translated: 2723. SDK stubs: 1049. MetroTRK entries skipped: 184. Jump
 0x800034b0, 0x800034b4, 0x800034b8, 0x800034bc, 0x800034c0, 0x800034c4, 0x800034c8, 0x800034cc, 0x800034d0, 0x800034d4, 0x800034d8, 0x800035ac, 0x800036ac, 0x800036b0, 0x800036b4, 0x800036b8, 0x800036bc, 0x800036c0, 0x800036c4, 0x800036c8, 0x800036cc, 0x800036d0, 0x800036d4, 0x800036d8, 0x800036dc, 0x800036e0, 0x800036e4, 0x800036e8, 0x800036ec, 0x800036f0, 0x800036f4, 0x800037ac, 0x800037b0, 0x800037b4, 0x800037b8, 0x800037bc, 0x800037c0, 0x800037c4, 0x800037c8, 0x800037cc, 0x800037d0, 0x800037d4, 0x800037d8, 0x800037dc, 0x800038ac, 0x800038b0, 0x800038b4, 0x800038b8, 0x800038bc, 0x800038c0, 0x800038c4, 0x800038c8, 0x800038cc, 0x800038d0, 0x800038d4, 0x800038d8, 0x800038dc, 0x800039ac, 0x800039b0, 0x800039b4, 0x800039b8, 0x800039bc, 0x800039c0, 0x800039c4, 0x800039c8, 0x800039cc, 0x800039d0, 0x800039d4, 0x800039d8, 0x800039dc, 0x80003aac, 0x80003ab0, 0x80003ab4, 0x80003ab8, 0x80003abc, 0x80003ac0, 0x80003ac4, 0x80003ac8, 0x80003acc, 0x80003ad0, 0x80003ad4, 0x80003ad8, 0x80003adc, 0x80003bac, 0x80003bb0, 0x80003bb4, 0x80003bb8, 0x80003bbc, 0x80003bc0, 0x80003bc4, 0x80003bc8, 0x80003bcc, 0x80003bd0, 0x80003bd4, 0x80003bd8, 0x80003bdc, 0x80003cac, 0x80003cb0, 0x80003cb4, 0x80003cb8, 0x80003cbc, 0x80003cc0, 0x80003cc4, 0x80003cc8, 0x80003ccc, 0x80003cd0, 0x80003cd4, 0x80003cd8, 0x80003cdc, 0x80003dac, 0x80003db0, 0x80003db4, 0x80003db8, 0x80003dbc, 0x80003dc0, 0x80003dc4, 0x80003dc8, 0x80003dcc, 0x80003dd0, 0x80003dd4, 0x80003dd8, 0x80003ddc, 0x800040ac, 0x800040b0, 0x800040b4, 0x800040b8, 0x800040bc, 0x800040c0, 0x800040c4, 0x800040c8, 0x800040cc, 0x800040d0, 0x800040d4, 0x800040d8, 0x800040dc, 0x800041ac, 0x800041b0, 0x800041b4, 0x800041b8, 0x800041bc, 0x800041c0, 0x800041c4, 0x800041c8, 0x800041cc, 0x800041d0, 0x800041d4, 0x800041d8, 0x800041dc, 0x800042ac, 0x800042b0, 0x800042b4, 0x800042b8, 0x800042bc, 0x800042c0, 0x800042c4, 0x800042c8, 0x800042cc, 0x800042d0, 0x800042d4, 0x800042d8, 0x800042dc, 0x800043ac, 0x800043cc, 0x800043d0, 0x800043d4, 0x800043d8, 0x800043dc, 0x800043e0, 0x800043e4, 0x800043e8, 0x800043ec, 0x800043f0, 0x800043f4, 0x800043f8, 0x800043fc, 0x80004400, 0x80004404, 0x80004408, 0x8000440c, 0x80004410, 0x80004414, 0x80004418, 0x8000441c, 0x80004420, 0x80004424, 0x80004428, 0x8000442c, 0x80004430, 0x800044ac, 0x800044b0, 0x800044b4, 0x800044b8, 0x800044bc, 0x800044c0, 0x800044c4, 0x800044c8, 0x800044cc, 0x800044d0, 0x800044d4, 0x800044d8 ...
 
 
-## New 3DS run 3 (2026-10-18, build 2b716e0 + pad log)
+## Interrupt delivery at back-edges (2026-10-18)
 
-- Logo/title ~57 fps; campaign bedroom (scene 8) 9-11.5 fps: frame ~90-105 ms =
-  game 36-50, gx vertex 29-32, gx state 16-18, tex 3.5, end/wait 1.4. Hardware is
-  ~2x Citra here. User screenshots: dialog box, lab and bedroom render correctly.
-- `# prof` on hardware: 55% sdk_GXCallDisplayList (lr 0x801961ac), 20% sdk_GXBegin
-  (0x801a4728): our GX code is still the bulk of "game" time.
-- Pause (Start, r5404) hangs: the game posts a 0x340000-byte ARAM copy through its
-  own async manager (f_800eb004, ARQPostRequest) and spins at 0x800b1134 on
-  `while (*status != 2)` with no SDK call in the loop. Our ARQ completes the copy
-  at once but runs the callback only at a wait point (retrace / DVD poll), so it
-  never runs. Delivering ARQ callbacks in OSRestoreInterrupts/OSEnableInterrupts
-  (tried) breaks the title (stuck at scene 2 sub 2, no draws): too early, before
-  the game sets up what the callback completes. Needed: interrupt delivery inside
-  translated code (poll a pending-event flag at loop back-edges, MSR[EE] set) with
-  a DMA latency (due after len / bandwidth), like a real ARAM interrupt.
+- Fixes the pause hang above. recomp.py emits `RECOMP_POLL();` before every backward
+  intra-function goto (3327 sites); it tests `recomp_event_pending` only.
+- runtime/ar.c: each ARQ request is due at post time + 400 + len/2 timebase ticks
+  (~10 us + ~80 MB/s). `recomp_poll_events` runs due callbacks in order when MSR[EE]
+  is set; wait points (retrace, DVD poll) still run all pending ones at once, so the
+  title path is as before. DVD completions are still wait-point only.
+- Citra (user-driven): after the campaign intro, Start opens the pause menu (scene c);
+  Return to Game etc. shown. Hardware not yet tested.

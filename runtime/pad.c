@@ -24,7 +24,7 @@ static s8 axis(int v) { v = v * 100 / 155; return v > 127 ? 127 : v < -128 ? -12
  * retraces; the buttons are held on controller 1 for from <= retrace < to.
  * A line "<n> 0 0" sets the run length to n retraces instead (runtime/vi.c).
  * tools/citra/autotest.ps1 -Pad writes it. */
-static struct { u32 from, to; u16 b; } script[32];
+static struct { u32 from, to; u16 b; } script[128];
 static int script_n = -1;
 static u16 script_buttons(void) {
     if (script_n < 0) {
@@ -32,7 +32,7 @@ static u16 script_buttons(void) {
         FILE *f = fopen("sdmc:/cr_pad_script.txt", "r");
         if (f) {
             unsigned long a, z, b;
-            while (script_n < 32 && fscanf(f, "%lu %lu %lx", &a, &z, &b) == 3) {
+            while (script_n < 128 && fscanf(f, "%lu %lu %lx", &a, &z, &b) == 3) {
                 if (z == 0) { recomp_run_frames = a; continue; }   /* "<n> 0 0": run length in retraces */
                 script[script_n].from = a; script[script_n].to = z; script[script_n].b = b; script_n++; }
             fclose(f);

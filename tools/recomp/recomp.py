@@ -577,6 +577,9 @@ def translate_function(p, entry):
                 labels.add(t)
                 if t not in body:
                     todo.append(t)
+                # loop back-edge: pending "interrupts" (ARQ DMA done) are taken here
+                if is_branch and t <= src:
+                    return f'RECOMP_POLL(); goto L_{t:08x};'
                 return f'goto L_{t:08x};'
             return f'f_{t:08x}(); return;'
         c = p.callee(t) if t in p.starts or k == 'stub' and t in p.docnames else None
@@ -656,7 +659,7 @@ def translate_function(p, entry):
     p.covered.update(body)
     # emit in address order; non-terminal blocks not followed by their successor get a goto
     order = sorted(body)
-    term = lambda x: x.endswith('return;') or x.startswith('goto ') or x.startswith('switch')
+    term = lambda x: x.endswith('return;') or x.startswith(('goto ', 'RECOMP_POLL(); goto ', 'switch'))
     gotos = set()
     for i, a in enumerate(order):
         if not term(body[a][-1]) and (i + 1 == len(order) or order[i + 1] != a + 4):
