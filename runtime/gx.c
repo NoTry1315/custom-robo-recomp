@@ -6,10 +6,10 @@
  * pipe 0xCC008000 itself (inline GXPosition* etc.), see gx_fifo_write. A
  * primitive is decoded and drawn as soon as its last byte arrives.
  *
- * The GX transform, lighting and texgen run on the CPU (Dolphin's software
- * vertex loader semantics); the PICA gets clip-space positions already mapped
- * from the EFB to the 400x240 top screen, so its vertex shader is a
- * pass-through. TEV stages are translated to PICA texenv stages; what the
+ * Vertices are decoded on the CPU (Dolphin's vertex loader semantics) into
+ * untransformed PICA vertices; the GX transform, COLOR0/ALPHA0 lighting and
+ * texgen run in the PICA vertex shader (vshader.v.pica) from per-draw
+ * uniforms, which also map the EFB to the 400x240 top screen. TEV stages are translated to PICA texenv stages; what the
  * PICA cannot express is logged once (docs/recomp_unknowns.md, "GX"). */
 #include <3ds.h>
 #include <citro3d.h>
@@ -59,14 +59,19 @@ static struct {
 } gx;
 
 /* ---------------------------------------------------------------- PICA side */
-#define VB_VERTS 0xC000   /* per frame half; the title tunnel is ~33k vertices */
-typedef struct { float pos[4], clr[4], tc[3][2]; } PVtx;
+#define VB_VERTS 0xC000      /* per frame half; drawn indexed (u16), so at most 0x10000 */
+#define IB_INDICES 0x30000   /* per frame half */
+typedef struct { float pos[4]; u8 mat[4]; float nrm[3], tc[3][3]; } PVtx;   /* vshader.v.pica inputs */
 
 static C3D_RenderTarget *target;
 static DVLB_s *vsh_dvlb;
 static shaderProgram_s vsh;
 static PVtx *vbuf[2];
-static u32 vb_used, vb_half;
+static u16 *ibuf[2];
+static u32 vb_used, ib_used, vb_half;
+static u8 mat_vtx[4], mat_reg[4];   /* material colour per component: vertex CLR0 or register */
+static float ushadow[96][4];        /* last value written per float uniform */
+static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop;
 static int frame_open, clear_pending = 1;
 static u32 frames;
 
@@ -84,15 +89,22 @@ void recomp_gx_init(void) {
     C3D_AttrInfo *ai = C3D_GetAttrInfo();
     AttrInfo_Init(ai);
     AttrInfo_AddLoader(ai, 0, GPU_FLOAT, 4);
-    AttrInfo_AddLoader(ai, 1, GPU_FLOAT, 4);
-    AttrInfo_AddLoader(ai, 2, GPU_FLOAT, 2);
-    AttrInfo_AddLoader(ai, 3, GPU_FLOAT, 2);
-    AttrInfo_AddLoader(ai, 4, GPU_FLOAT, 2);
+    AttrInfo_AddLoader(ai, 1, GPU_UNSIGNED_BYTE, 4);
+    AttrInfo_AddLoader(ai, 2, GPU_FLOAT, 3);
+    AttrInfo_AddLoader(ai, 3, GPU_FLOAT, 3);
+    AttrInfo_AddLoader(ai, 4, GPU_FLOAT, 3);
+    AttrInfo_AddLoader(ai, 5, GPU_FLOAT, 3);
     vbuf[0] = linearAlloc(sizeof(PVtx) * VB_VERTS * 2);
     vbuf[1] = vbuf[0] + VB_VERTS;
-    C3D_BufInfo *bi = C3D_GetBufInfo();
-    BufInfo_Init(bi);
-    BufInfo_Add(bi, vbuf[0], sizeof(PVtx), 5, 0x43210);
+    ibuf[0] = linearAlloc(2 * IB_INDICES * 2);
+    ibuf[1] = ibuf[0] + IB_INDICES;
+    shaderInstance_s *si = vsh.vertexShader;
+    u_clip = shaderInstanceGetUniformLocation(si, "clipm"); u_pos = shaderInstanceGetUniformLocation(si, "posm");
+    u_nrm = shaderInstanceGetUniformLocation(si, "nrmm"); u_tex = shaderInstanceGetUniformLocation(si, "texm");
+    u_amb = shaderInstanceGetUniformLocation(si, "amb"); u_lcfg = shaderInstanceGetUniformLocation(si, "lcfg");
+    u_lights = shaderInstanceGetUniformLocation(si, "lights"); u_blit = shaderInstanceGetUniformLocation(si, "blit");
+    u_iloop = shaderInstanceGetUniformLocation(si, "iloop");
+    memset(ushadow, 0xff, sizeof ushadow);
     gx.efb_w = 640; gx.efb_h = 480;
     gx.color_update = gx.alpha_update = 1;
     gx.z_enable = 1; gx.z_func = 3; gx.z_update = 1;
@@ -117,7 +129,10 @@ static void frame_begin(void) {
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
     C3D_FrameDrawOn(target);
     frame_open = 1;
-    vb_half = frames & 1; vb_used = 0;
+    vb_half = frames & 1; vb_used = ib_used = 0;
+    C3D_BufInfo *bi = C3D_GetBufInfo();   /* indices are relative to this half */
+    BufInfo_Init(bi);
+    BufInfo_Add(bi, vbuf[vb_half], sizeof(PVtx), 6, 0x543210);
     if (clear_pending) {
         u32 c = gx.clear_color[0] << 24 | gx.clear_color[1] << 16 | gx.clear_color[2] << 8 | gx.clear_color[3];
         C3D_RenderTargetClear(target, C3D_CLEAR_ALL, c, gx.clear_z);
@@ -125,18 +140,21 @@ static void frame_begin(void) {
     }
 }
 
-static u32 st_draws, st_tris, st_tex;
+static u32 st_draws, st_tris, st_tex, st_evict, st_upload, st_upbytes;
 
 static void frame_end(void) {
     frame_begin();
     if (frames % 300 == 0) {   /* draw stats every 300 copies */
-        recomp_log("# gx frame %lu: draws %lu tris %lu textured %lu efb %dx%d clear %02x%02x%02x%02x\n", (unsigned long)frames,
-            (unsigned long)st_draws, (unsigned long)st_tris, (unsigned long)st_tex, gx.efb_w, gx.efb_h,
+        recomp_log("# gx frame %lu: draws %lu tris %lu textured %lu evicted %lu uploads %lu (%lu KB) efb %dx%d clear %02x%02x%02x%02x\n", (unsigned long)frames,
+            (unsigned long)st_draws, (unsigned long)st_tris, (unsigned long)st_tex, (unsigned long)st_evict, (unsigned long)st_upload, (unsigned long)(st_upbytes >> 10), gx.efb_w, gx.efb_h,
             gx.clear_color[0], gx.clear_color[1], gx.clear_color[2], gx.clear_color[3]);
     }
-    st_draws = st_tris = st_tex = 0;
+    st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = 0;
     /* a frame with no draws still shows the clear color (frame_begin above) */
     u64 t0 = recomp_ticks();
+    /* one flush per frame: the GPU reads the buffers only at C3D_FrameEnd */
+    if (vb_used) GSPGPU_FlushDataCache(vbuf[vb_half], vb_used * sizeof(PVtx));
+    if (ib_used) GSPGPU_FlushDataCache(ibuf[vb_half], ib_used * 2);
     C3D_FrameEnd(0);
     recomp_prof[PROF_GX_END] += recomp_ticks() - t0;
     frame_open = 0;
@@ -232,14 +250,63 @@ static u32 tex_bytes(int w, int h, int fmt) {
     return ((w + tw - 1) / tw * tw) * ((h + th - 1) / th * th) * tex_bpp[fmt] / 8;
 }
 
-/* morton offset inside an 8x8 PICA tile */
-static u32 morton(u32 x, u32 y) {
-    u32 m = 0;
-    for (int i = 0; i < 3; i++) m |= ((x >> i) & 1) << (2 * i) | ((y >> i) & 1) << (2 * i + 1);
-    return m;
+static C3D_Tex *tex_bind_params(TexEntry *e, const TexMap *m, float *su, float *sv);
+
+/* PICA format holding a GX format exactly: I4/IA4 -> LA4, I8/IA8 -> LA8 (GX
+ * intensity also feeds alpha), RGB565 -> RGB565; the rest RGBA8 */
+static GPU_TEXCOLOR pica_fmt(int fmt) {
+    switch (fmt) {
+    case 0: case 2: return GPU_LA4;
+    case 1: case 3: return GPU_LA8;
+    case 4: return GPU_RGB565;
+    default: return GPU_RGBA8;
+    }
 }
 
-static C3D_Tex *tex_bind_params(TexEntry *e, const TexMap *m, float *su, float *sv);
+static const u8 morton_x[8] = {0, 1, 4, 5, 16, 17, 20, 21}, morton_y[8] = {0, 2, 8, 10, 32, 34, 40, 42};
+static u32 col_src[1024], col_dst[1024];
+
+/* GX texture -> W x H PICA tiled texture; GX row y is PICA memory row y,
+ * sampled at v = 1 - y/H (see set_texgen); padding repeats the edge. The
+ * compact formats are converted straight from the GX tiles. */
+static void tex_upload(TexEntry *e, const TexMap *m, u32 W, u32 H, GPU_TEXCOLOR pf, const Tlut *tl) {
+    int w = m->w > 1024 ? 1024 : m->w, h = m->h > 1024 ? 1024 : m->h, fmt = m->fmt;
+    if (pf != GPU_RGBA8) {
+        int tw = tile_w[fmt], th = tile_h[fmt], tn = tw * th, bw = (w + tw - 1) / tw;
+        const u8 *src = ram + (m->img & RAM_MASK);
+        for (u32 x = 0; x < W; x++) {   /* texel index of column x inside its GX tile row */
+            u32 sx = x < (u32)w ? x : w - 1;
+            col_src[x] = sx / tw * tn + sx % tw;
+            col_dst[x] = (x >> 3) * 64 + morton_x[x & 7];
+        }
+        for (u32 y = 0; y < H; y++) {
+            u32 sy = y < (u32)h ? y : h - 1;
+            u32 rs = sy / th * bw * tn + sy % th * tw, rd = (y >> 3) * (W >> 3) * 64 + morton_y[y & 7];
+            switch (fmt) {
+            case 0: { u8 *d = e->tex.data; for (u32 x = 0; x < W; x++) { u32 i = rs + col_src[x], v = (src[i >> 1] >> ((i & 1) ? 0 : 4)) & 15; d[rd + col_dst[x]] = (u8)(v << 4 | v); } break; }
+            case 2: { u8 *d = e->tex.data; for (u32 x = 0; x < W; x++) { u8 v = src[rs + col_src[x]]; d[rd + col_dst[x]] = (u8)(v << 4 | v >> 4); } break; }
+            case 1: { u16 *d = e->tex.data; for (u32 x = 0; x < W; x++) { u16 v = src[rs + col_src[x]]; d[rd + col_dst[x]] = v << 8 | v; } break; }
+            case 3: { u16 *d = e->tex.data; for (u32 x = 0; x < W; x++) { const u8 *p = src + 2 * (rs + col_src[x]); d[rd + col_dst[x]] = (u16)(p[1] << 8 | p[0]); } break; }
+            default: { u16 *d = e->tex.data; for (u32 x = 0; x < W; x++) { const u8 *p = src + 2 * (rs + col_src[x]); d[rd + col_dst[x]] = (u16)(p[0] << 8 | p[1]); } break; }
+            }
+        }
+    } else {
+        if (!decode_buf) decode_buf = malloc(1024 * 1024 * 4);
+        tex_decode(decode_buf, m->img, w, h, fmt, tl);
+        u32 *d = e->tex.data;
+        for (u32 x = 0; x < W; x++) col_dst[x] = (x >> 3) * 64 + morton_x[x & 7];
+        for (u32 y = 0; y < H; y++) {
+            const u32 *row = decode_buf + (y < (u32)h ? y : h - 1) * w;
+            u32 rd = (y >> 3) * (W >> 3) * 64 + morton_y[y & 7];
+            for (u32 x = 0; x < W; x++) {
+                u32 c = row[x < (u32)w ? x : w - 1];
+                d[rd + col_dst[x]] = __builtin_bswap32(c);   /* R,G,B,A bytes -> PICA A,B,G,R */
+            }
+        }
+    }
+    GSPGPU_FlushDataCache(e->tex.data, e->tex.size);
+    st_upload++; st_upbytes += e->tex.size;
+}
 
 static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     if (!m->img || !tile_w[m->fmt & 15] || !m->w || !m->h) return NULL;
@@ -252,30 +319,36 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     }
     u32 n = tex_bytes(m->w, m->h, m->fmt), hash = hash_bytes(m->img, n);
     if (tl) hash ^= hash_bytes(tl->addr, tl->n * 2) * 31 + tl->fmt;
-    TexEntry *e = NULL, *victim = NULL;
+    TexEntry *e = NULL, *victim = NULL, *same = NULL;
     for (int i = 0; i < TEX_CACHE; i++) {
         TexEntry *t = &tcache[i];
-        if (t->used && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt && t->hash == hash) { e = t; break; }
+        if (t->used && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt) {
+            if (t->hash == hash) { e = t; break; }
+            if (t->last < frames) same = t;   /* changed contents: reuse its memory (the GPU is done with it) */
+        }
         if (!t->used) { if (!victim || victim->used) victim = t; }
         else if ((!victim || (victim->used && t->last < victim->last)) && t->last + 2 < frames) victim = t;
     }
-    if (!e) {
+    if (!e && same) {
+        e = same;
+        tex_upload(e, m, e->tex.width, e->tex.height, pica_fmt(m->fmt), tl);
+        e->hash = hash;
+    } else if (!e) {
         if (!victim) { ONCE("texture cache full\n"); return NULL; }
         e = victim;
         if (e->used) C3D_TexDelete(&e->tex);
+        e->used = 0;
         u32 W = pow2(m->w), H = pow2(m->h);
-        if (!C3D_TexInit(&e->tex, W, H, GPU_RGBA8)) { e->used = 0; ONCE("C3D_TexInit failed\n"); return NULL; }
-        if (!decode_buf) decode_buf = malloc(1024 * 1024 * 4);
-        int w = m->w > 1024 ? 1024 : m->w, h = m->h > 1024 ? 1024 : m->h;
-        tex_decode(decode_buf, m->img, w, h, m->fmt, tl);
-        u32 *dst = e->tex.data;
-        /* GX row y is PICA memory row y, sampled at v = 1 - y/H (see emit); padding repeats the edge */
-        for (u32 y = 0; y < H; y++) for (u32 x = 0; x < W; x++) {
-            u32 c = decode_buf[(y < (u32)h ? y : h - 1) * w + (x < (u32)w ? x : w - 1)];
-            u32 r = c & 255, g = (c >> 8) & 255, b = (c >> 16) & 255, a = c >> 24;
-            dst[((y >> 3) * (W >> 3) + (x >> 3)) * 64 + morton(x & 7, y & 7)] = a | b << 8 | g << 16 | r << 24;
+        GPU_TEXCOLOR pf = pica_fmt(m->fmt);
+        while (!C3D_TexInit(&e->tex, W, H, pf)) {   /* out of linear memory: free the least recently used */
+            TexEntry *old = NULL;
+            for (int i = 0; i < TEX_CACHE; i++)
+                if (tcache[i].used && tcache[i].last < frames && (!old || tcache[i].last < old->last)) old = &tcache[i];
+            if (!old) { ONCE("C3D_TexInit failed with nothing left to evict\n"); return NULL; }
+            C3D_TexDelete(&old->tex); old->used = 0;
+            st_evict++;
         }
-        GSPGPU_FlushDataCache(dst, W * H * 4);
+        tex_upload(e, m, W, H, pf, tl);
         e->img = m->img; e->w = m->w; e->h = m->h; e->fmt = m->fmt; e->hash = hash; e->used = 1;
     }
     e->last = frames;
@@ -494,7 +567,6 @@ static void setup_pixel(void) {
 }
 
 /* ---------------------------------------------------------------- vertices */
-typedef struct { float pos[3], nrm[3], tex[8][2]; u8 clr[2][4]; u8 pnmtx, texmtx[8]; } Vtx;
 
 static const u8 comp_size[5] = {1, 1, 2, 2, 4};
 static const u8 clr_size[6] = {2, 3, 4, 2, 3, 4};
@@ -514,16 +586,6 @@ static int attr_size(int fmt, int a) {
 }
 static int vtx_size(int fmt) { int n = 0; for (int a = 0; a <= 20; a++) n += attr_size(fmt, a); return n; }
 
-static float read_comp(const u8 *p, int type, int frac) {
-    switch (type) {
-    case 0: return p[0] / (float)(1 << frac);
-    case 1: return (s8)p[0] / (float)(1 << frac);
-    case 2: return (u16)(p[0] << 8 | p[1]) / (float)(1 << frac);
-    case 3: return (s16)(p[0] << 8 | p[1]) / (float)(1 << frac);
-    default: { u32 v = (u32)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; return u2f(v); }
-    }
-}
-
 static void read_color(const u8 *p, int type, u8 *c) {
     switch (type) {
     case 0: { u32 v = rgb565(p[0] << 8 | p[1]); c[0] = v; c[1] = v >> 8; c[2] = v >> 16; c[3] = 255; break; }
@@ -536,141 +598,232 @@ static void read_color(const u8 *p, int type, u8 *c) {
     }
 }
 
-static void decode_vtx(const u8 *p, int fmt, Vtx *v) {
-    memset(v, 0, sizeof *v);
-    v->pnmtx = gx.cur_mtx;
-    for (int i = 0; i < 8; i++) v->texmtx[i] = gx.tex_mtx_idx[i];
+/* One plan per draw: where each present attribute's bytes come from. rd reads
+ * n components (big-endian, fixed point scaled) into out. */
+typedef struct APlan APlan;
+struct APlan { s8 attr, d, type, cs, n; u8 off, size, dst; float scale; const u8 *base; u32 stride; void (*rd)(const u8 *, const APlan *, float *); };
+
+static inline u16 be16(const u8 *p) { return (u16)(p[0] << 8 | p[1]); }
+static void rd_u8(const u8 *p, const APlan *a, float *o) { for (int i = 0; i < a->n; i++) o[i] = p[i] * a->scale; }
+static void rd_s8(const u8 *p, const APlan *a, float *o) { for (int i = 0; i < a->n; i++) o[i] = (s8)p[i] * a->scale; }
+static void rd_u16(const u8 *p, const APlan *a, float *o) { for (int i = 0; i < a->n; i++) o[i] = be16(p + 2 * i) * a->scale; }
+static void rd_s16(const u8 *p, const APlan *a, float *o) { for (int i = 0; i < a->n; i++) o[i] = (s16)be16(p + 2 * i) * a->scale; }
+static void rd_f32(const u8 *p, const APlan *a, float *o) {
+    for (int i = 0; i < a->n; i++) { u32 v = (u32)p[4 * i] << 24 | p[4 * i + 1] << 16 | p[4 * i + 2] << 8 | p[4 * i + 3]; o[i] = u2f(v); }
+}
+static void rd_s16x3(const u8 *p, const APlan *a, float *o) {
+    float s = a->scale; o[0] = (s16)be16(p) * s; o[1] = (s16)be16(p + 2) * s; o[2] = (s16)be16(p + 4) * s;
+}
+static void rd_s16x2(const u8 *p, const APlan *a, float *o) { float s = a->scale; o[0] = (s16)be16(p) * s; o[1] = (s16)be16(p + 2) * s; }
+static void rd_s8x3(const u8 *p, const APlan *a, float *o) { float s = a->scale; o[0] = (s8)p[0] * s; o[1] = (s8)p[1] * s; o[2] = (s8)p[2] * s; }
+static void rd_f32x3(const u8 *p, const APlan *a, float *o) {
+    (void)a; for (int i = 0; i < 3; i++, p += 4) o[i] = u2f((u32)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]);
+}
+static void rd_f32x2(const u8 *p, const APlan *a, float *o) {
+    (void)a; for (int i = 0; i < 2; i++, p += 4) o[i] = u2f((u32)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]);
+}
+
+static int make_plan(int fmt, APlan *pl, int *vsize) {
+    int np = 0, off = 0;
     for (int a = 0; a <= 20; a++) {
         int d = gx.desc[a];
         if (!d) continue;
-        if (a == 0) { v->pnmtx = *p++; continue; }
-        if (a <= 8) { v->texmtx[a - 1] = *p++; continue; }
+        APlan *q = &pl[np++];
+        memset(q, 0, sizeof *q);
+        q->attr = a; q->d = d; q->off = off;
+        if (a <= 8) { off += 1; continue; }
         const VtxFmt *f = &gx.vat[fmt][a];
-        const u8 *src = p;
-        u8 tmp[40];
+        gx.desc[a] = 1; q->size = attr_size(fmt, a); gx.desc[a] = d;
+        off += d == 1 ? q->size : d == 2 ? 1 : 2;
         if (d >= 2) {
-            u32 idx = d == 2 ? p[0] : (u32)(p[0] << 8 | p[1]);
-            p += d == 2 ? 1 : 2;
-            int arr = a - A_POS;
-            u32 base = GUEST(gx.array_base[arr]) + idx * gx.array_stride[arr];
-            int n = attr_size(fmt, a) ? 0 : 0;
-            gx.desc[a] = 1; n = attr_size(fmt, a); gx.desc[a] = d;
-            for (int i = 0; i < n && i < 40; i++) tmp[i] = rd8(base + i);
-            src = tmp;
-        } else p += attr_size(fmt, a);
-        int cs = comp_size[f->type > 4 ? 4 : f->type];
-        switch (a) {
-        case A_POS:
-            for (int i = 0; i < (f->cnt ? 3 : 2); i++) v->pos[i] = read_comp(src + i * cs, f->type, f->frac);
-            break;
-        case A_NRM: {
-            int fr = f->type == 1 ? 6 : f->type == 3 ? 14 : 0;
-            for (int i = 0; i < 3; i++) v->nrm[i] = read_comp(src + i * cs, f->type, fr);
-            break; }
-        case A_CLR0: case A_CLR1: read_color(src, f->type, v->clr[a - A_CLR0]); break;
-        default:
-            for (int i = 0; i < (f->cnt ? 2 : 1); i++) v->tex[a - A_TEX0][i] = read_comp(src + i * cs, f->type, f->frac);
-            break;
+            q->base = ram + (GUEST(gx.array_base[a - A_POS]) & RAM_MASK);
+            q->stride = gx.array_stride[a - A_POS];
+        }
+        q->type = f->type > 4 ? 4 : f->type;
+        q->cs = comp_size[(int)q->type];
+        int frac = f->frac;
+        if (a == A_POS) q->n = f->cnt ? 3 : 2;
+        else if (a == A_NRM) { q->n = 3; frac = f->type == 1 ? 6 : f->type == 3 ? 14 : 0; }
+        else if (a >= A_TEX0) q->n = f->cnt ? 2 : 1;
+        if (a == A_CLR0 || a == A_CLR1) q->type = f->type > 5 ? 5 : f->type;
+        q->scale = 1.0f / (float)(1 << frac);
+        if (a != A_CLR0 && a != A_CLR1) {
+            static void (*const gen[5])(const u8 *, const APlan *, float *) = {rd_u8, rd_s8, rd_u16, rd_s16, rd_f32};
+            q->rd = gen[(int)q->type];
+            if (q->type == 3 && q->n == 3) q->rd = rd_s16x3;
+            else if (q->type == 3 && q->n == 2) q->rd = rd_s16x2;
+            else if (q->type == 1 && q->n == 3) q->rd = rd_s8x3;
+            else if (q->type == 4 && q->n == 3) q->rd = rd_f32x3;
+            else if (q->type == 4 && q->n == 2) q->rd = rd_f32x2;
         }
     }
+    *vsize = off;
+    return np;
 }
 
-static void mtx_mul(const float *m, const float *in, float w, float *out, int rows) {
-    for (int r = 0; r < rows; r++) out[r] = m[r * 4] * in[0] + m[r * 4 + 1] * in[1] + m[r * 4 + 2] * in[2] + m[r * 4 + 3] * w;
-}
+/* Keeps only what the PICA vertex needs: PNMTXIDX, POS, NRM, CLR0 when a
+ * material component comes from it, and texcoords a unit reads. dst = PVtx tc
+ * unit mask for TEXn, and POS/NRM also feeding texgen. */
+static u8 tc_fed;   /* PICA tc units written by some attribute (trim_plan) */
 
-static float clamp01(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
-
-/* GX lighting for one channel side: COLOR0 (rgb) or ALPHA0 (a) */
-static void light_chan(int ci, const Vtx *v, const float *vpos, const float *vnrm, float *out, int comps, int first) {
-    const Chan *c = &gx.chan[ci];
-    int which = ci & 1;
-    float mat[4], amb[4];
-    for (int i = 0; i < 4; i++) {
-        mat[i] = (c->mat_src ? v->clr[which][i] : gx.mat[which][i]) / 255.0f;
-        amb[i] = (c->amb_src ? v->clr[which][i] : gx.amb[which][i]) / 255.0f;
+static int trim_plan(APlan *pl, int np, const s8 tsrc[3]) {
+    int k = 0, clr = mat_vtx[0] || mat_vtx[3];
+    tc_fed = 0;
+    for (int i = 0; i < np; i++) {
+        APlan q = pl[i];
+        q.dst = 0;
+        for (int u = 0; u < 3; u++)
+            if ((q.attr == A_POS && tsrc[u] == 1) || (q.attr == A_NRM && tsrc[u] == 2) || (q.attr >= A_TEX0 && tsrc[u] == 3 + q.attr - A_TEX0)) q.dst |= 1 << u;
+        tc_fed |= q.dst;
+        if (q.attr == A_PNMTX || q.attr == A_POS || q.attr == A_NRM || (q.attr == A_CLR0 && clr) || (q.attr >= A_TEX0 && q.dst)) pl[k++] = q;
     }
-    for (int k = 0; k < comps; k++) {
-        int i = first + k;
-        float lit = 1;
-        if (c->enable) {
-            lit = amb[i];
-            for (int l = 0; l < 8; l++) {
-                if (!(c->light_mask & (1 << l))) continue;
-                const Light *L = &gx.light[l];
-                float d[3] = {L->pos[0] - vpos[0], L->pos[1] - vpos[1], L->pos[2] - vpos[2]};
-                float dist = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-                if (dist > 0) for (int j = 0; j < 3; j++) d[j] /= dist;
-                float diff = d[0] * vnrm[0] + d[1] * vnrm[1] + d[2] * vnrm[2];
-                if (c->diff_fn == 0) diff = 1; else if (c->diff_fn == 2 && diff < 0) diff = 0;
-                float attn = 1;
-                if (c->attn_fn == 1) {   /* GX_AF_SPOT */
-                    float cs = -(d[0] * L->dir[0] + d[1] * L->dir[1] + d[2] * L->dir[2]);
-                    float num = L->a[0] + L->a[1] * cs + L->a[2] * cs * cs; if (num < 0) num = 0;
-                    float den = L->k[0] + L->k[1] * dist + L->k[2] * dist * dist;
-                    attn = den > 0 ? num / den : 0;
-                } else if (c->attn_fn == 0) {   /* GX_AF_SPEC: approximated as no attenuation */
-                    ONCE("specular light attenuation approximated\n");
-                }
-                lit += diff * attn * L->color[i] / 255.0f;
-            }
-            lit = clamp01(lit);
+    return k;
+}
+
+/* PICA vertex: see runtime/vshader.v.pica */
+static void decode_vtx(const u8 *p, const APlan *pl, int np, PVtx *o) {
+    u8 clr[4] = {0, 0, 0, 0};
+    u32 pn = gx.cur_mtx;
+    o->pos[0] = o->pos[1] = o->pos[2] = 0;
+    o->nrm[0] = o->nrm[1] = o->nrm[2] = 0;
+    for (int u = 0; u < 3; u++) if (!(tc_fed >> u & 1)) { o->tc[u][0] = o->tc[u][1] = 0; o->tc[u][2] = 1; }
+    for (int i = 0; i < np; i++) {
+        const APlan *a = &pl[i];
+        const u8 *src = p + a->off;
+        if (a->attr == A_PNMTX) { pn = *src; continue; }
+        if (a->d >= 2) src = a->base + (a->d == 2 ? src[0] : (u32)(src[0] << 8 | src[1])) * a->stride;
+        switch (a->attr) {
+        case A_POS: a->rd(src, a, o->pos); break;
+        case A_NRM: a->rd(src, a, o->nrm); break;
+        case A_CLR0: read_color(src, a->type, clr); continue;
+        default: {
+            float t[3] = {0, 0, 1};
+            a->rd(src, a, t);
+            for (int u = 0; u < 3; u++) if (a->dst >> u & 1) memcpy(o->tc[u], t, sizeof t);
+            continue;
         }
-        out[i] = mat[i] * lit;
+        }
+        for (int u = 0; u < 3; u++) if (a->dst >> u & 1) memcpy(o->tc[u], a->attr == A_POS ? o->pos : o->nrm, 12);
     }
+    if (pn % 3 || pn >= 30) { ONCE("position matrix row %lu not a PNMTXn\n", (unsigned long)pn); pn = 0; }
+    o->pos[3] = (float)pn;
+    for (int i = 0; i < 4; i++) o->mat[i] = mat_vtx[i] ? clr[i] : mat_reg[i];
 }
 
-static void emit(const Vtx *v, PVtx *o, const float tscale[3][2], const int tcoord[3]) {
-    const float *pm = &gx.xf[(v->pnmtx & 63) * 4];
-    float ep[3], en[3] = {0, 0, 0};
-    mtx_mul(pm, v->pos, 1, ep, 3);
-    if (gx.desc[A_NRM]) {
-        const float *nm = &gx.xf[0x400 + (v->pnmtx & 63) * 3];
-        for (int r = 0; r < 3; r++) en[r] = nm[r * 3] * v->nrm[0] + nm[r * 3 + 1] * v->nrm[1] + nm[r * 3 + 2] * v->nrm[2];
-        float l = sqrtf(en[0] * en[0] + en[1] * en[1] + en[2] * en[2]);
-        if (l > 0) for (int i = 0; i < 3; i++) en[i] /= l;
-    }
-    /* projection (GX packed form) */
+/* ---------------------------------------------------------------- uniforms */
+static void unif_set(int loc, const float (*v)[4], int n) {
+    if (!memcmp(ushadow[loc], v, n * 16)) return;
+    memcpy(ushadow[loc], v, n * 16);
+    C3D_FVec *p = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, loc, n);
+    for (int i = 0; i < n; i++) { p[i].x = v[i][0]; p[i].y = v[i][1]; p[i].z = v[i][2]; p[i].w = v[i][3]; }
+}
+
+/* eye space -> clip space of the rotated 3DS framebuffer: GX projection, then the
+ * viewport (ndc -> EFB pixel), EFB -> 400x240 and the 90-degree rotation, all
+ * affine in (cx, cy, cw) so one 4x4 matrix */
+static void set_clip(void) {
     const float *p = gx.proj;
-    float cx, cy, cz, cw;
-    if (gx.proj_ortho) { cx = p[0] * ep[0] + p[1]; cy = p[2] * ep[1] + p[3]; cz = p[4] * ep[2] + p[5]; cw = 1; }
-    else { cx = p[0] * ep[0] + p[1] * ep[2]; cy = p[2] * ep[1] + p[3] * ep[2]; cz = p[4] * ep[2] + p[5]; cw = -ep[2]; }
-    /* viewport: ndc -> EFB pixel, then EFB -> screen pixel -> rotated framebuffer clip space */
+    float P[4][4] = {{0}}, m[4][4];
+    if (gx.proj_ortho) { P[0][0] = p[0]; P[0][3] = p[1]; P[1][1] = p[2]; P[1][3] = p[3]; P[2][2] = p[4]; P[2][3] = p[5]; P[3][3] = 1; }
+    else { P[0][0] = p[0]; P[0][2] = p[1]; P[1][1] = p[2]; P[1][2] = p[3]; P[2][2] = p[4]; P[2][3] = p[5]; P[3][2] = -1; }
     float s = efb_scale();
-    float ex = gx.vp[0] + gx.vp[2] * 0.5f * (1 + cx / cw) - gx.sc_off[0];
-    float ey = gx.vp[1] + gx.vp[3] * 0.5f * (1 - cy / cw) - gx.sc_off[1];
-    float sx = efb_x0() + ex * s, sy = efb_y0() + ey * s;
-    o->pos[0] = (1 - sy / 120.0f) * cw;
-    o->pos[1] = (1 - sx / 200.0f) * cw;
-    o->pos[2] = cz;   /* GX and PICA both clip z to [-w, 0]; depth map in setup_pixel */
-    o->pos[3] = cw;
-    /* color channel 0 */
-    float c[4] = {0, 0, 0, 0};
-    if (gx.n_chans) { light_chan(0, v, ep, en, c, 3, 0); light_chan(2, v, ep, en, c, 1, 3); }
-    memcpy(o->clr, c, sizeof c);
-    /* texgen */
+    float ay = s * gx.vp[3] * 0.5f / 120.0f, by = 1 - (efb_y0() + s * (gx.vp[1] + gx.vp[3] * 0.5f - gx.sc_off[1])) / 120.0f;
+    float ax = s * gx.vp[2] * 0.5f / 200.0f, bx = 1 - (efb_x0() + s * (gx.vp[0] + gx.vp[2] * 0.5f - gx.sc_off[0])) / 200.0f;
+    for (int c = 0; c < 4; c++) {
+        m[0][c] = ay * P[1][c] + by * P[3][c];
+        m[1][c] = -ax * P[0][c] + bx * P[3][c];
+        m[2][c] = P[2][c];   /* GX and PICA both clip z to [-w, 0]; depth map in setup_pixel */
+        m[3][c] = P[3][c];
+    }
+    unif_set(u_clip, m, 4);
+}
+
+static u32 xf_gen = 1;   /* bumped on every XF matrix write */
+
+static void set_mtx(int lit) {
+    static u32 pos_gen, nrm_gen;
+    float m[30][4];
+    if (pos_gen != xf_gen) { memcpy(m, gx.xf, sizeof m); unif_set(u_pos, m, 30); pos_gen = xf_gen; }
+    if (!lit || nrm_gen == xf_gen) return;
+    nrm_gen = xf_gen;
+    for (int r = 0; r < 30; r++) { const float *n = &gx.xf[0x400 + r * 3]; m[r][0] = n[0]; m[r][1] = n[1]; m[r][2] = n[2]; m[r][3] = 0; }
+    unif_set(u_nrm, m, 30);
+}
+
+/* texgen for PICA unit u: rows R0, R1, R2 with (s, t) = (R0.x / R2.x, R1.x / R2.x) */
+static void set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3], const u8 *v0, const APlan *pl, int np) {
+    float m[9][4];
+    memset(m, 0, sizeof m);
     for (int u = 0; u < 3; u++) {
-        o->tc[u][0] = o->tc[u][1] = 0;
+        float (*row)[4] = &m[u * 3];
+        float g3[3][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 0, 1}};
+        tsrc[u] = 0;
+        row[2][3] = 1;
         int tci = tcoord[u];
         if (tci < 0 || tci >= (int)gx.n_texgens) continue;
         const TexGen *g = &gx.texgen[tci];
-        float in[3] = {0, 0, 1}, w = 1;
-        if (g->src == 0) { memcpy(in, v->pos, sizeof in); }
-        else if (g->src == 1) { memcpy(in, v->nrm, sizeof in); w = 0; }
-        else if (g->src >= 4 && g->src <= 11) { in[0] = v->tex[g->src - 4][0]; in[1] = v->tex[g->src - 4][1]; in[2] = 1; }
-        else { ONCE("texgen src %d not supported\n", g->src); }
-        float out[3] = {in[0], in[1], 1};
-        u32 mid = gx.desc[1 + tci] ? v->texmtx[tci] : g->mtx;
+        if (g->src == 0) tsrc[u] = 1;
+        else if (g->src == 1) tsrc[u] = 2;
+        else if (g->src >= 4 && g->src <= 11) tsrc[u] = 3 + g->src - 4;
+        else { ONCE("texgen src %d not supported\n", g->src); tsrc[u] = 0; }
+        u32 mid = g->mtx;
+        if (gx.desc[1 + tci]) {   /* per-vertex TEXnMTXIDX: the first vertex's */
+            for (int i = 0; i < np; i++) if (pl[i].attr == 1 + tci) mid = v0[pl[i].off];
+            ONCE("per-vertex texture matrix index: first vertex's used for the draw\n");
+        }
         if (g->func <= 1 && mid != 60) {
-            const float *m = &gx.xf[(mid & 63) * 4];
-            if (g->src >= 4) mtx_mul(m, in, 1, out, g->func == 0 ? 3 : 2);
-            else mtx_mul(m, in, w, out, g->func == 0 ? 3 : 2);
-            if (g->func == 1) out[2] = 1;
+            const float *x = &gx.xf[(mid & 63) * 4];
+            for (int r = 0; r < (g->func == 0 ? 3 : 2); r++) memcpy(g3[r], x + r * 4, 16);
+            if (g->src == 1) for (int r = 0; r < 3; r++) g3[r][3] = 0;   /* normal: w = 0 */
+            if (g->func == 0) ONCE("projective texgen divided per vertex\n");
         } else if (g->func > 1) ONCE("texgen func %d not supported\n", g->func);
-        if (g->func == 0 && out[2] != 0 && out[2] != 1) { out[0] /= out[2]; out[1] /= out[2]; ONCE("projective texgen divided per vertex\n"); }
-        o->tc[u][0] = out[0] * tscale[u][0];
-        o->tc[u][1] = 1 - out[1] * tscale[u][1];   /* PICA v = 1 is memory row 0 */
+        for (int c = 0; c < 4; c++) {
+            row[0][c] = g3[0][c] * tscale[u][0];
+            row[1][c] = g3[2][c] - g3[1][c] * tscale[u][1];   /* PICA v = 1 is memory row 0 */
+            row[2][c] = g3[2][c];
+        }
     }
+    unif_set(u_tex, m, 9);
+}
+
+/* COLOR0/ALPHA0 lighting; returns whether the shader's light loop runs */
+static int set_lighting(void) {
+    const Chan *c0 = &gx.chan[0], *c2 = &gx.chan[2];
+    int e0 = gx.n_chans && c0->enable, e2 = gx.n_chans && c2->enable;
+    mat_vtx[0] = mat_vtx[1] = mat_vtx[2] = gx.n_chans && c0->mat_src;
+    mat_vtx[3] = gx.n_chans && c2->mat_src;
+    for (int i = 0; i < 4; i++) mat_reg[i] = gx.n_chans ? gx.mat[0][i] : 0;
+    if ((e0 && c0->amb_src) || (e2 && c2->amb_src)) ONCE("vertex ambient colour: register used\n");
+    float amb[1][4];
+    for (int i = 0; i < 4; i++) amb[0][i] = (i < 3 ? e0 : e2) ? gx.amb[0][i] / 255.0f : 1;
+    unif_set(u_amb, amb, 1);
+    u8 mask = (e0 ? c0->light_mask : 0) | (e2 ? c2->light_mask : 0);
+    if (!mask) { C3D_BoolUnifSet(GPU_VERTEX_SHADER, u_blit, false); return 0; }
+    const Chan *c = e0 ? c0 : c2;
+    if (e0 && e2 && (c0->attn_fn != c2->attn_fn || c0->diff_fn != c2->diff_fn)) ONCE("COLOR0/ALPHA0 light functions differ: COLOR0's used\n");
+    if (c->attn_fn == 0) ONCE("specular light attenuation approximated\n");
+    float cfg[1][4] = {{c->diff_fn ? 1 : 0, c->diff_fn ? 0 : 1, c->diff_fn == 2 ? 0 : -1e30f, 0}};
+    unif_set(u_lcfg, cfg, 1);
+    float L[15][4];
+    memset(L, 0, sizeof L);
+    int n = 0;
+    for (int l = 0; l < 8; l++) {
+        if (!(mask >> l & 1)) continue;
+        if (n == 3) { ONCE("more than 3 lights in one draw\n"); break; }
+        const Light *s = &gx.light[l];
+        float (*d)[4] = &L[n++ * 5];
+        memcpy(d[0], s->pos, 12); memcpy(d[1], s->dir, 12);
+        if (c->attn_fn == 1) { memcpy(d[2], s->a, 12); memcpy(d[3], s->k, 12); }
+        else { d[2][0] = 1; d[3][0] = 1; }
+        for (int i = 0; i < 4; i++) {
+            int on = i < 3 ? e0 && (c0->light_mask >> l & 1) : e2 && (c2->light_mask >> l & 1);
+            d[4][i] = on ? s->color[i] / 255.0f : 0;
+        }
+    }
+    unif_set(u_lights, L, n * 5);
+    C3D_BoolUnifSet(GPU_VERTEX_SHADER, u_blit, true);
+    C3D_IVUnifSet(GPU_VERTEX_SHADER, u_iloop, n - 1, 0, 5, 0);
+    return 1;
 }
 
 static void draw(int prim, int fmt, const u8 *data, int n) {
@@ -692,19 +845,25 @@ static void draw(int prim, int fmt, const u8 *data, int n) {
         tcoord[nunits] = t->coord < 8 ? t->coord : -1;
         unit_of_map[t->map] = nunits++;
     }
+    u64 ts = recomp_ticks();
     setup_tev();
     setup_pixel();
+    recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
     int ntri = prim == 0x80 ? n / 4 * 2 : prim == 0x90 ? n / 3 : n >= 3 ? n - 2 : 0;
     if (!ntri) return;
-    if (vb_used + ntri * 3 > VB_VERTS) { ONCE("vertex buffer full\n"); return; }
-    static Vtx vt[0x10000 / 4];
-    static PVtx pv[0x10000 / 4];
-    int vs = vtx_size(fmt);
-    if (n > (int)(sizeof vt / sizeof vt[0])) n = sizeof vt / sizeof vt[0];
+    if (vb_used + n > VB_VERTS || ib_used + ntri * 3 > IB_INDICES) { ONCE("vertex buffer full\n"); return; }
     u64 t0 = recomp_ticks();
-    for (int i = 0; i < n; i++) { decode_vtx(data + i * vs, fmt, &vt[i]); emit(&vt[i], &pv[i], tscale, tcoord); }
-    recomp_prof[PROF_GX_VTX] += recomp_ticks() - t0;
+    APlan pl[21];
+    int vs, np = make_plan(fmt, pl, &vs);
+    s8 tsrc[3];
+    set_clip();
+    int lit = set_lighting();
+    set_mtx(lit);
+    set_texgen(tscale, tcoord, tsrc, data, pl, np);
+    np = trim_plan(pl, np, tsrc);
     PVtx *o = vbuf[vb_half] + vb_used;
+    for (int i = 0; i < n; i++) decode_vtx(data + i * vs, pl, np, &o[i]);
+    u16 *ix = ibuf[vb_half] + ib_used;
     int k = 0;
     for (int t = 0; t < ntri; t++) {
         int a, b, c;
@@ -712,12 +871,14 @@ static void draw(int prim, int fmt, const u8 *data, int n) {
         else if (prim == 0x90) { a = 3 * t; b = a + 1; c = a + 2; }
         else if (prim == 0x98) { a = t; b = t + 1; c = t + 2; if (t & 1) { int x = a; a = b; b = x; } }
         else { a = 0; b = t + 1; c = t + 2; }
-        o[k++] = pv[a]; o[k++] = pv[b]; o[k++] = pv[c];
+        ix[k++] = vb_used + a; ix[k++] = vb_used + b; ix[k++] = vb_used + c;
     }
+    recomp_prof[PROF_GX_VTX] += recomp_ticks() - t0;
     st_draws++; st_tris += ntri; if (nunits) st_tex++;
-    GSPGPU_FlushDataCache(o, k * sizeof(PVtx));
-    C3D_DrawArrays(GPU_TRIANGLES, vb_half * VB_VERTS + vb_used, k);
-    vb_used += k;
+    ts = recomp_ticks();
+    C3D_DrawElements(GPU_TRIANGLES, k, C3D_UNSIGNED_SHORT, ix);
+    recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
+    vb_used += n; ib_used += k;
 }
 
 /* ---------------------------------------------------------------- FIFO */
@@ -829,12 +990,14 @@ void sdk_GXInvalidateVtxCache(void) { LOG(); }
 
 /* ---------------------------------------------------------------- transform */
 static void load_mtx(u32 src, u32 addr, int rows, int cols) {
+    xf_gen++;
     for (int r = 0; r < rows; r++) for (int c = 0; c < cols; c++)
         if (addr + r * cols + c < 0x600) gx.xf[addr + r * cols + c] = u2f(rd32(src + (r * cols + c) * 4));
 }
 void sdk_GXLoadPosMtxImm(void) { LOG(); load_mtx(R[3], R[4] * 4, 3, 4); }
 void sdk_GXLoadNrmMtxImm(void) {   /* source is a 3x4 matrix, the 3x3 part is used */
     LOG();
+    xf_gen++;
     for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) gx.xf[0x400 + R[4] * 3 + r * 3 + c] = u2f(rd32(R[3] + (r * 4 + c) * 4));
 }
 void sdk_GXLoadTexMtxImm(void) {

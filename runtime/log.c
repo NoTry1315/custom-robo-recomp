@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <string.h>
 #include <setjmp.h>
 #include "ppc.h"
 
@@ -13,6 +14,50 @@
  * retraces. "game" is the rest of the frame: translated code + SDK layer. */
 u64 recomp_prof[PROF_N];
 u64 recomp_ticks(void) { return svcGetSystemTick(); }
+
+/* Sampling profiler: a higher-priority thread on the guest's core wakes every
+ * 0.5 ms and counts cpu.lr, the return address of the last guest call. The
+ * time is in that callee (a leaf, or an SDK function) or in its caller after
+ * it returned; gen/ shows the callee at "cpu.lr = 0x<lr>u; f_...". Logged as
+ * "# prof" lines every 300 retraces, then reset. */
+#define SAMPLE_SLOTS 4096
+static struct { u32 lr, n; } samples[SAMPLE_SLOTS];
+static volatile u32 sample_total;
+static volatile int sampler_stop;
+
+static void sampler(void *arg) {
+    (void)arg;
+    while (!sampler_stop) {
+        svcSleepThread(500000);
+        u32 lr = cpu.lr, h = (lr >> 2) * 2654435761u >> 20;
+        for (u32 i = 0; i < SAMPLE_SLOTS; i++) {
+            u32 k = (h + i) & (SAMPLE_SLOTS - 1);
+            if (samples[k].lr == lr || !samples[k].n) { samples[k].lr = lr; samples[k].n++; break; }
+        }
+        sample_total++;
+    }
+}
+
+void recomp_prof_sampler_start(void) {
+    s32 prio = 0x30;
+    svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+    threadCreate(sampler, NULL, 0x1000, prio - 1, -2, true);
+}
+
+static void sampler_dump(u32 retrace) {
+    u32 total = sample_total;
+    if (!total) return;
+    recomp_log("# prof r%lu: %lu samples, top call sites (lr: share)\n", (unsigned long)retrace, (unsigned long)total);
+    for (int t = 0; t < 25; t++) {
+        int best = -1;
+        for (int i = 0; i < SAMPLE_SLOTS; i++) if (samples[i].n && (best < 0 || samples[i].n > samples[best].n)) best = i;
+        if (best < 0) break;
+        recomp_log("# prof  %08lx %5.1f%%\n", (unsigned long)samples[best].lr, samples[best].n * 100.0 / total);
+        samples[best].n = 0;
+    }
+    memset(samples, 0, sizeof samples);
+    sample_total = 0;
+}
 
 void recomp_prof_frame(u32 retrace) {
     static u64 last, start, worst;
@@ -27,11 +72,13 @@ void recomp_prof_frame(u32 retrace) {
     double ms = 1000.0 / SYSCLOCK_ARM11, wall = (now - start) * ms;
     double vtx = (recomp_prof[PROF_GX_VTX] - sum[PROF_GX_VTX]) * ms / 60, tex = (recomp_prof[PROF_GX_TEX] - sum[PROF_GX_TEX]) * ms / 60;
     double end = (recomp_prof[PROF_GX_END] - sum[PROF_GX_END]) * ms / 60, aud = (recomp_prof[PROF_AUDIO] - sum[PROF_AUDIO]) * ms / 60;
+    double st = (recomp_prof[PROF_GX_STATE] - sum[PROF_GX_STATE]) * ms / 60;
     double frame = wall / 60;
-    recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx end/wait %.1f, audio %.1f\n",
-               (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - end - aud, vtx, tex, end, aud);
+    recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, audio %.1f\n",
+               (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - aud, vtx, tex, st, end, aud);
     for (int i = 0; i < PROF_N; i++) sum[i] = recomp_prof[i];
     start = now; worst = 0;
+    if (retrace % 300 == 0) sampler_dump(retrace);
 }
 
 #define LOG_PATH "sdmc:/cr_autotest.log"

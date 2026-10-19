@@ -1,5 +1,22 @@
-; Pass-through: runtime/gx.c does the GX transform, lighting and texgen on
-; the CPU and sends clip-space positions already rotated for the 3DS screen.
+; GX transform, lighting and texgen on the PICA (runtime/gx.c sets the uniforms
+; per draw and sends decoded, untransformed vertices).
+;   inpos  = position (x, y, z, row of its GX position matrix: PNMTXn = 3n)
+;   inmat  = material colour, 0..255 (vertex colour or register, chosen on the CPU)
+;   innrm  = normal (model space)
+;   intcN  = texgen source for PICA texture unit N (TEXn coords, position or normal)
+.fvec clipm[4]      ; eye space -> rotated 3DS clip space (projection + viewport)
+.fvec posm[30]      ; GX position matrices, row r of PNMTXn at 3n + r
+.fvec nrmm[30]      ; GX normal matrices, same rows
+.fvec texm[9]       ; per unit: s, t, q rows (texture size scale and v flip folded in)
+.fvec amb           ; ambient (rgb from COLOR0, a from ALPHA0); 1 where a channel is unlit
+.fvec lcfg          ; diffuse = max(dot * x + y, z)
+.fvec lights[15]    ; per light: pos, dir, attn a (1, cos, cos^2), attn k (1, d, d^2), colour
+
+.bool blit          ; any light enabled
+.ivec iloop         ; (lights - 1, 0, 5)
+
+.constf k(0.0, 1.0, 0.00392156862, 0.0)
+
 .out outpos position
 .out outclr color
 .out outtc0 texcoord0
@@ -7,16 +24,83 @@
 .out outtc2 texcoord2
 
 .alias inpos v0
-.alias inclr v1
-.alias intc0 v2
-.alias intc1 v3
-.alias intc2 v4
+.alias inmat v1
+.alias innrm v2
+.alias intc0 v3
+.alias intc1 v4
+.alias intc2 v5
 
 .proc main
-	mov outpos, inpos
-	mov outclr, inclr
-	mov outtc0, intc0
-	mov outtc1, intc1
-	mov outtc2, intc2
+	; eye-space position r1, normal r2
+	mova a0.x, inpos.w
+	mov r0.xyz, inpos
+	mov r0.w, k.y
+	dp4 r1.x, posm[a0.x], r0
+	dp4 r1.y, posm[a0.x + 1], r0
+	dp4 r1.z, posm[a0.x + 2], r0
+	mov r1.w, k.y
+	dp4 outpos.x, clipm[0], r1
+	dp4 outpos.y, clipm[1], r1
+	dp4 outpos.z, clipm[2], r1
+	dp4 outpos.w, clipm[3], r1
+
+	; lighting: r4 = amb + sum(diffuse * attenuation * colour)
+	mov r4, amb
+	ifu blit
+		dp3 r2.x, nrmm[a0.x], innrm
+		dp3 r2.y, nrmm[a0.x + 1], innrm
+		dp3 r2.z, nrmm[a0.x + 2], innrm
+		dp3 r3.x, r2, r2
+		rsq r3.x, r3.x
+		mul r2.xyz, r2, r3.xxxx
+		for iloop
+			add r5.xyz, lights[aL], -r1
+			dp3 r6.x, r5, r5
+			rsq r6.y, r6.x
+			mul r5.xyz, r5, r6.yyyy
+			rcp r6.z, r6.y
+			; diffuse
+			dp3 r7.x, r5, r2
+			mul r7.x, lcfg.xxxx, r7.x
+			add r7.x, lcfg.yyyy, r7.x
+			max r7.x, lcfg.zzzz, r7.x
+			; spot: cos = -dot(L, dir); num = a . (1, cos, cos^2); den = k . (1, d, d^2)
+			dp3 r7.y, lights[aL + 1], -r5
+			mov r8.x, k.y
+			mov r8.y, r7.y
+			mul r8.z, r7.y, r7.y
+			dp3 r7.z, lights[aL + 2], r8
+			max r7.z, k.x, r7.z
+			mov r8.y, r6.z
+			mul r8.z, r6.z, r6.z
+			dp3 r7.w, lights[aL + 3], r8
+			rcp r7.w, r7.w
+			mul r7.z, r7.z, r7.w
+			mul r7.x, r7.x, r7.z
+			mul r9, lights[aL + 4], r7.xxxx
+			add r4, r4, r9
+		.end
+	.end
+	max r4, k.xxxx, r4
+	min r4, k.yyyy, r4
+	mul r9, k.zzzz, inmat
+	mul outclr, r9, r4
+
+	; texgen: (s, t) = (row0, row1) . src / (row2 . src)
+	dp4 r10.x, texm[0], intc0
+	dp4 r10.y, texm[1], intc0
+	dp4 r10.z, texm[2], intc0
+	rcp r10.z, r10.z
+	mul outtc0, r10.zzzz, r10
+	dp4 r10.x, texm[3], intc1
+	dp4 r10.y, texm[4], intc1
+	dp4 r10.z, texm[5], intc1
+	rcp r10.z, r10.z
+	mul outtc1, r10.zzzz, r10
+	dp4 r10.x, texm[6], intc2
+	dp4 r10.y, texm[7], intc2
+	dp4 r10.z, texm[8], intc2
+	rcp r10.z, r10.z
+	mul outtc2, r10.zzzz, r10
 	end
 .end

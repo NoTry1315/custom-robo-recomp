@@ -14,6 +14,7 @@ int main(void) {
     cpu_init();
     recomp_gx_init();
     recomp_log_open();
+    recomp_prof_sampler_start();
     recomp_log("# custom-robo-recomp phase 6: audio\n");
     /* New 3DS: 804 MHz + L2 cache; without this it runs in old-3DS mode (268 MHz) */
     osSetSpeedupEnable(true);

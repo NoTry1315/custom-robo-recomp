@@ -1,10 +1,11 @@
 /* VI module: retrace counting and retrace callbacks. Phase 3 has no video
  * output; a retrace happens each time the game waits for one. The run ends
- * after RUN_FRAMES retraces. */
+ * after RUN_FRAMES retraces (or the pad script's run length). */
 #include "ppc.h"
 
 #define LOG() recomp_sdk_log(__func__ + 4)
 #define RUN_FRAMES 2400
+u32 recomp_run_frames = RUN_FRAMES;   /* a pad script line "<n> 0 0" changes it (runtime/pad.c) */
 
 static u32 retrace, pre_cb, post_cb;
 
@@ -27,5 +28,5 @@ void sdk_VIWaitForRetrace(void) {
     if (retrace % 30 == 0) recomp_log("# retrace %lu scene %lx sub %lx flags %lx fade %lx cnt %lx logo %x ld %lx\n", (unsigned long)retrace,
         (unsigned long)rd32(0x80321d88), (unsigned long)rd32(0x80321d98), (unsigned long)rd32(0x80321dc0), (unsigned long)rd32(0x80321dc8),
         (unsigned long)rd32(0x80321db4), rd8(0x8044f3d0), (unsigned long)rd32(0x8044f3d4));   /* scene struct 0x80321d88, logo index, loader flags (see recomp_unknowns.md) */
-    if (retrace >= RUN_FRAMES) recomp_done("2400 retraces");
+    if (retrace >= recomp_run_frames) recomp_done("run length reached");
 }

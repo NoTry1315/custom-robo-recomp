@@ -80,6 +80,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   functions named; 0x80144be4 is AXSetVoicePriority (was mislabelled AXFreeVoice).
   Not done: aux/AXFX effects, polyphase SRC, real-time pacing. 156 / 788 doc SDK
   functions hand-written. Next: phase 7 fix pass (GX fidelity, THP attract movie).
+- Phase 7 perf (2026-10-18): GX transform/lighting/texgen in the PICA vertex shader
+  (`runtime/vshader.v.pica`, indexed draws, per-draw uniforms); one cache flush per
+  frame; compact texture formats + LRU eviction (no more C3D_TexInit failures);
+  `# prof` cpu.lr sampler in log.c. Campaign 2.0 -> 3.7 fps in Citra (see
+  recomp_unknowns.md "Performance pass"). Next: gx state per draw (49 ms), the
+  per-frame 600x440 texture upload, vertex decode. Pad line "<n> 0 0" = run length.
 
 ## Build / test
 
