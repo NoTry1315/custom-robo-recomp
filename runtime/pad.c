@@ -64,6 +64,8 @@ void sdk_PADRead(void) {
     cs.dx = cs.dy = 0;
     if (irrst > 0) { irrstScanInput(); irrstCstickRead(&cs); }
     wr16(st, b);
+    static u16 last_b;   /* hardware runs: shows what was pressed when */
+    if (b != last_b) { recomp_log("# pad r%lu buttons %04x\n", (unsigned long)recomp_retrace_count(), b); last_b = b; }
     wr8(st + 2, (u8)axis(cp.dx)); wr8(st + 3, (u8)axis(cp.dy));
     wr8(st + 4, (u8)axis(cs.dx)); wr8(st + 5, (u8)axis(cs.dy));
     wr8(st + 6, b & PAD_L ? 0xff : 0); wr8(st + 7, b & PAD_R ? 0xff : 0);
