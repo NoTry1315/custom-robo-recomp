@@ -31,6 +31,9 @@ NATIVE = {0x8000540c: 'memset', 0x800054f4: 'memcpy', 0x80169168: 'sqrt'}
 MTX_NATIVE = {0x801394c4, 0x801394f0, 0x80139524, 0x801395f0, 0x80139640, 0x80139738, 0x80139a40,
               0x80139a74, 0x80139eb4, 0x80139f08, 0x8013a160, 0x8013a184, 0x8013a1a8, 0x8013a1c4,
               0x8013a208, 0x8013a220, 0x8013a264, 0x8013a284}
+# SDK functions inside STUB_MODULES that are pure memory code: translated from the guest
+# (PADClamp + ClampStick: deadzone 15, circle radius 56/44, triggers 30..180)
+TRANSLATE_SDK = {0x80140b58, 0x801409b0}
 
 
 # ---------------------------------------------------------------- input
@@ -91,6 +94,8 @@ class Program:
         m = self.module(a)
         if a in NATIVE:
             return 'stub'
+        if a in TRANSLATE_SDK:
+            return 'tr'
         return 'stub' if m in STUB_MODULES else 'skip' if m in SKIP_MODULES else 'tr'
 
     def insn(self, a):

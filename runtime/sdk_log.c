@@ -260,8 +260,6 @@ void sdk_VIGetNextField(void) { recomp_sdk_call("VIGetNextField"); }
 void sdk_VIGetCurrentLine(void) { recomp_sdk_call("VIGetCurrentLine"); }
 void sdk___VIDisplayPositionToXY(void) { recomp_sdk_call("__VIDisplayPositionToXY"); }
 void sdk___VIGetCurrentPosition(void) { recomp_sdk_call("__VIGetCurrentPosition"); }
-void sdk_ClampStick(void) { recomp_sdk_call("ClampStick"); }
-void sdk_PADClamp(void) { recomp_sdk_call("PADClamp"); }
 void sdk_DoReset(void) { recomp_sdk_call("DoReset"); }
 void sdk_PAD_unk_80140e08(void) { recomp_sdk_call("PAD_unk_80140e08"); }
 void sdk_PAD_unk_80140ecc(void) { recomp_sdk_call("PAD_unk_80140ecc"); }
