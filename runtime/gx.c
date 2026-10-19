@@ -13,7 +13,6 @@
  * PICA cannot express is logged once (docs/recomp_unknowns.md, "GX"). */
 #include <3ds.h>
 #include <citro3d.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include "ppc.h"
 #include "vshader_shbin.h"
@@ -94,22 +93,14 @@ static u8 mat_vtx[4], mat_reg[4];   /* material colour per component: vertex CLR
 static float ushadow[96][4];        /* last value written per float uniform */
 static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop;
 static int frame_open, clear_pending = 1;
-static int ss = 2;   /* supersampling factor (render target pixels per screen pixel per axis) */
 
 void recomp_gx_init(void) {
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 8);   /* 2 MB: battle frames need over 1 MB (~112 words per draw) */
-    /* 2x supersampling: drawn at 480x800 (rotated 800x480), the display transfer
-     * averages 2x2 pixels down to the 400x240 screen. sdmc:/cr_ss_off.txt = 1x. */
-    FILE *off = fopen("sdmc:/cr_ss_off.txt", "r");
-    if (off) { fclose(off); ss = 1; }
-    target = C3D_RenderTargetCreate(240 * ss, 400 * ss, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
-    if (!target && ss == 2) { ss = 1; target = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8); }
+    target = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
     C3D_RenderTargetSetOutput(target, GFX_TOP, GFX_LEFT,
         GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) |
         GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) |
-        GX_TRANSFER_SCALING(ss == 2 ? GX_TRANSFER_SCALE_XY : GX_TRANSFER_SCALE_NO));
-    recomp_log("# gx: supersampling %dx (render target %dx%d), vram free %lu KB\n", ss, 400 * ss, 240 * ss,
-               (unsigned long)(vramSpaceFree() >> 10));
+        GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
     vsh_dvlb = DVLB_ParseFile((u32 *)vshader_shbin, vshader_shbin_size);
     shaderProgramInit(&vsh);
     shaderProgramSetVsh(&vsh, &vsh_dvlb->DVLE[0]);
@@ -197,8 +188,8 @@ static void frame_end(void) {
     }
     if (frames % 300 == 0) {
         gap_dump();
-        recomp_log("# gx vcache frame %lu: hits %lu misses %lu (draws), arena %lu KB, linear free %lu KB, ss %dx\n", (unsigned long)frames,
-                   (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vc_top * sizeof(PVtx) >> 10), (unsigned long)(linearSpaceFree() >> 10), ss);
+        recomp_log("# gx vcache frame %lu: hits %lu misses %lu (draws), arena %lu KB, linear free %lu KB\n", (unsigned long)frames,
+                   (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vc_top * sizeof(PVtx) >> 10), (unsigned long)(linearSpaceFree() >> 10));
     }
     vc_hits = vc_misses = 0;
     st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = 0;
@@ -731,7 +722,7 @@ static void setup_pixel(void) {
     SET_IF_CHANGED(C3D_AlphaTest(at, (GPU_TESTFUNC)af, ar), at, af, ar);
     SET_IF_CHANGED(C3D_CullFace(GPU_CULL_NONE), 0);
     if (gx.cull) ONCE("cull mode %d drawn without culling\n", gx.cull);
-    /* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated; x ss) */
+    /* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated) */
     float s = efb_scale(), x0 = efb_x0(), y0 = efb_y0();
     float l = x0 + (gx.sc[0] - gx.sc_off[0]) * s, t = y0 + (gx.sc[1] - gx.sc_off[1]) * s;
     float r = l + gx.sc[2] * s, b = t + gx.sc[3] * s;
@@ -739,7 +730,7 @@ static void setup_pixel(void) {
     t = t < y0 ? y0 : t;
     r = r > 400 - x0 ? 400 - x0 : r < l ? l : r;
     b = b > 240 - y0 ? 240 - y0 : b < t ? t : b;
-    u32 s0 = (u32)((240 - b) * ss), s1 = (u32)((400 - r) * ss), s2 = (u32)((240 - t) * ss), s3 = (u32)((400 - l) * ss);
+    u32 s0 = (u32)(240 - b), s1 = (u32)(400 - r), s2 = (u32)(240 - t), s3 = (u32)(400 - l);
     SET_IF_CHANGED(C3D_SetScissor(GPU_SCISSOR_NORMAL, s0, s1, s2, s3), s0, s1, s2, s3);
 }
 
