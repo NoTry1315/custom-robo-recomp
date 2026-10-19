@@ -107,6 +107,17 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   Citra sdmc cr_autotest_2026-10-18_rec-to-battle.log (battle from ~r1900).
   Crashes end the log with "# CRASH" (assert/abort/ARM exception/svcBreak via
   --wrap, with gpucmd state and a stack scan to addr2line) and "# DONE crash".
+- Hardware run 4 (2026-10-18): battle reached with robo skins textured; battle 6 fps on
+  New 3DS (165 ms: game 82, gx vertex 47, gx state 21, gx tex 10), menus 58 fps,
+  campaign ~10 fps. Log on SD as cr_autotest_2026-10-18_hw-run4-battle.log.
+- Translator perf (2026-10-18): guest registers are C locals per function, calls
+  spill/reload per the PPC EABI (non-volatile regs stay in locals), single/paired
+  madd without libm fma, psq without ldexpf, stack accesses without the HW check,
+  static guest RAM. Citra battle game 118 -> 59 ms (3.1 -> 3.7 fps), campaign 4.6 ->
+  5.5 fps; replays identical. `make FNPROF=1` = per-function `# prof`. Details and the
+  EABI assumption: unknowns "Translator performance". Not yet on hardware.
+  Next: vertex decode caching (gx vertex 120 ms in Citra battle).
+- `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
 

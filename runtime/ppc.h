@@ -24,7 +24,7 @@ typedef struct {
 } CPU;
 
 extern CPU cpu;
-extern u8 *ram;             /* 0x80000000 mirror, RAM_MASK+1 bytes (+8 pad) */
+extern u8 ram[];            /* 0x80000000 mirror, RAM_MASK+1 bytes (+8 pad) */
 #define RAM_MASK 0x01FFFFFFu
 #define STACK_TOP 0x80462ac0u     /* initial r1 (crt0 table) = linker __ArenaLo */
 
@@ -45,6 +45,16 @@ static inline void wr16(u32 a, u16 v){ if (__builtin_expect(IS_HW(a),0)) { hw_wr
 static inline void wr32(u32 a, u32 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,4); return; } v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
 static inline void wr64(u32 a, u64 v){ wr32(a, (u32)(v >> 32)); wr32(a + 4, (u32)v); }
 
+/* r1-relative (stack) accesses never reach hardware registers: no IS_HW check */
+static inline u8  rd8_ram (u32 a){ return ram[a & RAM_MASK]; }
+static inline u16 rd16_ram(u32 a){ u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
+static inline u32 rd32_ram(u32 a){ u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
+static inline u64 rd64_ram(u32 a){ return ((u64)rd32_ram(a) << 32) | rd32_ram(a + 4); }
+static inline void wr8_ram (u32 a, u8 v){ ram[a & RAM_MASK] = v; }
+static inline void wr16_ram(u32 a, u16 v){ v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
+static inline void wr32_ram(u32 a, u32 v){ v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
+static inline void wr64_ram(u32 a, u64 v){ wr32_ram(a, (u32)(v >> 32)); wr32_ram(a + 4, (u32)v); }
+
 static inline float  u2f(u32 v){ float f; memcpy(&f, &v, 4); return f; }
 static inline u32    f2u(float f){ u32 v; memcpy(&v, &f, 4); return v; }
 static inline double u2d(u64 v){ double d; memcpy(&d, &v, 8); return d; }
@@ -59,6 +69,10 @@ static inline void cmpu(int f, u32 a, u32 b){ setcrf(f, (a < b ? 8 : a > b ? 4 :
 #define CR0(x) cmps(0, (s32)(x), 0)
 static inline void fcmp(int f, double a, double b){ setcrf(f, (a < b) ? 8 : (a > b) ? 4 : (a == b) ? 2 : 1); }
 void ppc_fp_record(void);   /* Rc=1 float ops: cr1 <- FPSCR[FX..OX] */
+/* gen/ keeps each CR field in a local (cr0..cr7, low 4 bits) and XER[CA] in `ca` */
+static inline u32 cmp_s(s32 a, s32 b){ return a < b ? 8 : a > b ? 4 : 2; }
+static inline u32 cmp_u(u32 a, u32 b){ return a < b ? 8 : a > b ? 4 : 2; }
+static inline u32 fcmp_v(double a, double b){ return (a < b) ? 8 : (a > b) ? 4 : (a == b) ? 2 : 1; }
 
 /* ---- integer helpers ---- */
 static inline u32 rotl(u32 v, int n){ n &= 31; return n ? (v << n) | (v >> (32 - n)) : v; }
@@ -74,6 +88,15 @@ static inline u32 srawi(u32 a, int n){
     s32 s = (s32)a; cpu.xer_ca = s < 0 && n && (a & ((1u << n) - 1)); return (u32)(s >> n);
 }
 static inline u32 addc(u32 a, u32 b, u32 c){ u64 s = (u64)a + b + c; cpu.xer_ca = (u32)(s >> 32); return (u32)s; }
+static inline u32 addc_l(u32 *ca, u32 a, u32 b, u32 c){ u64 s = (u64)a + b + c; *ca = (u32)(s >> 32); return (u32)s; }
+static inline u32 sraw_l(u32 *ca, u32 a, u32 b){
+    s32 s = (s32)a;
+    if (b & 0x20) { *ca = s < 0; return s < 0 ? 0xFFFFFFFFu : 0; }
+    b &= 31; *ca = s < 0 && b && (a & ((1u << b) - 1)); return (u32)(s >> b);
+}
+static inline u32 srawi_l(u32 *ca, u32 a, int n){
+    s32 s = (s32)a; *ca = s < 0 && n && (a & ((1u << n) - 1)); return (u32)(s >> n);
+}
 /* Dolphin: divide by zero / overflow results */
 static inline u32 divw(u32 a, u32 b){
     s32 sa = (s32)a, sb = (s32)b;
@@ -101,6 +124,10 @@ static inline u64 fctiw_bits(double b, int tz){
 }
 double ppc_fres(double b);      /* Gekko table estimates; see recomp_unknowns.md */
 double ppc_frsqrte(double b);
+/* single-precision madd (fmadds, ps_madd...): a is single, c is cut to 25 bits (f25), so
+ * a*c is exact in a double and a*c + b rounds once, like fma(). fma() itself is a
+ * software libm call on the 3DS (VFPv2 has no fused multiply-add). */
+static inline double fmadd_s(double a, double c, double b){ return a * c + b; }
 static inline double fsel(double a, double b, double c){ return (a >= -0.0) ? b : c; }
 
 /* ---- paired-single quantization (GQR) ---- */
@@ -121,7 +148,7 @@ static inline void psq_load(int fd, u32 a, int w, int i){
     F[fd].ps0 = p0; F[fd].ps1 = p1;
 }
 static inline void quant(u32 a, double v, int type, int scale, int *size){
-    float f = (float)v * ldexpf(1.0f, (scale << 26) >> 26);
+    float f = (float)v * u2f((u32)(127 + ((scale << 26) >> 26)) << 23);
     switch (type) {
     case 4: *size = 1; wr8 (a, (u8) (f <= 0 ? 0 : f >= 255.0f ? 255 : (int)f)); return;
     case 5: *size = 2; wr16(a, (u16)(f <= 0 ? 0 : f >= 65535.0f ? 65535 : (int)f)); return;
@@ -135,6 +162,38 @@ static inline void psq_store(int fs, u32 a, int w, int i){
     quant(a, F[fs].ps0, type, scale, &sz);
     if (!w) quant(a + sz, F[fs].ps1, type, scale, &sz);
 }
+
+/* by value for gen/ (FPRs are C locals there). 2^n scale built from float bits:
+ * ldexpf was a libm call per element */
+static inline float qscale(int n){ return u2f((u32)(127 + n) << 23); }
+static inline PS psq_ld(u32 a, int w, int i){
+    u32 g = cpu.gqr[i]; int type = (g >> 16) & 7;
+    PS r;
+    if (type == 0) { r.ps0 = u2f(rd32(a)); r.ps1 = w ? 1.0 : u2f(rd32(a + 4)); return r; }
+    float s = qscale(-((((int)(g >> 24) & 0x3F) << 26) >> 26));
+    switch (type) {
+    case 4: r.ps0 = (float)rd8(a) * s;      r.ps1 = w ? 1.0 : (float)rd8(a + 1) * s; break;
+    case 5: r.ps0 = (float)rd16(a) * s;     r.ps1 = w ? 1.0 : (float)rd16(a + 2) * s; break;
+    case 6: r.ps0 = (float)(s8)rd8(a) * s;  r.ps1 = w ? 1.0 : (float)(s8)rd8(a + 1) * s; break;
+    case 7: r.ps0 = (float)(s16)rd16(a) * s; r.ps1 = w ? 1.0 : (float)(s16)rd16(a + 2) * s; break;
+    default: r.ps0 = u2f(rd32(a)); r.ps1 = w ? 1.0 : u2f(rd32(a + 4)); break;
+    }
+    return r;
+}
+static inline void psq_st(PS v, u32 a, int w, int i){
+    u32 g = cpu.gqr[i]; int type = g & 7, sz;
+    if (type == 0) { wr32(a, f2u((float)v.ps0)); if (!w) wr32(a + 4, f2u((float)v.ps1)); return; }
+    int scale = (g >> 8) & 0x3F;
+    quant(a, v.ps0, type, scale, &sz);
+    if (!w) quant(a + sz, v.ps1, type, scale, &sz);
+}
+
+#ifdef RECOMP_FNPROF               /* make FNPROF=1: sampler counts the running guest function */
+extern volatile u32 recomp_cur_fn;
+#define FNPROF(x) (recomp_cur_fn = (x))
+#else
+#define FNPROF(x) ((void)0)
+#endif
 
 /* ---- system ---- */
 u32  ppc_mfspr(int n);

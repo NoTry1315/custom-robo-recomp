@@ -25,6 +25,9 @@ ARCH	:=	-march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 CFLAGS	:=	-g -Wall -Wno-unused-label -Wno-unused-but-set-variable -O2 -mword-relocations \
 			-ffunction-sections -fno-strict-aliasing $(ARCH)
 CFLAGS	+=	$(INCLUDE) -D__3DS__
+ifeq ($(FNPROF),1)
+CFLAGS	+=	-DRECOMP_FNPROF
+endif
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=svcBreak

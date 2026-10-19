@@ -5,10 +5,11 @@
 #include "ppc.h"
 
 CPU cpu;
-u8 *ram;
+/* static: its address is a link-time constant in gen/, not a pointer reloaded after
+ * every byte store (gen/ is built with -fno-strict-aliasing) */
+u8 ram[RAM_MASK + 1 + 8] __attribute__((aligned(64)));
 
 void cpu_init(void) {
-    ram = calloc(RAM_MASK + 1 + 8, 1);
     memset(&cpu, 0, sizeof cpu);
     R[1] = STACK_TOP;
     R[2] = 0x804581a0u;

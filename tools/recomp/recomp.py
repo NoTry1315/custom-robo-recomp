@@ -231,6 +231,25 @@ def h(v):
     return f'0x{v & 0xFFFFFFFF:x}'
 
 
+# Guest registers live in C locals inside a function (r3, f1, cr0..cr7, ctr, ca, so);
+# translate_function loads them at entry and after calls and stores the written ones
+# to cpu before calls, returns and polls: SPILL / RELOAD mark those points.
+SPILL, RELOAD = '@S@', '@L@'
+
+
+def crbit(n):
+    return f'((cr{n // 4} >> {3 - n % 4}) & 1u)'
+
+
+def setcrbit(n, v):
+    k = 3 - n % 4
+    return f'cr{n // 4} = (cr{n // 4} & {h(~(1 << k) & 15)}u) | (({v}) & 1u) << {k};'
+
+
+def cr0(x):
+    return f'cr0 = cmp_s((s32)({x}), 0) | so;'
+
+
 def ea_d(w):
     a, d = rA(w), simm(w)
     if a == 0:
@@ -273,7 +292,7 @@ def emit_op(p, a, w, d):
 
     def fpu_note():
         p.unk['float op with Rc=1 (cr1 from FPSCR, not modelled)'].append((a, d))
-        o('ppc_fp_record();')
+        o('cr1 = cpu.fpscr >> 28;')
 
     if oe(w):
         p.unk['OE (overflow-enable) form'].append((a, d))
@@ -284,7 +303,7 @@ def emit_op(p, a, w, d):
         o(f'R[{D}] = ' + (h(simm(w) << 16) + 'u;' if A == 0 else f'R[{A}] + {h(simm(w) << 16)}u;'))
     elif d in ('addic', 'addic.'):
         o(f'R[{D}] = addc(R[{A}], {h(simm(w))}u, 0);')
-        if d == 'addic.': o(f'CR0(R[{D}]);')
+        if d == 'addic.': o(cr0(f'R[{D}]'))
     elif d == 'subfic':
         o(f'R[{D}] = addc(~R[{A}], {h(simm(w))}u, 1);')
     elif d == 'mulli':
@@ -309,19 +328,19 @@ def emit_op(p, a, w, d):
         if d == 'or' and S == B:
             e = x
         o(f'R[{dst}] = {e};')
-        if rec: o(f'CR0(R[{dst}]);')
+        if rec: o(cr0(f'R[{dst}]'))
     elif d in ('ori', 'oris', 'xori', 'xoris', 'andi.', 'andis.'):
         imm = uimm(w) << (16 if d.endswith('is') or d == 'andis.' else 0)
         op = {'o': '|', 'x': '^', 'a': '&'}[d[0]]
         o(f'R[{A}] = R[{S}] {op} {h(imm)}u;')
-        if d.startswith('and'): o(f'CR0(R[{A}]);')
+        if d.startswith('and'): o(cr0(f'R[{A}]'))
     elif d in ('extsb', 'extsh', 'cntlzw'):
         e = {'extsb': f'(u32)(s32)(s8)R[{S}]', 'extsh': f'(u32)(s32)(s16)R[{S}]', 'cntlzw': f'cntlzw(R[{S}])'}[d]
         o(f'R[{A}] = {e};')
-        if rec: o(f'CR0(R[{A}]);')
+        if rec: o(cr0(f'R[{A}]'))
     elif d == 'srawi':
         o(f'R[{A}] = srawi(R[{S}], {B});')
-        if rec: o(f'CR0(R[{A}]);')
+        if rec: o(cr0(f'R[{A}]'))
     elif d in ('rlwinm', 'rlwnm', 'rlwimi'):
         m = mask((w >> 6) & 31, (w >> 1) & 31)
         rot = f'rotl(R[{S}], R[{B}])' if d == 'rlwnm' else (f'rotl(R[{S}], {B})' if B else f'R[{S}]')
@@ -329,14 +348,14 @@ def emit_op(p, a, w, d):
             o(f'R[{A}] = ({rot} & {h(m)}u) | (R[{A}] & {h(~m)}u);')
         else:
             o(f'R[{A}] = {rot} & {h(m)}u;')
-        if rec: o(f'CR0(R[{A}]);')
+        if rec: o(cr0(f'R[{A}]'))
     # ---- compare
     elif d in ('cmpi', 'cmpli', 'cmp', 'cmpl'):
         f = crfD(w)
-        if d == 'cmpi': o(f'cmps({f}, (s32)R[{A}], {simm(w)});')
-        elif d == 'cmpli': o(f'cmpu({f}, R[{A}], {h(uimm(w))}u);')
-        elif d == 'cmp': o(f'cmps({f}, (s32)R[{A}], (s32)R[{B}]);')
-        else: o(f'cmpu({f}, R[{A}], R[{B}]);')
+        if d == 'cmpi': o(f'cr{f} = cmp_s((s32)R[{A}], {simm(w)}) | so;')
+        elif d == 'cmpli': o(f'cr{f} = cmp_u(R[{A}], {h(uimm(w))}u) | so;')
+        elif d == 'cmp': o(f'cr{f} = cmp_s((s32)R[{A}], (s32)R[{B}]) | so;')
+        else: o(f'cr{f} = cmp_u(R[{A}], R[{B}]) | so;')
     # ---- loads / stores
     elif d in LOADS or d[:-1] in LOADS and d.endswith('u'):
         base = d if d in LOADS else d[:-1]
@@ -369,13 +388,13 @@ def emit_op(p, a, w, d):
     elif d == 'sthbrx':
         o(f'wr16({ea_x(w)}, __builtin_bswap16((u16)R[{S}]));')
     elif d == 'lmw':
-        o(f'{{ u32 ea = {ea_d(w)}; for (int k = {D}; k < 32; k++, ea += 4) R[k] = rd32(ea); }}')
+        o(f'{{ u32 ea = {ea_d(w)}; ' + ' '.join(f'R[{k}] = rd32(ea + {4 * (k - D)});' for k in range(D, 32)) + ' }')
     elif d == 'stmw':
-        o(f'{{ u32 ea = {ea_d(w)}; for (int k = {S}; k < 32; k++, ea += 4) wr32(ea, R[k]); }}')
+        o(f'{{ u32 ea = {ea_d(w)}; ' + ' '.join(f'wr32(ea + {4 * (k - S)}, R[{k}]);' for k in range(S, 32)) + ' }')
     elif d == 'lwarx':
         o(f'R[{D}] = rd32({ea_x(w)});')
     elif d == 'stwcx.':
-        o(f'wr32({ea_x(w)}, R[{S}]); setcrf(0, 2 | cpu.xer_so);')
+        o(f'wr32({ea_x(w)}, R[{S}]); cr0 = 2 | so;')
     # ---- float loads / stores
     elif d in ('lfs', 'lfsu', 'lfsx', 'lfsux', 'lfd', 'lfdu', 'lfdx', 'lfdux',
                'stfs', 'stfsu', 'stfsx', 'stfsux', 'stfd', 'stfdu', 'stfdx', 'stfdux', 'stfiwx'):
@@ -397,21 +416,22 @@ def emit_op(p, a, w, d):
         dd = dd - 0x1000 if dd & 0x800 else dd
         W, I = (w >> 15) & 1, (w >> 12) & 7
         ea = (f'R[{A}] + {dd}' if A or d.endswith('u') else h(dd) + 'u')
-        fn = 'psq_load' if 'l' in d[4:] else 'psq_store'
-        o(f'{{ u32 ea = {ea}; {fn}({D}, ea, {W}, {I});' + (f' R[{A}] = ea;' if d.endswith('u') else '') + ' }')
+        op = f'F[{D}] = psq_ld(ea, {W}, {I});' if 'l' in d[4:] else f'psq_st(F[{D}], ea, {W}, {I});'
+        o(f'{{ u32 ea = {ea}; {op}' + (f' R[{A}] = ea;' if d.endswith('u') else '') + ' }')
     elif d in ('psq_lx', 'psq_stx', 'psq_lux', 'psq_stux'):
         W, I = (w >> 10) & 1, (w >> 7) & 7
-        fn = 'psq_load' if d.startswith('psq_l') else 'psq_store'
+        op = f'F[{D}] = psq_ld(ea, {W}, {I});' if d.startswith('psq_l') else f'psq_st(F[{D}], ea, {W}, {I});'
         upd = 'ux' in d
-        o(f'{{ u32 ea = {ea_x(w)}; {fn}({D}, ea, {W}, {I});' + (f' R[{A}] = ea;' if upd else '') + ' }')
+        o(f'{{ u32 ea = {ea_x(w)}; {op}' + (f' R[{A}] = ea;' if upd else '') + ' }')
     # ---- floating point (Dolphin semantics: single ops round via fsgl, c via f25)
     elif d in OP59.values() or d in OP63A.values():
         fa, fb, fc = f'F[{A}].ps0', f'F[{B}].ps0', f'F[{C}].ps0'
         single = d in OP59.values()
         c25 = f'f25({fc})' if single else fc
+        fm = 'fmadd_s' if single else 'fma'
         e = {'fdiv': f'{fa} / {fb}', 'fsub': f'{fa} - {fb}', 'fadd': f'{fa} + {fb}',
-             'fmul': f'{fa} * {c25}', 'fmsub': f'fma({fa}, {c25}, -{fb})', 'fmadd': f'fma({fa}, {c25}, {fb})',
-             'fnmsub': f'fma({fa}, {c25}, -{fb})', 'fnmadd': f'fma({fa}, {c25}, {fb})',
+             'fmul': f'{fa} * {c25}', 'fmsub': f'{fm}({fa}, {c25}, -{fb})', 'fmadd': f'{fm}({fa}, {c25}, {fb})',
+             'fnmsub': f'{fm}({fa}, {c25}, -{fb})', 'fnmadd': f'{fm}({fa}, {c25}, {fb})',
              'fsel': f'fsel({fa}, {fc}, {fb})', 'frsqrte': f'ppc_frsqrte({fb})', 'fres': f'ppc_fres({fb})'}
         base = d[:-1] if d.endswith('s') and d[:-1] in e else d
         v = e[base]
@@ -430,7 +450,7 @@ def emit_op(p, a, w, d):
             o(f'F[{D}].ps0 = {v};')
         if rec: fpu_note()
     elif d in ('fcmpu', 'fcmpo'):
-        o(f'fcmp({crfD(w)}, F[{A}].ps0, F[{B}].ps0);')
+        o(f'cr{crfD(w)} = fcmp_v(F[{A}].ps0, F[{B}].ps0);')
     elif d in ('fmr', 'fneg', 'fabs', 'fnabs'):
         e = {'fmr': f'F[{B}].ps0', 'fneg': f'u2d(d2u(F[{B}].ps0) ^ 0x8000000000000000ull)',
              'fabs': f'u2d(d2u(F[{B}].ps0) & ~0x8000000000000000ull)',
@@ -466,7 +486,7 @@ def emit_op(p, a, w, d):
             two = (f'fsgl({a0} * f25({c0}))', f'fsgl({a1} * f25({c1}))')
         elif d in ('ps_madd', 'ps_msub', 'ps_nmadd', 'ps_nmsub'):
             sg = '-' if 'sub' in d else ''
-            two = tuple(f'fsgl(fma({x}, f25({c}), {sg}{y}))' for x, c, y in ((a0, c0, b0), (a1, c1, b1)))
+            two = tuple(f'fsgl(fmadd_s({x}, f25({c}), {sg}{y}))' for x, c, y in ((a0, c0, b0), (a1, c1, b1)))
             if d.startswith('ps_n'):
                 two = tuple(f'fnoneg({t})' for t in two)
         elif d in ('ps_muls0', 'ps_muls1'):
@@ -474,7 +494,7 @@ def emit_op(p, a, w, d):
             two = (f'fsgl({a0} * f25({c}))', f'fsgl({a1} * f25({c}))')
         elif d in ('ps_madds0', 'ps_madds1'):
             c = c0 if d.endswith('0') else c1
-            two = (f'fsgl(fma({a0}, f25({c}), {b0}))', f'fsgl(fma({a1}, f25({c}), {b1}))')
+            two = (f'fsgl(fmadd_s({a0}, f25({c}), {b0}))', f'fsgl(fmadd_s({a1}, f25({c}), {b1}))')
         elif d == 'ps_sum0':
             two = (f'fsgl({a0} + {b1})', f'fsgl({c1})')
         elif d == 'ps_sum1':
@@ -496,7 +516,7 @@ def emit_op(p, a, w, d):
             two = (f'fsgl({fn}({b0}))', f'fsgl({fn}({b1}))')
         elif d in ('ps_cmpu0', 'ps_cmpo0', 'ps_cmpu1', 'ps_cmpo1'):
             k = 'ps1' if d.endswith('1') else 'ps0'
-            o(f'fcmp({crfD(w)}, F[{A}].{k}, F[{B}].{k});')
+            o(f'cr{crfD(w)} = fcmp_v(F[{A}].{k}, F[{B}].{k});')
         elif d == 'dcbz_l':
             p.unk['unhandled instruction'].append((a, d))
             o(f'recomp_bad(0x{a:08x}, "dcbz_l");')
@@ -505,24 +525,23 @@ def emit_op(p, a, w, d):
             if rec: fpu_note()
     # ---- CR / SPR / system
     elif d in CROPS:
-        o(f'setcrbit({D}, {CROPS[d].format(a=f"CRBIT({A})", b=f"CRBIT({B})")});')
+        o(setcrbit(D, CROPS[d].format(a=crbit(A), b=crbit(B))))
     elif d == 'mcrf':
-        o(f'setcrf({crfD(w)}, (cpu.cr >> {28 - 4 * crfS(w)}) & 0xF);')
+        o(f'cr{crfD(w)} = cr{crfS(w)};')
     elif d == 'mcrxr':
-        o(f'setcrf({crfD(w)}, get_xer() >> 28); cpu.xer_so = cpu.xer_ov = cpu.xer_ca = 0;')
+        o(f'@CA_OUT@ cr{crfD(w)} = get_xer() >> 28; cpu.xer_so = cpu.xer_ov = cpu.xer_ca = 0; so = 0;')
     elif d == 'mfcr':
-        o(f'R[{D}] = cpu.cr;')
+        o(f'R[{D}] = ' + ' | '.join(f'cr{i} << {28 - 4 * i}' for i in range(8)) + ';')
     elif d == 'mtcrf':
         crm = (w >> 12) & 0xFF
-        m = sum(0xF << (28 - 4 * i) for i in range(8) if crm & (0x80 >> i))
-        o(f'cpu.cr = (cpu.cr & {h(~m)}u) | (R[{S}] & {h(m)}u);')
+        o(' '.join(f'cr{i} = (R[{S}] >> {28 - 4 * i}) & 15;' for i in range(8) if crm & (0x80 >> i)))
     elif d in ('mfspr', 'mtspr'):
         n = p._spr(w)
         fld = {8: 'cpu.lr', 9: 'cpu.ctr'}.get(n) or (f'cpu.gqr[{n - 912}]' if 912 <= n < 920 else None)
         if d == 'mfspr':
-            o(f'R[{D}] = {fld};' if fld else (f'R[{D}] = get_xer();' if n == 1 else f'R[{D}] = ppc_mfspr({n});'))
+            o(f'R[{D}] = {fld};' if fld else (f'@CA_OUT@ R[{D}] = get_xer();' if n == 1 else f'R[{D}] = ppc_mfspr({n});'))
         else:
-            o(f'{fld} = R[{S}];' if fld else (f'set_xer(R[{S}]);' if n == 1 else f'ppc_mtspr({n}, R[{S}]);'))
+            o(f'{fld} = R[{S}];' if fld else (f'set_xer(R[{S}]); @CA_IN@ so = cpu.xer_so;' if n == 1 else f'ppc_mtspr({n}, R[{S}]);'))
         if not fld and n != 1:
             p.unk['system SPR access in translated code'].append((a, f'{d} {n}'))
     elif d == 'mftb':
@@ -547,6 +566,9 @@ def emit_op(p, a, w, d):
         o(f'ppc_sc(0x{a:08x});')
     else:
         raise ValueError(f'no emitter for {d} at {a:08x}')
+    if A == 1 and (d in LOADS or d in STORES or d[:-1] in LOADS or d[:-1] in STORES or
+                   d in ('lmw', 'stmw') or d[:3] in ('lfs', 'lfd', 'stf')):
+        out = [re.sub(r'\b(rd|wr)(8|16|32|64)\(', r'\1\2_ram(', x) for x in out]
     return out
 
 
@@ -558,7 +580,7 @@ def cond_expr(w):
         pre.append('cpu.ctr--;')
         parts.append('cpu.ctr == 0' if bo & 2 else 'cpu.ctr != 0')
     if not bo & 0x10:
-        parts.append(f'CRBIT({bi})' if bo & 8 else f'!CRBIT({bi})')
+        parts.append(crbit(bi) if bo & 8 else '!' + crbit(bi))
     return pre, (' && '.join(parts) or None)
 
 
@@ -579,7 +601,7 @@ def translate_function(p, entry):
                     todo.append(t)
                 # loop back-edge: pending "interrupts" (ARQ DMA done) are taken here
                 if is_branch and t <= src:
-                    return f'RECOMP_POLL(); goto L_{t:08x};'
+                    return f'if (__builtin_expect(recomp_event_pending, 0)) {{ recomp_poll_events(); }} goto L_{t:08x};'
                 return f'goto L_{t:08x};'
             return f'f_{t:08x}(); return;'
         c = p.callee(t) if t in p.starts or k == 'stub' and t in p.docnames else None
@@ -659,7 +681,7 @@ def translate_function(p, entry):
     p.covered.update(body)
     # emit in address order; non-terminal blocks not followed by their successor get a goto
     order = sorted(body)
-    term = lambda x: x.endswith('return;') or x.startswith(('goto ', 'RECOMP_POLL(); goto ', 'switch'))
+    term = lambda x: x.endswith('return;') or x.startswith(('goto ', 'if (__builtin_expect(recomp_event_pending', 'switch'))
     gotos = set()
     for i, a in enumerate(order):
         if not term(body[a][-1]) and (i + 1 == len(order) or order[i + 1] != a + 4):
@@ -674,7 +696,75 @@ def translate_function(p, entry):
         if a in gotos:
             out.append(f'    goto L_{a + 4:08x};')
     out.append('}')
-    return '\n'.join(out)
+    return localize(entry, '\n'.join(out))
+
+
+CALL_RE = re.compile(r'((?:f_[0-9a-f]{8}|sdk_\w+|call_indirect)\([^;\n{]*\);)( return;)?')
+SYS_RE = re.compile(r'((?:recomp_bad|recomp_skipped|recomp_poll_events|ppc_mtmsr|ppc_sc|ppc_trap|ppc_rfi)'
+                    r'\([^;\n{]*\);)')
+# PPC EABI: a callee reads r1, r3-r10, f1-f8 (MWCC's _savegpr/_savefpr also r11/r12, varargs
+# cr1 bit 6) and preserves r1, r2, r13-r31, f14-f31, cr2-cr4; the caller reads r3/r4/f1-f4
+# back. A call (bl) stores only the volatile registers and reloads only those; the guest
+# copies of r14-r31 etc. may then be stale, which only _savegpr/_restgpr stack slots see.
+# Tail branches, polls (interrupts) and system calls store and reload every register.
+VOL_G, VOL_F, VOL_CR = {0} | set(range(3, 13)), set(range(14)), {0, 1, 5, 6, 7}
+ARG_G, ARG_F, RET_F = {1} | VOL_G, set(range(1, 9)), set(range(1, 5))
+SPILL_CALL, SPILL_RET, RELOAD_CALL = '@SC@', '@SR@', '@LC@'
+
+
+def localize(entry, src):
+    """Guest registers -> C locals. Loaded at entry and after calls (RELOAD), the
+    written ones stored back before calls, returns and polls (SPILL)."""
+    src = CALL_RE.sub(lambda m: f'{SPILL} {m.group(1)} @RET@' if m.group(2)
+                      else f'{SPILL_CALL} {m.group(1)} {RELOAD_CALL}', src)
+    src = SYS_RE.sub(lambda m: f'{SPILL} {m.group(1)} {RELOAD}', src)
+    src = re.sub(r'(?<![\w@]) ?return;', f' {SPILL_RET} return;', src)
+    src = src.replace(f'{RELOAD} {SPILL_RET} return;', 'return;').replace('@RET@', 'return;')
+    gw = {int(x) for x in re.findall(r'\bR\[(\d+)\] = ', src)}
+    fw = {int(x) for x in re.findall(r'\bF\[(\d+)\](?:\.ps[01])? = ', src)}
+    src = re.sub(r'\bR\[(\d+)\]', r'r\1', src)
+    src = re.sub(r'\bF\[(\d+)\]', r'fp\1', src)
+    src = src.replace('cpu.ctr', 'ctr').replace('cpu.xer_ca', 'ca').replace('cpu.xer_so', 'so')
+    src = src.replace('@CA_OUT@', 'cpu.xer_ca = ca;').replace('@CA_IN@', 'ca = cpu.xer_ca;')
+    src = re.sub(r'\b(addc|srawi|sraw)\(', r'\1_l(&ca, ', src)
+    head, body = src.split('\n', 1)
+    gu = sorted({int(x) for x in re.findall(r'\br(\d+)\b', body)})
+    fu = sorted({int(x) for x in re.findall(r'\bfp(\d+)\b', body)})
+    cu = sorted({int(x) for x in re.findall(r'\bcr([0-7])\b', body)})
+    cw = sorted({int(x) for x in re.findall(r'\bcr([0-7]) = ', body)})
+    ctr_w, ca_w = 'ctr = ' in body or 'ctr--' in body, re.search(r'\bca = |&ca\b', body) is not None
+    so_w = re.search(r'\bso = ', body) is not None
+    uses = lambda n: re.search(rf'\b{n}\b', body) is not None
+
+    def spill(g, f, c, extra):
+        out = [f'R[{k}] = r{k};' for k in sorted(gw & g)] + [f'F[{k}] = fp{k};' for k in sorted(fw & f)]
+        c = [i for i in cw if i in c]
+        if c:
+            m = sum(0xF << (28 - 4 * i) for i in c)
+            out.append(f'cpu.cr = (cpu.cr & {h(~m)}u) | ' + ' | '.join(f'cr{i} << {28 - 4 * i}' for i in c) + ';')
+        if ctr_w and 'ctr' in extra: out.append('cpu.ctr = ctr;')
+        if ca_w and 'ca' in extra: out.append('cpu.xer_ca = ca;')
+        if so_w: out.append('cpu.xer_so = so;')
+        return ' '.join(out + ['FNPROF(0);'])
+
+    def reload(g, f, c):
+        out = ([f'r{k} = R[{k}];' for k in gu if k in g] + [f'fp{k} = F[{k}];' for k in fu if k in f] +
+               [f'cr{i} = (cpu.cr >> {28 - 4 * i}) & 15;' for i in cu if i in c])
+        out += [f'{n} = cpu.{v};' for n, v in (('ctr', 'ctr'), ('ca', 'xer_ca'), ('so', 'xer_so')) if uses(n)]
+        return ' '.join(out + [f'FNPROF(0x{entry:08x}u);'])
+
+    ALL = set(range(32))
+    decl = []
+    if gu: decl.append('u32 ' + ', '.join(f'r{k}' for k in gu) + ';')
+    if fu: decl.append('PS ' + ', '.join(f'fp{k}' for k in fu) + ';')
+    if cu: decl.append('u32 ' + ', '.join(f'cr{i}' for i in cu) + ';')
+    decl += [f'u32 {n};' for n in ('ctr', 'ca', 'so') if uses(n)]
+    full = reload(ALL, ALL, ALL)
+    body = (body.replace(SPILL_CALL, spill(ARG_G, ARG_F, {1}, ()))
+                .replace(SPILL_RET, spill(VOL_G, RET_F, (), ('ctr', 'ca')))
+                .replace(RELOAD_CALL, reload(VOL_G, VOL_F, VOL_CR))
+                .replace(SPILL, spill(ALL, ALL, ALL, ('ctr', 'ca'))).replace(RELOAD, full))
+    return head + '\n    ' + ' '.join(decl) + '\n    ' + full + '\n' + body
 
 
 def main():

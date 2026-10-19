@@ -22,6 +22,11 @@ u64 recomp_ticks(void) { return svcGetSystemTick(); }
  * "# prof" lines every 300 retraces, then reset. */
 #define SAMPLE_SLOTS 4096
 static struct { u32 lr, n; } samples[SAMPLE_SLOTS];
+#ifdef RECOMP_FNPROF
+/* make FNPROF=1: gen/ stores the running guest function here (0 = SDK/runtime),
+ * so "# prof" lines list functions instead of call sites */
+volatile u32 recomp_cur_fn;
+#endif
 static volatile u32 sample_total;
 static volatile int sampler_stop;
 
@@ -29,7 +34,12 @@ static void sampler(void *arg) {
     (void)arg;
     while (!sampler_stop) {
         svcSleepThread(500000);
-        u32 lr = cpu.lr, h = (lr >> 2) * 2654435761u >> 20;
+#ifdef RECOMP_FNPROF
+        u32 lr = recomp_cur_fn;
+#else
+        u32 lr = cpu.lr;
+#endif
+        u32 h = (lr >> 2) * 2654435761u >> 20;
         for (u32 i = 0; i < SAMPLE_SLOTS; i++) {
             u32 k = (h + i) & (SAMPLE_SLOTS - 1);
             if (samples[k].lr == lr || !samples[k].n) { samples[k].lr = lr; samples[k].n++; break; }
