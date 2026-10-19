@@ -26,6 +26,11 @@ STUB_MODULES = {'base', 'OS', 'DB', 'DVD', 'VI', 'PAD', 'AI', 'AR', 'ARQ', 'AX',
 SKIP_MODULES = {'MetroTRK'}
 # C library functions outside STUB_MODULES replaced natively in runtime/libc.c
 NATIVE = {0x8000540c: 'memset', 0x800054f4: 'memcpy', 0x80169168: 'sqrt'}
+# MTX functions replaced in runtime/mtx.c: calls go to sdk_<name>, the body is still
+# translated (f_) and the weak stub calls it (sdmc:/cr_mtx_off.txt and the bench use it)
+MTX_NATIVE = {0x801394c4, 0x801394f0, 0x80139524, 0x801395f0, 0x80139640, 0x80139738, 0x80139a40,
+              0x80139a74, 0x80139eb4, 0x80139f08, 0x8013a160, 0x8013a184, 0x8013a1a8, 0x8013a1c4,
+              0x8013a208, 0x8013a220, 0x8013a264, 0x8013a284}
 
 
 # ---------------------------------------------------------------- input
@@ -221,6 +226,8 @@ class Program:
 
     def callee(self, t):
         k = self.kind(t)
+        if t in MTX_NATIVE:
+            return f'{self.sdk_name(t)}();'
         if k == 'tr':
             return f'f_{t:08x}();'
         if k == 'stub':
@@ -431,12 +438,16 @@ def emit_op(p, a, w, d):
     elif d in OP59.values() or d in OP63A.values():
         fa, fb, fc = f'F[{A}].ps0', f'F[{B}].ps0', f'F[{C}].ps0'
         single = d in OP59.values()
-        c25 = f'f25({fc})' if single else fc
-        fm = 'fmadd_s' if single else 'fma'
-        e = {'fdiv': f'{fa} / {fb}', 'fsub': f'{fa} - {fb}', 'fadd': f'{fa} + {fb}',
-             'fmul': f'{fa} * {c25}', 'fmsub': f'{fm}({fa}, {c25}, -{fb})', 'fmadd': f'{fm}({fa}, {c25}, {fb})',
-             'fnmsub': f'{fm}({fa}, {c25}, -{fb})', 'fnmadd': f'{fm}({fa}, {c25}, {fb})',
-             'fsel': f'fsel({fa}, {fc}, {fb})', 'frsqrte': f'ppc_frsqrte({fb})', 'fres': f'ppc_fres({fb})'}
+        if single:  # SADD/SMUL/SMADD... (ppc.h): rounding to single included, RECOMP_FLOATOPS = float math
+            e = {'fdiv': f'SDIV({fa}, {fb})', 'fsub': f'SSUB({fa}, {fb})', 'fadd': f'SADD({fa}, {fb})',
+                 'fmul': f'SMUL({fa}, {fc})', 'fmsub': f'SMSUB({fa}, {fc}, {fb})', 'fmadd': f'SMADD({fa}, {fc}, {fb})',
+                 'fnmsub': f'SMSUB({fa}, {fc}, {fb})', 'fnmadd': f'SMADD({fa}, {fc}, {fb})',
+                 'fres': f'ppc_fres({fb})'}
+        else:
+            e = {'fdiv': f'{fa} / {fb}', 'fsub': f'{fa} - {fb}', 'fadd': f'{fa} + {fb}',
+                 'fmul': f'{fa} * {fc}', 'fmsub': f'fma({fa}, {fc}, -{fb})', 'fmadd': f'fma({fa}, {fc}, {fb})',
+                 'fnmsub': f'fma({fa}, {fc}, -{fb})', 'fnmadd': f'fma({fa}, {fc}, {fb})',
+                 'fsel': f'fsel({fa}, {fc}, {fb})', 'frsqrte': f'ppc_frsqrte({fb})'}
         base = d[:-1] if d.endswith('s') and d[:-1] in e else d
         v = e[base]
         if d in ('fres',):
@@ -446,7 +457,6 @@ def emit_op(p, a, w, d):
             p.unk['fres/frsqrte estimate (needs Dolphin table)'].append((a, d))
             o(f'F[{D}].ps0 = {v};')
         elif single:
-            v = f'fsgl({v})'
             if base in ('fnmsub', 'fnmadd'): v = f'fnoneg({v})'
             o(f'{{ double v = {v}; F[{D}].ps0 = v; F[{D}].ps1 = v; }}')
         else:
@@ -484,25 +494,25 @@ def emit_op(p, a, w, d):
                                   f'F[{C}].ps0', f'F[{C}].ps1')
         two = None
         if d in ('ps_add', 'ps_sub', 'ps_div'):
-            op = {'ps_add': '+', 'ps_sub': '-', 'ps_div': '/'}[d]
-            two = (f'fsgl({a0} {op} {b0})', f'fsgl({a1} {op} {b1})')
+            op = {'ps_add': 'SADD', 'ps_sub': 'SSUB', 'ps_div': 'SDIV'}[d]
+            two = (f'{op}({a0}, {b0})', f'{op}({a1}, {b1})')
         elif d == 'ps_mul':
-            two = (f'fsgl({a0} * f25({c0}))', f'fsgl({a1} * f25({c1}))')
+            two = (f'SMUL({a0}, {c0})', f'SMUL({a1}, {c1})')
         elif d in ('ps_madd', 'ps_msub', 'ps_nmadd', 'ps_nmsub'):
-            sg = '-' if 'sub' in d else ''
-            two = tuple(f'fsgl(fmadd_s({x}, f25({c}), {sg}{y}))' for x, c, y in ((a0, c0, b0), (a1, c1, b1)))
+            m = 'SMSUB' if 'sub' in d else 'SMADD'
+            two = tuple(f'{m}({x}, {c}, {y})' for x, c, y in ((a0, c0, b0), (a1, c1, b1)))
             if d.startswith('ps_n'):
                 two = tuple(f'fnoneg({t})' for t in two)
         elif d in ('ps_muls0', 'ps_muls1'):
             c = c0 if d.endswith('0') else c1
-            two = (f'fsgl({a0} * f25({c}))', f'fsgl({a1} * f25({c}))')
+            two = (f'SMUL({a0}, {c})', f'SMUL({a1}, {c})')
         elif d in ('ps_madds0', 'ps_madds1'):
             c = c0 if d.endswith('0') else c1
-            two = (f'fsgl(fmadd_s({a0}, f25({c}), {b0}))', f'fsgl(fmadd_s({a1}, f25({c}), {b1}))')
+            two = (f'SMADD({a0}, {c}, {b0})', f'SMADD({a1}, {c}, {b1})')
         elif d == 'ps_sum0':
-            two = (f'fsgl({a0} + {b1})', f'fsgl({c1})')
+            two = (f'SADD({a0}, {b1})', f'fsgl({c1})')
         elif d == 'ps_sum1':
-            two = (f'fsgl({c0})', f'fsgl({a0} + {b1})')
+            two = (f'fsgl({c0})', f'SADD({a0}, {b1})')
         elif d.startswith('ps_merge'):
             x, y = d[-2], d[-1]
             two = (a1 if x == '1' else a0, b1 if y == '1' else b0)
@@ -798,7 +808,8 @@ def main():
     # SDK stubs: weak, they only report the call; runtime/ provides the real ones
     st = ['/* generated: weak logging SDK stubs, overridden by runtime/ */', '#include "funcs.h"']
     for a, n in sorted(p.stubs.items()):
-        st.append(f'__attribute__((weak)) void {n}(void) {{ recomp_sdk_call("{n[4:]}"); }}  /* 0x{a:08x} {p.module(a)} */')
+        body = f'f_{a:08x}();' if a in MTX_NATIVE else f'recomp_sdk_call("{n[4:]}");'
+        st.append(f'__attribute__((weak)) void {n}(void) {{ {body} }}  /* 0x{a:08x} {p.module(a)} */')
     (out / 'sdk_stubs.c').write_text('\n'.join(dict.fromkeys(st)) + '\n', encoding='utf-8')
     # function table for bctrl/blrl/computed tail calls
     skip = sorted(a for a in p.starts if p.kind(a) == 'skip')

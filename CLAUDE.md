@@ -161,6 +161,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   6.6 -> 11.4 fps (gx vertex+tex+state 86 -> 36 ms), campaign 11.1 -> 19.8 fps; replays identical,
   framebuffer dumps (sdmc:/cr_fbdump.txt -> cr_fb_<frame>.bmp) identical cache off vs on. Hardware run 10: full battle 16-20 fps (50-62 ms: game 31-43,
   gx vertex 8.7, tex 5.1, state 1.4), was 11-12.5 fps with 410d935 (run 9). Details: unknowns "Display-list cache".
+- Float ops + native MTX (2026-10-19): single ops emitted as SADD/SMUL/SMADD.. (ppc.h); `make FLOATOPS=1`
+  = mul/madd in float (no f25, madd rounds twice; add/sub/div stay double, the int->float idiom needs it).
+  18 MTX/VEC functions native in `runtime/mtx.c` (bit-identical, sdmc:/cr_mtx_off.txt = translated);
+  sdmc:/cr_bench.txt = startup `# bench` lines. Citra replays: MTX identical; FLOATOPS same SDK calls and
+  scenes, vertex values differ by ulps. Hardware: pending. Details: unknowns "Float ops and native MTX".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

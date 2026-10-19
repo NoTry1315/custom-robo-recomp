@@ -318,81 +318,49 @@ logged once when first hit.
 - Replays still identical to the batching-off logs. Remaining gx vertex: decode ~25 ms
   and uniforms ~20 ms in battle.
 
+## Float ops and native MTX (2026-10-19)
+
+Profile (Citra battle replay r3600, `make FNPROF=1`): game-side top 0x801a4558 11.5% and
+0x8006eef8 7.4% (mostly GX runtime time charged to the caller), 0x80090710 4.5%,
+0x80060fa4 2.9%, PSMTXConcat 2.5%, PSMTXInvXpose 1.4%, gmtx_mul 0x8001e134 / keyframes
+0x8001eb48 ~1% each, PSMTXMultVec 0.9%.
+
+- Translator: single-precision ops are emitted as `SADD SSUB SDIV SMUL SMADD SMSUB(a, c[, b])`
+  (ppc.h); the default definitions are the old `fsgl(..)` + `f25(c)` + `fmadd_s` code (gen/
+  output is the same arithmetic as before).
+- `make FLOATOPS=1` (RECOMP_FLOATOPS): SMUL/SMADD/SMSUB computed in float. Roundings that change
+  vs Gekko/Dolphin:
+  - c is no longer cut to 25 bits (f25); a and c are rounded to float first (only matters
+    when an FPR holds a double, e.g. a double-op result or f1 argument);
+  - madd/msub/nmadd/nmsub round twice (product to float, then sum) instead of once;
+  - flush-to-zero is the same (RunFast applies to both).
+  add/sub/div stay double + fsgl: a first version did them in float too and broke the
+  int->float idiom (`fsubs` of a double magic constant): AISetStreamVolRight got 0 instead of
+  255 at boot, and battle/campaign replays froze in scene 5 (r1710 / r1230).
+- FLOATOPS replays (battle r3600, campaign r3000, title r2400): same SDK call sequence, call
+  counts and scene path as the default build; only the battle vertex-cache arena differs
+  (3325 vs 3309 KB at frame 2100), i.e. some CPU-computed vertex values change by ulps.
+  Bench, float vs exact on random inputs in [-4, 4) (max ulp): Concat 1608, MultVec 2048,
+  MultVecSR 444, InvXpose 1047, Inverse 7641, Dot 1280, Cross 303, Normalize 2, Mag 3,
+  SquareMag 2 (large values = cancellation: absolute error stays ~1 ulp of the inputs).
+- Native MTX (`runtime/mtx.c`, `mtx_impl.h`): 18 functions (Identity, Copy, Concat, Transpose,
+  Inverse, InvXpose, Trans, Scale, MultVec, MultVecSR, VEC Add/Subtract/Scale/Normalize/
+  SquareMag/Mag/DotProduct/CrossProduct). recomp.py MTX_NATIVE sends calls to sdk_<name>;
+  the f_ bodies are still built (weak stubs call them; sdmc:/cr_mtx_off.txt routes all calls
+  back). Same ppc.h ops in the guest order, so bit-identical in each mode (bench: 0 ulp vs
+  translated for all 18, both modes). Concat sets r6 = 0x8044ed88 like the guest (it shows in
+  SDK logs). Not native: RotRad/RotTrig/RotAxisRad, Quat, LookAt, C_MTX* (call libm, cold).
+  Assumes GQR0 = 0; Copy/Identity/Transpose move raw words (NaN payloads kept).
+- MTX replays: battle/campaign/title identical to cr_mtx_off.txt (only OSTicksToCalendarTime
+  wall-clock arguments differ, as between any two runs).
+- sdmc:/cr_bench.txt: `# bench` at startup (ulp checks, ns per call translated vs native,
+  gmtx_mul as a translated scalar-float sample). Citra (x86 JIT, not representative):
+  Concat 5.7 -> 3.1 us, MultVec 2.9 -> 1.4, InvXpose 4.4 -> 2.0.
+
 <!-- generated -->
-## GX CPU cost: tex / state / vcache (2026-10-19)
-
-- tex_get: textures already used this frame are found through a 256-slot direct-mapped
-  index (fallback: the old linear scan); tex_bind_params skips the citro3d wrap/filter
-  setters when the entry already has that wrap/filter (TexEntry.pkey, reset on TexInit).
-- tev_changed compares gx.tev/tev_reg/kcolor/chan/mat/amb/unit_of_map in place against a
-  copy (no key build); setup_pixel skips the scissor math when sc/sc_off/efb size are
-  unchanged. Generation counters bumped by the GXSet* setters were not used: TEV state is
-  written from many setters, a missed one would be a silent rendering bug.
-- vc_draw: an entry checked this frame (list bytes + arrays) hits without re-hashing
-  (VCache.checked; same no-rewrite-within-a-frame assumption as arr_hash).
-- Citra (-Fast), replays identical: battle r3600 5.4 -> 6.5 fps, frame 185 -> 154 ms,
-  gx tex 27 -> 14, gx state 31 -> 14, gx vertex 61 -> 61 (gx total 119 -> 89); campaign
-  r3000 8.9 -> 10.0 fps (tex 13 -> 10, state 19 -> 8); title unchanged (vsync cap).
-- Vertex decode (27 ms in battle) did not move: the re-hash was not the cost. ~47 vcache
-  misses per battle frame (2089 hits) are real decodes; plan_sig per draw is still there.
-  Next: find which draws miss every frame (probably arrays rewritten per frame, e.g.
-  CPU-skinned meshes) and the per-draw cost of make_plan/trim_plan/plan_finish/plan_sig.
-
-## Display-list cache + matrix rows (2026-10-19)
-
-`dl_draw` in runtime/gx.c: an outermost GXCallDisplayList whose list holds only
-triangle primitives of one vertex format (and NOPs) is set up once (textures,
-TEV, pixel, uniforms, plan) and cached by (list address, size, plan signature
-incl. material sources); its primitives are decoded into the vertex-cache arena
-once and their merged triangle list kept in vc_ix. A hit copies that list as one
-draw into the existing batching. Validated once per frame by a hash of the list
-bytes and of each indexed array (same assumption as the vertex cache). Nested
-calls, other commands, mixed formats, lines/points and per-vertex texture
-matrices take the per-primitive path (entry marked slow; none seen in the three
-replays). sdmc:/cr_dlcache_off.txt disables it. posm/nrmm uniforms: only rows
-written by GXLoad*MtxImm since the last upload are compared and uploaded.
-
-Instrumentation (`# gx dl frame`, `# gx dl miss`, `# gx vc miss` on stats
-frames): battle ~250 outer calls per frame, ~8.5 primitives per call, 0 slow;
-2-6 DL misses per frame, all "new" (lists rebuilt at new heap addresses each
-frame, e.g. 80c8e5e0, 80e65140); the old per-primitive vcache misses are also
-all "new" (no array or vertex-byte changes seen).
-
-New debug aid: sdmc:/cr_fbdump.txt (GX frame numbers) writes the render target
-to sdmc:/cr_fb_<frame>.bmp (240x400, as stored) for exact image compares.
-
-Citra -Fast replays, base 410d935 -> this build (`# time`, last report):
-
-| scene | fps | gx vertex | gx tex | gx state | sum |
-|---|---|---|---|---|---|
-| battle r3600 | 6.6 -> 11.4 | 58.0 -> 23.0 | 14.2 -> 10.5 | 13.7 -> 2.3 | 85.9 -> 35.8 ms |
-| campaign r2940 | 11.1 -> 19.8 | 34.4 -> 10.9 | 10.2 -> 8.4 | 7.4 -> 1.1 | 52.0 -> 20.4 ms |
-| title r2400 | 29.9 (cap) | 6.7 -> 3.8 | 11.1 -> 10.8 | 1.1 -> 0.2 | 18.9 -> 14.8 ms |
-
-Battle gx vertex now: uniforms 5.1, decode 5.4, rest 12.5 (setup + per-frame list
-and array hashing). Target "under 30 ms" not reached (35.8); what remains is
-gx tex 10.5 (tex_get per call) and the 12.5 ms rest. Game time also fell
-(battle 64 -> 50) because profiler buckets moved, not guest code.
-Checks: non-# log lines identical to base for all three replays except the
-wall-clock OSTicksToCalendarTime argument; 57 framebuffer dumps identical
-byte for byte, cache off vs on.
-
-Hardware (New 3DS, interactive Vs. battle, 2026-10-19; logs on SD):
-run 9 = base 410d935 (batching + GX CPU cost, first on hardware), run 10 = this build.
-
-| full battle (~2140 prims/frame) | run 8 | run 9 (410d935) | run 10 (DL cache) |
-|---|---|---|---|
-| fps | 8-9.5 | 11.2-12.5 | 16-20 |
-| frame | 105-122 ms | 80-89 ms | 50-62 ms |
-| game | 45-60 | 40-48 | 31-43 |
-| gx vertex / tex / state | 27 / 11 / 21 | 24 / 7.3 / 6.5 | 8.7 / 5.1 / 1.4 |
-
-DL cache 245 of 247 calls hit per frame, 0 slow; battle intro 22-30 fps; menus/title
-30 fps (vsync). No crash (APT exit). Game code is now ~70% of a battle frame.
-
 ## Generated by tools/recomp/recomp.py
 
-Functions translated: 2720. SDK stubs: 1052. MetroTRK entries skipped: 184. Jump tables as switch: 52.
+Functions translated: 2720. SDK stubs: 1070. MetroTRK entries skipped: 184. Jump tables as switch: 52.
 
 ### flow into non-translated code that is not a known entry (1)
 

@@ -129,6 +129,23 @@ double ppc_frsqrte(double b);
  * software libm call on the 3DS (VFPv2 has no fused multiply-add). */
 static inline double fmadd_s(double a, double c, double b){ return a * c + b; }
 static inline double fsel(double a, double b, double c){ return (a >= -0.0) ? b : c; }
+/* single-precision ops as gen/ emits them (fadds..fnmsubs, ps_add..ps_madds1), result rounded
+ * to single. Default: Dolphin's double + fsgl with c cut by f25 and one rounding per madd.
+ * make FLOATOPS=1 (RECOMP_FLOATOPS): mul/madd/msub in float (inputs rounded to float first,
+ * no f25, madd rounds twice). add/sub/div stay double + fsgl: the int->float idiom subtracts
+ * a double magic constant (fsubs), and rounding those inputs broke it. recomp_unknowns.md "Float ops". */
+static inline double SADD(double a, double b){ return fsgl(a + b); }
+static inline double SSUB(double a, double b){ return fsgl(a - b); }
+static inline double SDIV(double a, double b){ return fsgl(a / b); }
+#ifdef RECOMP_FLOATOPS
+static inline double SMUL(double a, double c){ return (float)a * (float)c; }
+static inline double SMADD(double a, double c, double b){ return (float)a * (float)c + (float)b; }
+static inline double SMSUB(double a, double c, double b){ return (float)a * (float)c - (float)b; }
+#else
+static inline double SMUL(double a, double c){ return fsgl(a * f25(c)); }
+static inline double SMADD(double a, double c, double b){ return fsgl(fmadd_s(a, f25(c), b)); }
+static inline double SMSUB(double a, double c, double b){ return fsgl(fmadd_s(a, f25(c), -b)); }
+#endif
 
 /* ---- paired-single quantization (GQR) ---- */
 static inline double dequant(u32 a, int type, int scale, int *size){
