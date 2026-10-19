@@ -92,7 +92,7 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   back-edge; ARQ completions are due after a modelled DMA time (400 + len/2 ticks)
   and delivered there when MSR[EE] is set (wait points still deliver all). Pause
   menu (Start in the bedroom, scene c) now works in Citra; title/campaign unchanged.
-  Pad script holds up to 128 entries. Not yet tested on hardware.
+  Pad script holds up to 128 entries. Confirmed on hardware (pause works).
 - Battle reached (2026-10-18): Vs. Mode -> P1 vs P2 -> customize -> battle (scene 4)
   runs in Citra; SELECT held = 3DS drives controller 2 (port 2 always connected).
   Spawn crash was the GPU command buffer (>1 MB per battle frame, ~112 words/draw,
@@ -124,6 +124,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   campaign 84 -> 39 ms (5.4 -> 7.4 fps), title 28 -> 7 ms (15 -> 30 fps); replays give
   identical logs. `# time r<n> gx vertex:` splits uniforms/decode; uniforms (24 ms in
   battle) are next. Not yet on hardware. Details: unknowns "Vertex cache".
+- Hardware run 6 (2026-10-19): circle pad axes negated (were reversed). Stalls of
+  seconds were SD log writes: log now buffered in memory, written by a background
+  thread. 2x supersampling tried and reverted (too slow on hardware; jaggies still
+  open). See unknowns "Hardware stalls and jaggies".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

@@ -196,6 +196,18 @@ logged once when first hit.
   names each texture drawn without its image and why.
 - Vertex buffer: 0x18000 vertices per half, u16 indices rebased past 0x10000.
 
+## Hardware stalls and jaggies (2026-10-19, New 3DS)
+
+- Multi-second single-frame stalls (4 s in campaign/battle, 11 s at boot) were SD
+  writes: `# stall` lines showed log writes of up to 4.1 s for one fwrite+fflush.
+  recomp_log now formats into a 1 MB memory ring and a writer thread (priority below
+  the game) writes it every ~100 ms; crash, hang and exit drain it synchronously.
+  `# time` lines report the time spent in recomp_log ("log writes").
+- 2x supersampling (800x480 target, display-transfer downscale) was tried and
+  reverted: on hardware startup and gameplay got clearly slower. It is not the fix
+  for the jagged look; that is still open (other options: edge AA via the GX
+  pipeline, mipmaps for minified textures).
+
 ## Vertex cache (2026-10-18, Citra replays)
 
 - Profile before (battle r3600): gx vertex 124 ms = uniforms 24 (set_clip/lighting/

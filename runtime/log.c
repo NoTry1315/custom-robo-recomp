@@ -133,18 +133,67 @@ static u32 *count_of(const char *name) {
     }
 }
 
+/* Log lines go to a memory ring; a lower-priority writer thread puts them on
+ * the SD card. A single fwrite+fflush blocked the game for up to 4 s on
+ * hardware (hw run 6, 2026-10-19: every '# stall' was log writes). Crashes and
+ * the end of the run drain the ring synchronously (log_drain). */
+#define LOGBUF (1u << 20)
+static char logbuf[LOGBUF];
+static volatile u32 log_head, log_tail;   /* free-running byte counts: written / on the card */
+static LightLock wlock;                   /* fwrite and log_tail */
+static LightEvent log_ev;
+static volatile int log_closing;
+
+static void log_drain(void) {
+    LightLock_Lock(&wlock);
+    u32 t = log_tail, h = log_head;
+    if (log_fp && t != h) {
+        while (t != h) {
+            u32 o = t & (LOGBUF - 1), n = h - t;
+            if (n > LOGBUF - o) n = LOGBUF - o;
+            fwrite(logbuf + o, 1, n, log_fp);
+            t += n;
+        }
+        fflush(log_fp);
+    }
+    log_tail = t;
+    LightLock_Unlock(&wlock);
+}
+
+static void log_writer(void *arg) {
+    (void)arg;
+    while (!log_closing) {
+        LightEvent_Wait(&log_ev);
+        svcSleepThread(100000000LL);   /* gather 100 ms of lines per write */
+        log_drain();
+    }
+}
+
 void recomp_log(const char *fmt, ...) {
     va_list ap;
+    char line[2048];
     if (!log_fp) return;
-    LightLock_Lock(&lock);
+    va_start(ap, fmt); int n = vsnprintf(line, sizeof line, fmt, ap); va_end(ap);
+    if (n < 0) return;
+    if (n >= (int)sizeof line) n = sizeof line - 1;
     u64 t0 = svcGetSystemTick();
+    LightLock_Lock(&lock);
     heartbeat++;
-    va_start(ap, fmt); vfprintf(log_fp, fmt, ap); va_end(ap);
-    fflush(log_fp);
+    while (log_head - log_tail + n > LOGBUF) {   /* ring full: wait for the writer */
+        LightLock_Unlock(&lock);
+        LightEvent_Signal(&log_ev);
+        svcSleepThread(1000000LL);
+        LightLock_Lock(&lock);
+    }
+    u32 o = log_head & (LOGBUF - 1), a = LOGBUF - o < (u32)n ? LOGBUF - o : (u32)n;
+    memcpy(logbuf + o, line, a);
+    memcpy(logbuf, line + a, n - a);
+    log_head += n;
     u64 dt = svcGetSystemTick() - t0;
     recomp_prof[PROF_LOG] += dt;
     if (dt > log_worst) log_worst = dt;
     LightLock_Unlock(&lock);
+    LightEvent_Signal(&log_ev);
 }
 
 void recomp_sdk_log(const char *name) {
@@ -202,6 +251,7 @@ static void watchdog(void *arg) {
             recomp_log("# nothing new logged for %d ms: guest hang\n", HANG_MS);
             summary();
             recomp_log("# DONE hang\n");
+            log_drain();
             break;
         }
         last = heartbeat;
@@ -220,6 +270,7 @@ static __attribute__((noreturn)) void crash(const char *why, u32 pc, u32 lr) {
         summary();
         recomp_log("# DONE crash\n");
     }
+    log_drain();
     __real_svcBreak(USERBREAK_PANIC);
     for (;;) svcSleepThread(1000000000LL);
 }
@@ -265,15 +316,20 @@ static void on_exception(ERRF_ExceptionInfo *e, CpuRegisters *r) {
 
 void recomp_log_open(void) {
     LightLock_Init(&lock);
+    LightLock_Init(&wlock);
+    LightEvent_Init(&log_ev, RESET_ONESHOT);
     log_fp = fopen(LOG_PATH, "w");
     threadOnException(on_exception, RUN_HANDLER_ON_FAULTING_STACK, WRITE_DATA_TO_HANDLER_STACK);
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     threadCreate(watchdog, NULL, 0x2000, prio - 1, -2, true);
+    threadCreate(log_writer, NULL, 0x2000, prio + 1, -2, true);   /* below the game: runs while it waits */
 }
 
 void recomp_log_close(void) {
     finished = 1;
+    log_closing = 1;
+    log_drain();
     if (log_fp) fclose(log_fp);
     log_fp = NULL;
 }
