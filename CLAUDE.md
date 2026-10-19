@@ -178,7 +178,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   frame, counted as "game" (all earlier game-ms figures include it). Now a 60 Hz cap only (vblank wait
   when no vblank passed since the last frame began); `# time` has "gx sync"; sdmc:/cr_vsync_on.txt = old
   wait. Citra: battle 12.8 -> 14.6 fps, campaign 29.7 -> 43.0, title 29.9 -> 48.3; SDK logs identical.
-  Not yet on hardware (check tearing). Details: unknowns "Frame pacing".
+  Hardware run 14: battle 20.2 -> 21.1 fps (game 34.9 -> 21.8 ms, but 11 ms still waiting in
+  C3D_FrameBegin for the GPU queue: battle looks GPU-bound, not yet measured), scene 5 47 -> 57 fps,
+  title 45 -> 50 fps; two brief tear lines in a session. Details: unknowns "Frame pacing".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
