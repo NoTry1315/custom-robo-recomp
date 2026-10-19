@@ -181,6 +181,15 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   Hardware run 14: battle 20.2 -> 21.1 fps (game 34.9 -> 21.8 ms, but 11 ms still waiting in
   C3D_FrameBegin for the GPU queue: battle looks GPU-bound, not yet measured), scene 5 47 -> 57 fps,
   title 45 -> 50 fps; two brief tear lines in a session. Details: unknowns "Frame pacing".
+- Register spills (2026-10-19): recomp.py computes per-function register summaries (in/clob, fixpoint
+  over the call graph) and stores/reloads per call site only dirty registers the callee reads / changes
+  and the caller still needs (call-site stores 151596 -> 53779, reloads 183950 -> 62361); SDK natives
+  declared to write only r3/r4/f1 (recomp.py checks runtime/*.c); _savegpr/_restgpr/_savefpr/_restfpr
+  inline; polls store only r1. ctr/ca/cr0/cr5-7 still reloaded after every call (keeping them changed
+  campaign display lists, cause unknown). gen/ is built with -fno-ivopts and every build runs
+  tools/check_3dsx.py (IVOPTS made a relocation Citra rejects: "Error while loading ROM!"). Citra:
+  game ms -4.5..-5.5% (battle 15.07 -> 14.40); SDK/scene logs identical, one battle vcache arena line
+  differs (open). Not yet on hardware. Details: unknowns "Register spills per call site".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

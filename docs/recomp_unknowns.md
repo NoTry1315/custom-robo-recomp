@@ -287,10 +287,15 @@ interprocedural register summaries and emits each call's stores/reloads separate
   it and a later read or store needs it; otherwise its value stays in `cpu` and the stale
   local counts as clean, so it is never stored back (this keeps a callee's r3 return value
   on paths like `li r3,0; beq 1f; bl G; 1: blr`). Stores count as reads for that decision
-  (iterated per function until stable).
-- Returns store only dirty RETU registers; tail branches only dirty CALLU | RETU (before:
-  every written register, non-volatiles included); recomp_bad/sc/trap/rfi/mtmsr still store
-  every dirty register and reload all. Polls (loop back-edges) store only r1 and reload
+  (iterated per function until stable). Exception: ctr, ca, cr0, cr5-7 are still reloaded
+  after every call, as before. Keeping them in locals when the callee cannot change them
+  made the campaign replay rebuild 4 GX display lists every frame from r1500 (dl cache
+  misses; SDK calls and scenes unchanged). Bisected to that class (FPRs and GPRs are fine),
+  the reading code was not found.
+- Returns store only dirty RETU registers; tail branches every dirty register (a tail
+  target can be shared code of the same function, e.g. 0x8009d5ec, a common epilogue
+  reached from several functions); recomp_bad/sc/trap/rfi/mtmsr store every dirty register
+  and reload all. Polls (loop back-edges) store only r1 and reload
   nothing: recomp_poll_events runs callbacks through recomp_call_guest, which uses R[1] for
   the callback stack and restores all of cpu afterwards.
 - The old fixed sets stay the universes, so a store is only ever skipped, never added, and
@@ -305,12 +310,30 @@ interprocedural register summaries and emits each call's stores/reloads separate
   caller's locals for r14-r31 equal the (possibly stale, see above) `cpu` copies at that
   point in the prologue; _restgpr now loads into the caller's locals, which are dead after it.
 - Static counts (13214 call sites): register stores 151596 -> 53779, reloads 183950 ->
-  43905. custom-robo-recomp.3dsx 10.65 -> 6.73 MB.
+  62361. custom-robo-recomp.3dsx 10.65 -> 6.73 MB.
+- 3dsx relocations: with fewer reloads GCC knows more guest pointers' ranges, and IVOPTS
+  turned `ram + (p & RAM_MASK)` in a loop of f_8019def4 into a literal `ram + 0x7fbb6160`.
+  The 3dsx format keeps a relocation sub-type in the top 4 bits of the patched word, so
+  Citra refused the ROM ("Error while loading ROM!", Load3DSXFile sub_type != 0) before
+  any log line. The Makefile now builds gen/ (`recomp_%.o`) with `-fno-ivopts` and runs
+  `tools/check_3dsx.py` after every link: it fails the build on any relocation a loader
+  rejects. (runtime/ keeps IVOPTS; base build size was unchanged by the flag.)
 - Found on the way, not changed: 5 functions start executing below their entry address
   (body has code under the entry and the C function begins at the lowest address):
   f_80020004 (at 8001fbb0), f_8009adc4, f_800b0004, f_80120010, f_80120030; printed by
   recomp.py as `note:`.
-- Citra replays: @@CITRA@@
+- Citra replays (2400 retraces, cr_card_off.txt, builds of main 4940496 + this branch, both
+  with -fno-ivopts): title (A-press pad), campaign (pause-ok) and battle (rec-to-battle)
+  give the same SDK calls with r3-r6, scenes, pad lines and call counts as the base build.
+  Title and campaign logs are identical apart from timing; battle differs in one line,
+  `# gx vcache frame 2100` arena 3339 KB (base, same in two runs) vs 3309 KB: some
+  CPU-computed vertex data differs (open; FLOATOPS showed the same symptom, see below).
+  `# time` game ms, average of the 40 lines, base -> new: title 6.53 -> 6.17, campaign
+  11.92 -> 11.38, battle 15.07 -> 14.40 (-4.5 to -5.5%); frame 29.36 -> 28.75 ms in battle.
+  Citra times are instruction-count based, not hardware; not yet run on a New 3DS.
+- Test runner lesson: autotest.ps1 waits up to -Timeout for `# DONE` and cannot see Citra's
+  error dialogs, so a ROM that does not load looks like a slow run. Check the dialog title
+  (e.g. EnumWindows on citra-qt) or a log that stops growing (it grows every 30 frames).
 
 ## Perf wins 2026-10-19
 
