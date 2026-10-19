@@ -28,6 +28,7 @@ CFLAGS	+=	$(INCLUDE) -D__3DS__
 ifeq ($(FNPROF),1)
 CFLAGS	+=	-DRECOMP_FNPROF
 endif
+FLOATOPS ?= 1
 ifeq ($(FLOATOPS),1)
 CFLAGS	+=	-DRECOMP_FLOATOPS
 endif

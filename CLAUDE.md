@@ -167,7 +167,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   sdmc:/cr_bench.txt = startup `# bench` lines. Citra replays: MTX identical; FLOATOPS same SDK calls and
   scenes, vertex values differ by ulps. Hardware runs 11-13 (game ms, avg of # time lines): battle
   37.0 (A, MTX translated) -> 33.9 (B, native MTX) -> 32.8 (C, + FLOATOPS) = 19.9 -> 21.7 -> 21.9 fps;
-  campaign 31.3 -> 32.2 -> 26.3 (25.7 -> 25.6 -> 29.6 fps; different play each run, noisy). FLOATOPS not default yet. Details: unknowns "Float ops and native MTX".
+  campaign 31.3 -> 32.2 -> 26.3 (25.7 -> 25.6 -> 29.6 fps; different play each run, noisy). FLOATOPS is the
+  default since 2026-10-19 (`make FLOATOPS=0` = exact Gekko rounding), on the assumption that ulp-level
+  vertex/physics differences are invisible; not yet checked against Dolphin (framebuffer dumps). Details: unknowns "Float ops and native MTX".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
