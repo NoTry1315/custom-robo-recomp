@@ -190,6 +190,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   tools/check_3dsx.py (IVOPTS made a relocation Citra rejects: "Error while loading ROM!"). Citra:
   game ms -4.5..-5.5% (battle 15.07 -> 14.40); SDK/scene logs identical, one battle vcache arena line
   differs (open). Not yet on hardware. Details: unknowns "Register spills per call site".
+- DVD handles (2026-10-19): hw run 15 showed ~54 ms per SD read even for 0x80 bytes (fopen per read) and
+  2.5-3.6 s freezes (# stall: log writes 0, so not the log thread). dvd.c now keeps 8 files open (LRU,
+  unbuffered). Citra replay: SDK calls and scenes identical, fps unchanged (Citra SD is fast, so no signal
+  there). Hardware run 16 (with register spills): boot fast, DVD slow lines 253 -> 24, longest read
+  3633 -> 187 ms, no # stall lines (log cr_autotest_2026-10-19_hw-run16-dvd-handles.log). Next: campaign GPU (scene 8 gpu 17.8 ms), battle game CPU.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
