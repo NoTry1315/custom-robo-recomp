@@ -136,6 +136,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   play, no time limit (`runtime/vi.c`); autotest.ps1 always writes a script, so its runs keep
   2400. Hw run 7: the frame that first reads sound/cubog39.hps (title jingle) took ~4 s
   (run 6 too); `# DVD slow` lines in dvd.c time the reads, cause not yet confirmed.
+- Draw batching (2026-10-19): same-state consecutive GX draws merged into one
+  C3D_DrawElements (91% of battle draws, 2200 -> ~190 per frame); Citra battle 4.6 -> 5.4
+  fps (gx state 64 -> 31 ms), campaign 7.5 -> 8.5; replays identical. sdmc:/cr_batch_off.txt
+  disables it. Next: skip uniform rebuilds (gx vertex uniforms ~25 ms). Not yet on hardware.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

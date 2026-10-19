@@ -13,6 +13,7 @@
  * PICA cannot express is logged once (docs/recomp_unknowns.md, "GX"). */
 #include <3ds.h>
 #include <citro3d.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include "ppc.h"
 #include "vshader_shbin.h"
@@ -94,6 +95,22 @@ static float ushadow[96][4];        /* last value written per float uniform */
 static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop;
 static int frame_open, clear_pending = 1;
 
+/* Draw batching: a draw's indices are appended to the pending C3D_DrawElements
+ * while no PICA state changed since the previous draw (same vertex buffer,
+ * indices contiguous in ibuf). Every citro3d state call is preceded by
+ * pend_flush(), since citro3d applies state when the draw is issued.
+ * sdmc:/cr_batch_off.txt = one C3D_DrawElements per draw (draws are still
+ * counted as mergeable). */
+static u16 *pend_ix;
+static u16 *last_end;   /* end of the previous draw's indices; NULL after a state change */
+static u32 pend_n, st_merged, batch_off = 2;
+static void pend_issue(void) {
+    if (!pend_n) return;
+    C3D_DrawElements(GPU_TRIANGLES, pend_n, C3D_UNSIGNED_SHORT, pend_ix);
+    pend_n = 0;
+}
+static void pend_flush(void) { last_end = NULL; pend_issue(); }
+
 void recomp_gx_init(void) {
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 8);   /* 2 MB: battle frames need over 1 MB (~112 words per draw) */
     target = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
@@ -151,6 +168,7 @@ static u32 vb_base;
 static const PVtx *cur_buf;   /* PICA attribute buffer: vbuf + vb_base or a vertex cache window */
 static void use_buf(const PVtx *p) {
     if (p == cur_buf) return;
+    pend_flush();
     cur_buf = p;
     C3D_BufInfo *bi = C3D_GetBufInfo();
     BufInfo_Init(bi);
@@ -169,6 +187,7 @@ static void frame_begin(void) {
     vc_frame_begin();
     if (clear_pending) {
         u32 c = gx.clear_color[0] << 24 | gx.clear_color[1] << 16 | gx.clear_color[2] << 8 | gx.clear_color[3];
+        pend_flush();
         C3D_RenderTargetClear(target, C3D_CLEAR_ALL, c, gx.clear_z);
         clear_pending = 0;
     }
@@ -185,6 +204,9 @@ static void frame_end(void) {
             (unsigned long)st_draws, (unsigned long)st_tris, (unsigned long)st_tex, (unsigned long)st_evict, (unsigned long)st_upload, (unsigned long)(st_upbytes >> 10), gx.efb_w, gx.efb_h,
             gx.clear_color[0], gx.clear_color[1], gx.clear_color[2], gx.clear_color[3],
             (unsigned long)st_split, (int)(C3D_GetCmdBufUsage() * 100));
+        recomp_log("# gx batch frame %lu: draws %lu mergeable %lu (%lu%%) -> %lu DrawElements%s\n", (unsigned long)frames, (unsigned long)st_draws,
+            (unsigned long)st_merged, st_draws ? (unsigned long)(st_merged * 100 / st_draws) : 0ul,
+            (unsigned long)(batch_off ? st_draws : st_draws - st_merged), batch_off ? " (batching off)" : "");
     }
     if (frames % 300 == 0) {
         gap_dump();
@@ -192,8 +214,10 @@ static void frame_end(void) {
                    (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vc_top * sizeof(PVtx) >> 10), (unsigned long)(linearSpaceFree() >> 10));
     }
     vc_hits = vc_misses = 0;
-    st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = 0;
+    st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = st_merged = 0;
     /* a frame with no draws still shows the clear color (frame_begin above) */
+    pend_flush();
+    last_end = NULL;
     u64 t0 = recomp_ticks();
     /* one flush per frame: the GPU reads the buffers only at C3D_FrameEnd */
     if (vb_used) GSPGPU_FlushDataCache(vbuf[vb_half], vb_used * sizeof(PVtx));
@@ -395,6 +419,7 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
         if (!t->used) { if (!victim || victim->used) victim = t; }
         else if ((!victim || (victim->used && t->last < victim->last)) && t->last + 2 < frames) victim = t;
     }
+    if (!e) pend_flush();   /* the entry may be bound to a pending draw */
     if (!e && same) {
         e = same;
         tex_upload(e, m, e->tex.width, e->tex.height, pica_fmt(m->fmt), tl);
@@ -424,8 +449,12 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
 
 static C3D_Tex *tex_bind_params(TexEntry *e, const TexMap *m, float *su, float *sv) {
     static const GPU_TEXTURE_WRAP_PARAM wrap[4] = {GPU_CLAMP_TO_EDGE, GPU_REPEAT, GPU_MIRRORED_REPEAT, GPU_REPEAT};
+    u32 param = e->tex.param;
     C3D_TexSetWrap(&e->tex, wrap[m->wrap_s & 3], wrap[m->wrap_t & 3]);
     C3D_TexSetFilter(&e->tex, m->mag_f ? GPU_LINEAR : GPU_NEAREST, (m->min_f == 0 || m->min_f == 2 || m->min_f == 3) ? GPU_NEAREST : GPU_LINEAR);
+    if (e->tex.param != param && pend_n) {   /* a pending draw may use the old parameters */
+        u32 nw = e->tex.param; e->tex.param = param; pend_flush(); e->tex.param = nw;
+    }
     *su = (float)m->w / e->tex.width; *sv = (float)m->h / e->tex.height;
     return &e->tex;
 }
@@ -618,6 +647,7 @@ static int tev_changed(void) {
 static void setup_tev(void) {
     int pstage = 0;
     if (!tev_changed()) return;
+    pend_flush();
     memset(tr, 0, sizeof tr);
     for (int x = 0; x < 2; x++) { tr[x].prev_reg = tr[x].buf_reg = -1; tr[x].buf_ready = 99; }
     for (u32 si = 0; si < gx.n_stages && si < 16; si++) {
@@ -695,7 +725,7 @@ static GPU_BLENDFACTOR blend_factor(int f, int dst) {
  * that was set, changed or not, at the next draw) */
 #define SET_IF_CHANGED(call, ...) do { static u32 last_[16]; static int valid_; \
     const u32 cur_[] = {__VA_ARGS__}; \
-    if (!valid_ || memcmp(last_, cur_, sizeof cur_)) { memcpy(last_, cur_, sizeof cur_); valid_ = 1; call; } } while (0)
+    if (!valid_ || memcmp(last_, cur_, sizeof cur_)) { memcpy(last_, cur_, sizeof cur_); valid_ = 1; pend_flush(); call; } } while (0)
 static u32 fbits(float f) { u32 u; memcpy(&u, &f, 4); return u; }
 
 static void setup_pixel(void) {
@@ -1006,6 +1036,7 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
 /* ---------------------------------------------------------------- uniforms */
 static void unif_set(int loc, const float (*v)[4], int n) {
     if (!memcmp(ushadow[loc], v, n * 16)) return;
+    pend_flush();
     memcpy(ushadow[loc], v, n * 16);
     C3D_FVec *p = C3D_FVUnifWritePtr(GPU_VERTEX_SHADER, loc, n);
     for (int i = 0; i < n; i++) { p[i].x = v[i][0]; p[i].y = v[i][1]; p[i].z = v[i][2]; p[i].w = v[i][3]; }
@@ -1079,6 +1110,15 @@ static void set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3]
     unif_set(u_tex, m, 9);
 }
 
+static void set_blit(int on, int n) {   /* light loop on/off and its count */
+    static int last_on = -1, last_n = -1;
+    if (on == last_on && (!on || n == last_n)) return;
+    pend_flush();
+    C3D_BoolUnifSet(GPU_VERTEX_SHADER, u_blit, on);
+    if (on) C3D_IVUnifSet(GPU_VERTEX_SHADER, u_iloop, n - 1, 0, 5, 0);
+    last_on = on; if (on) last_n = n;
+}
+
 /* COLOR0/ALPHA0 lighting; returns whether the shader's light loop runs */
 static int set_lighting(void) {
     const Chan *c0 = &gx.chan[0], *c2 = &gx.chan[2];
@@ -1091,7 +1131,7 @@ static int set_lighting(void) {
     for (int i = 0; i < 4; i++) amb[0][i] = (i < 3 ? e0 : e2) ? gx.amb[0][i] / 255.0f : 1;
     unif_set(u_amb, amb, 1);
     u8 mask = (e0 ? c0->light_mask : 0) | (e2 ? c2->light_mask : 0);
-    if (!mask) { C3D_BoolUnifSet(GPU_VERTEX_SHADER, u_blit, false); return 0; }
+    if (!mask) { set_blit(0, 0); return 0; }
     const Chan *c = e0 ? c0 : c2;
     if (e0 && e2 && (c0->attn_fn != c2->attn_fn || c0->diff_fn != c2->diff_fn)) ONCE("COLOR0/ALPHA0 light functions differ: COLOR0's used\n");
     if (c->attn_fn == 0) ONCE("specular light attenuation approximated\n");
@@ -1114,8 +1154,7 @@ static int set_lighting(void) {
         }
     }
     unif_set(u_lights, L, n * 5);
-    C3D_BoolUnifSet(GPU_VERTEX_SHADER, u_blit, true);
-    C3D_IVUnifSet(GPU_VERTEX_SHADER, u_iloop, n - 1, 0, 5, 0);
+    set_blit(1, n);
     return 1;
 }
 
@@ -1149,6 +1188,7 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
         if (!tex) continue;
         static const C3D_Tex *bound[3]; static u32 bound_param[3]; static void *bound_data[3];
         if (bound[nunits] != tex || bound_param[nunits] != tex->param || bound_data[nunits] != tex->data) {
+            pend_flush();
             C3D_TexBind(nunits, tex);
             bound[nunits] = tex; bound_param[nunits] = tex->param; bound_data[nunits] = tex->data;
         }
@@ -1216,8 +1256,14 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     if (in_dl) recomp_prof[PROF_VX_DL] += t0;
     st_draws++; st_tris += ntri; if (nunits) st_tex++;
     ts = recomp_ticks();
-   
-    C3D_DrawElements(GPU_TRIANGLES, k, C3D_UNSIGNED_SHORT, ix);
+    if (batch_off == 2) { FILE *f = fopen("sdmc:/cr_batch_off.txt", "rb"); batch_off = f != NULL; if (f) fclose(f);
+        recomp_log("# gx: draw batching %s\n", batch_off ? "off (cr_batch_off.txt)" : "on"); }
+    int merge = last_end == ix && pend_n + k <= 0xfff0;
+    if (merge) st_merged++;
+    if (merge && pend_n) pend_n += k;
+    else { pend_issue(); pend_ix = ix; pend_n = k; }
+    if (batch_off) pend_issue();
+    last_end = ix + k;
     recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
     vb_used += vadd; ib_used += k;
 }
