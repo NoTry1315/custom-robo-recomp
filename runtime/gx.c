@@ -415,9 +415,16 @@ static C3D_Tex *tex_bind_params(TexEntry *e, const TexMap *m, float *su, float *
 /* ---------------------------------------------------------------- TEV -> texenv */
 static int unit_of_map[8];
 
-typedef struct { GPU_TEVSRC src; int opnd; } Src;
-static u8 buf_val[4];   /* combiner buffer color: never updated, so a second per-draw constant */
-static int buf_used;  /* opnd: 0 color, 1 alpha, 2 one-minus color */
+/* cst: a per-draw constant (rgb in v[0..2] for the colour side, v[3] for alpha),
+ * placed in the PICA stage constant or the combiner buffer's initial colour */
+typedef struct { GPU_TEVSRC src; int opnd; int cst; u8 v[4]; } Src;   /* opnd: 0 color, 1 alpha, 2 one-minus color, 3-5 R/G/B */
+
+/* GX TEV registers on PICA, per side (0 rgb, 1 alpha): a register is a per-draw
+ * constant until a stage writes it, then lives in the PICA previous output; when
+ * another register is written while it is still read later, it moves to the
+ * combiner buffer (update bit on its last stage, readable two stages later) */
+enum { L_CONST, L_PREV, L_BUF, L_LOST };
+static struct { int loc[4], prev_reg, buf_reg, buf_ready, buf_mask, bufc_used; u8 bufc[4]; } tr[2];
 
 static int konst_value(int sel, int alpha, u8 rgba[4]) {
     if (sel < 8) { u8 v = (u8)((8 - sel) * 255 / 8); rgba[0] = rgba[1] = rgba[2] = rgba[3] = v; return 1; }
@@ -426,68 +433,80 @@ static int konst_value(int sel, int alpha, u8 rgba[4]) {
     return 0;
 }
 
-/* GX color arg -> PICA source; constants go to the stage constant (one per stage) */
-static Src color_src(const TevStage *t, int arg, int si, int *cused, u8 cval[4], int alpha) {
-    Src s = {GPU_PREVIOUS, alpha};
+/* COLOR1/ALPHA1 are not computed by the vertex shader: their unlit part
+ * (ambient * material when lit, material otherwise) */
+static void chan1_value(u8 v[4]) {
+    for (int i = 0; i < 4; i++) {
+        const Chan *c = &gx.chan[i < 3 ? 1 : 3];
+        int m = gx.mat[1][i], a = gx.amb[1][i];
+        if (gx.n_chans < 2) { v[i] = 0; continue; }
+        if (c->mat_src || (c->enable && c->amb_src)) { ONCE("COLOR1 vertex colour taken as white\n"); if (c->mat_src) m = 255; if (c->amb_src) a = 255; }
+        if (c->enable && c->light_mask) ONCE("COLOR1 lighting not emulated (ambient only)\n");
+        v[i] = (u8)(c->enable ? a * m / 255 : m);
+    }
+}
+
+static Src konst_src(const u8 v[4], int opnd, int alpha) {
+    Src s = {GPU_CONSTANT, alpha, 1, {0, 0, 0, 0}};
+    if (alpha) s.v[3] = v[opnd ? 3 : 0];
+    else if (opnd == 1) s.v[0] = s.v[1] = s.v[2] = v[3];
+    else memcpy(s.v, v, 3);
+    return s;
+}
+
+/* GX colour/alpha arg -> PICA source */
+static Src color_src(const TevStage *t, int arg, int alpha) {
+    Src s = {GPU_PREVIOUS, alpha, 0, {0, 0, 0, 0}};
     u8 v[4] = {0, 0, 0, 0};
     int map_unit = t->map < 8 ? unit_of_map[t->map] : -1;
     static const u8 alpha_arg[8] = {1, 3, 5, 7, 9, 11, 14, 15};   /* GX_CA_* -> GX_CC_* */
     if (alpha) arg = alpha_arg[arg & 7];
     switch (arg) {
-    case 0: case 1:
-        s.opnd = arg & 1;
-        if (si == 0) { memcpy(v, gx.tev_reg[0], 4); goto konst; }
-        s.src = GPU_PREVIOUS; return s;
-    case 2: case 3: case 4: case 5: case 6: case 7:
-        memcpy(v, gx.tev_reg[(arg - 2) / 2 + 1], 4); s.opnd = alpha ? 1 : (arg & 1); goto konst;
+    case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7: {
+        int r = arg >> 1, opnd = alpha ? 1 : (arg & 1), side = alpha || (arg & 1);
+        switch (tr[side].loc[r]) {
+        case L_PREV: s.src = GPU_PREVIOUS; s.opnd = opnd; return s;
+        case L_BUF: s.src = GPU_PREVIOUS_BUFFER; s.opnd = opnd; s.cst = -1 - side; return s;   /* cst < 0: buffer read, checked when placed */
+        case L_LOST: ONCE("TEV register read after it was overwritten in PICA\n"); break;
+        }
+        return konst_src(gx.tev_reg[r], opnd, alpha);
+    }
     case 8: case 9:
-        if (map_unit < 0) { ONCE("TEXC without texture\n"); v[0] = v[1] = v[2] = v[3] = 255; goto konst; }
+        if (map_unit < 0) { ONCE("TEXC without texture\n"); v[0] = v[1] = v[2] = v[3] = 255; return konst_src(v, 0, alpha); }
         s.src = (GPU_TEVSRC)(GPU_TEXTURE0 + map_unit); s.opnd = alpha ? 1 : (arg & 1);
         if (!alpha && !(arg & 1) && t->tex_swap) s.opnd = 2 + t->tex_swap;   /* default swap tables 1-3: RRR, GGG, BBB */
         if (t->tex_swap) ONCE("TEV texture swap %d (alpha kept)\n", t->tex_swap);
         return s;
-    case 10: case 11: s.src = GPU_PRIMARY_COLOR; s.opnd = alpha ? 1 : (arg & 1); return s;
-    case 12: v[0] = v[1] = v[2] = v[3] = 255; s.opnd = alpha; goto konst;
-    case 13: v[0] = v[1] = v[2] = v[3] = 128; s.opnd = alpha; goto konst;
-    case 14: konst_value(alpha ? t->ksel_a : t->ksel_c, alpha, v); s.opnd = alpha; goto konst;
-    default: v[0] = v[1] = v[2] = v[3] = 0; s.opnd = alpha; goto konst;
+    case 10: case 11:
+        if (t->chan == 1 || t->chan == 3 || t->chan == 5) { chan1_value(v); return konst_src(v, alpha ? 1 : (arg & 1), alpha); }
+        if (t->chan == 6) return konst_src(v, 0, alpha);
+        s.src = GPU_PRIMARY_COLOR; s.opnd = alpha ? 1 : (arg & 1); return s;
+    case 12: v[0] = v[1] = v[2] = v[3] = 255; return konst_src(v, 0, alpha);
+    case 13: v[0] = v[1] = v[2] = v[3] = 128; return konst_src(v, 0, alpha);
+    case 14: konst_value(alpha ? t->ksel_a : t->ksel_c, alpha, v); return konst_src(v, alpha, alpha);
+    default: return konst_src(v, 0, alpha);
     }
-konst:
-    s.src = GPU_CONSTANT;
-    if (alpha) {
-        u8 a = v[s.opnd ? 3 : 0];
-        if (s.opnd == 0) a = v[0];
-        s.opnd = 1;
-        if ((*cused & 2) && cval[3] != a) {
-            if ((buf_used & 2) && buf_val[3] != a) ONCE("three different alpha constants in one draw\n");
-            buf_val[3] = a; buf_used |= 2; s.src = GPU_PREVIOUS_BUFFER;
-        } else { cval[3] = a; *cused |= 2; }
-    } else {
-        if (s.opnd == 1) { v[0] = v[1] = v[2] = v[3]; }
-        s.opnd = 0;
-        if ((*cused & 1) && memcmp(cval, v, 3)) {   /* second constant: the combiner buffer color */
-            if ((buf_used & 1) && memcmp(buf_val, v, 3)) ONCE("three different color constants in one draw\n");
-            memcpy(buf_val, v, 3); buf_used |= 1; s.src = GPU_PREVIOUS_BUFFER;
-        } else { memcpy(cval, v, 3); *cused |= 1; }
-    }
-    return s;
 }
 
-/* one GX side (color or alpha) -> up to 2 PICA ops */
+/* one GX side (color or alpha) -> up to 3 PICA ops */
 typedef struct { GPU_COMBINEFUNC f; Src s[3]; int scale; } POp;
 
-static int is_const(int arg, int alpha, int val) {   /* ZERO/ONE literal args */
-    if (alpha) return val == 0 ? arg == 7 : 0;
-    return val == 0 ? arg == 15 : val == 1 ? arg == 12 : 0;
+static int cst_is(Src s, int alpha, int val) {
+    if (s.cst <= 0) return 0;
+    return alpha ? s.v[3] == val : s.v[0] == val && s.v[1] == val && s.v[2] == val;
 }
 
-static int side_ops(const TevStage *t, int si, int alpha, POp *ops, int *cused, u8 cval[4]) {
+/* the combiner buffer's initial colour is free to hold a second constant */
+static int bufc_free(int alpha) { return !tr[alpha].buf_mask && !tr[alpha].bufc_used; }
+
+static int side_ops(const TevStage *t, int alpha, POp *ops) {
     const TevSide *g = alpha ? &t->a : &t->c;
-    int z_a = is_const(g->a, alpha, 0), z_b = is_const(g->b, alpha, 0), z_c = is_const(g->c, alpha, 0), z_d = is_const(g->d, alpha, 0);
-    int one_c = !alpha && is_const(g->c, 0, 1);
-    Src A = color_src(t, g->a, si, cused, cval, alpha), B = color_src(t, g->b, si, cused, cval, alpha);
-    Src C = color_src(t, g->c, si, cused, cval, alpha), D = color_src(t, g->d, si, cused, cval, alpha);
+    Src A = color_src(t, g->a, alpha), B = color_src(t, g->b, alpha);
+    Src C = color_src(t, g->c, alpha), D = color_src(t, g->d, alpha);
+    int z_a = cst_is(A, alpha, 0), z_b = cst_is(B, alpha, 0), z_c = cst_is(C, alpha, 0), z_d = cst_is(D, alpha, 0);
+    int one_c = cst_is(C, alpha, 255);
     int n = 0, scale = g->scale == 1 ? 1 : g->scale == 2 ? 2 : 0;
+    Src prev = {GPU_PREVIOUS, alpha, 0, {0, 0, 0, 0}};
     if (g->scale == 3) ONCE("TEV scale 1/2 not supported\n");
     if (g->op > 1) ONCE("TEV compare op %d not supported\n", g->op);
     if (g->bias) ONCE("TEV bias %d not supported\n", g->bias);
@@ -501,15 +520,20 @@ static int side_ops(const TevStage *t, int si, int alpha, POp *ops, int *cused, 
     if (z_a) l = one_c ? (POp){GPU_REPLACE, {B, B, B}} : (POp){GPU_MODULATE, {B, C, C}};
     else if (one_c) l = (POp){GPU_REPLACE, {B, B, B}};
     else if (z_c) l = (POp){GPU_REPLACE, {A, A, A}};
-    else l = (POp){GPU_INTERPOLATE, {B, A, C}};
+    else if (A.cst > 0 && C.cst > 0 && B.cst <= 0 && !bufc_free(alpha)) {
+        /* two constants and no free buffer colour: b*c, then + a*(1-c) folded on the CPU */
+        Src K = A;
+        for (int i = 0; i < 4; i++) K.v[i] = (u8)(A.v[i] * (255 - C.v[i]) / 255);
+        ops[n++] = (POp){GPU_MODULATE, {B, C, C}, 0};
+        l = (POp){GPU_ADD, {prev, K, K}};
+    } else l = (POp){GPU_INTERPOLATE, {B, A, C}};
     if (z_d) { l.scale = scale; if (g->op == 1) ONCE("TEV 0 - x\n"); ops[n++] = l; return n; }
-    if (g->op == 0 && l.f == GPU_MODULATE) { ops[n++] = (POp){GPU_MULTIPLY_ADD, {B, C, D}, scale}; return n; }
-    if (l.f == GPU_REPLACE) {
+    if (n == 0 && g->op == 0 && l.f == GPU_MODULATE) { ops[n++] = (POp){GPU_MULTIPLY_ADD, {B, C, D}, scale}; return n; }
+    if (n == 0 && l.f == GPU_REPLACE) {
         ops[n++] = (POp){g->op ? GPU_SUBTRACT : GPU_ADD, {g->op ? D : l.s[0], g->op ? l.s[0] : D, D}, scale};
         return n;
     }
     ops[n++] = l;
-    Src prev = {GPU_PREVIOUS, alpha};
     if (D.src == GPU_PREVIOUS) ONCE("TEV lerp + CPREV needs the combiner buffer\n");
     ops[n++] = (POp){g->op ? GPU_SUBTRACT : GPU_ADD, {g->op ? D : prev, g->op ? prev : D, D}, scale};
     return n;
@@ -520,21 +544,64 @@ static int opnd_rgb(int o) {
     return m[o < 6 ? o : 0];
 }
 
+/* is side x of register r read by a stage after si before being rewritten? (PREV is the output) */
+static int tev_live(int r, u32 si, int x) {
+    for (u32 s = si + 1; s < gx.n_stages && s < 16; s++) {
+        const TevStage *t = &gx.tev[s];
+        const u8 *ca = &t->c.a, *aa = &t->a.a;
+        for (int i = 0; i < 4; i++) {
+            if (!x && ca[i] == 2 * r) return 1;
+            if (x && (ca[i] == 2 * r + 1 || aa[i] == r)) return 1;
+        }
+        if ((x ? t->a.out : t->c.out) == r) return 0;
+    }
+    return r == 0;
+}
+
+/* places the constants of one PICA stage: stage constant first, then the buffer colour */
+static void place_srcs(Src *s, int alpha, int pstage, u8 sc[4], int *scu) {
+    for (int i = 0; i < 3; i++) {
+        if (s[i].cst < 0) {
+            if (tr[-1 - s[i].cst].buf_ready > pstage) ONCE("TEV register read from the combiner buffer too early\n");
+            continue;
+        }
+        if (!s[i].cst) continue;
+        const u8 *v = s[i].v + (alpha ? 3 : 0);
+        u8 *d = sc + (alpha ? 3 : 0), *b = tr[alpha].bufc + (alpha ? 3 : 0);
+        int n = alpha ? 1 : 3;
+        if (!*scu || !memcmp(d, v, n)) { memcpy(d, v, n); *scu = 1; s[i].src = GPU_CONSTANT; }
+        else if (!tr[alpha].buf_mask && (!tr[alpha].bufc_used || !memcmp(b, v, n))) {
+            memcpy(b, v, n); tr[alpha].bufc_used = 1; s[i].src = GPU_PREVIOUS_BUFFER;
+        } else { ONCE("three different constants in one PICA stage\n"); s[i].src = GPU_CONSTANT; }
+    }
+}
+
 static void setup_tev(void) {
     int pstage = 0;
-    buf_used = 0;
+    memset(tr, 0, sizeof tr);
+    for (int x = 0; x < 2; x++) { tr[x].prev_reg = tr[x].buf_reg = -1; tr[x].buf_ready = 99; }
     for (u32 si = 0; si < gx.n_stages && si < 16; si++) {
         const TevStage *t = &gx.tev[si];
-        if (t->c.out || t->a.out) ONCE("TEV output to REG%d not supported (stage %lu)\n", t->c.out ? t->c.out : t->a.out, (unsigned long)si);
-        POp co[2], ao[2];
-        int cused = 0; u8 cval[4] = {0, 0, 0, 0};
-        int nc = side_ops(t, si, 0, co, &cused, cval), na = side_ops(t, si, 1, ao, &cused, cval);
+        POp co[3], ao[3];
+        int nc = side_ops(t, 0, co), na = side_ops(t, 1, ao);
         int n = nc > na ? nc : na;
+        for (int x = 0; x < 2; x++) {   /* the register in PICA previous is about to be replaced: keep it if still read */
+            int w = x ? t->a.out : t->c.out, h = tr[x].prev_reg;
+            if (h < 0 || h == w) continue;
+            tr[x].loc[h] = L_LOST;
+            if (!tev_live(h, si, x)) continue;
+            if (tr[x].buf_reg >= 0 && tev_live(tr[x].buf_reg, si, x)) ONCE("two TEV registers live besides the one being written\n");
+            else if (pstage - 1 > 3) ONCE("TEV register kept after PICA stage 3\n");
+            else { tr[x].buf_mask |= 1 << (pstage - 1); tr[x].loc[h] = L_BUF; tr[x].buf_reg = h; tr[x].buf_ready = pstage + 1; }
+        }
         for (int k = 0; k < n; k++) {
             if (pstage >= 6) { ONCE("more than 6 PICA texenv stages needed\n"); break; }
             C3D_TexEnv *env = C3D_GetTexEnv(pstage);
             C3D_TexEnvInit(env);
-            POp c = k < nc ? co[k] : (POp){GPU_REPLACE, {{GPU_PREVIOUS, 0}}}, a = k < na ? ao[k] : (POp){GPU_REPLACE, {{GPU_PREVIOUS, 1}}};
+            POp c = k < nc ? co[k] : (POp){GPU_REPLACE, {{GPU_PREVIOUS, 0, 0, {0}}}}, a = k < na ? ao[k] : (POp){GPU_REPLACE, {{GPU_PREVIOUS, 1, 0, {0}}}};
+            u8 sc[4] = {0, 0, 0, 0}; int scc = 0, sca = 0;
+            place_srcs(c.s, 0, pstage, sc, &scc);
+            place_srcs(a.s, 1, pstage, sc, &sca);
             C3D_TexEnvSrc(env, C3D_RGB, c.s[0].src, c.s[1].src, c.s[2].src);
             C3D_TexEnvOpRgb(env, opnd_rgb(c.s[0].opnd), opnd_rgb(c.s[1].opnd), opnd_rgb(c.s[2].opnd));
             C3D_TexEnvFunc(env, C3D_RGB, c.f);
@@ -543,12 +610,18 @@ static void setup_tev(void) {
             C3D_TexEnvOpAlpha(env, GPU_TEVOP_A_SRC_ALPHA, GPU_TEVOP_A_SRC_ALPHA, GPU_TEVOP_A_SRC_ALPHA);
             C3D_TexEnvFunc(env, C3D_Alpha, a.f);
             C3D_TexEnvScale(env, C3D_Alpha, (GPU_TEVSCALE)(k + 1 == na ? a.scale : 0));
-            C3D_TexEnvColor(env, cval[0] | cval[1] << 8 | cval[2] << 16 | (u32)cval[3] << 24);
+            C3D_TexEnvColor(env, sc[0] | sc[1] << 8 | sc[2] << 16 | (u32)sc[3] << 24);
             pstage++;
         }
+        for (int x = 0; x < 2; x++) {
+            int w = x ? t->a.out : t->c.out;
+            if (tr[x].buf_reg == w) tr[x].buf_reg = -1;
+            tr[x].loc[w] = L_PREV; tr[x].prev_reg = w;
+        }
     }
-    C3D_TexEnvBufUpdate(C3D_Both, 0);
-    C3D_TexEnvBufColor(buf_val[0] | buf_val[1] << 8 | buf_val[2] << 16 | (u32)buf_val[3] << 24);
+    C3D_TexEnvBufUpdate(C3D_RGB, tr[0].buf_mask);
+    C3D_TexEnvBufUpdate(C3D_Alpha, tr[1].buf_mask);
+    C3D_TexEnvBufColor(tr[0].bufc[0] | tr[0].bufc[1] << 8 | tr[0].bufc[2] << 16 | (u32)tr[1].bufc[3] << 24);
     if (!pstage) {   /* no stages: pass the rasterized color */
         C3D_TexEnv *env = C3D_GetTexEnv(0);
         C3D_TexEnvInit(env);

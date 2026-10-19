@@ -97,7 +97,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   runs in Citra; SELECT held = 3DS drives controller 2 (port 2 always connected).
   Spawn crash was the GPU command buffer (>1 MB per battle frame, ~112 words/draw,
   2200 draws): now 2 MB, and a full buffer skips the rest of the frame (logged).
-  Robo/cannon/cube skins draw white (suspect TEV REG1-3 outputs). 2.7 fps in Citra.
+  2.7 fps in Citra. Robo/cannon/cube skins textured: TEV registers REG0-2 mapped
+  to PICA previous / combiner buffer (`setup_tev`); COLOR1 = unlit part only (no
+  specular highlights yet, see unknowns "Battle").
 - Testing without the user: every pad change is logged ("# pad r<n> buttons .. p1|p2
   stick x y cstick x y"); `autotest.ps1 -Replay <log>` replays a played log
   deterministically (same crash retrace each run). Recording to battle:

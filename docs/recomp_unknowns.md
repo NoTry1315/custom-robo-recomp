@@ -215,9 +215,21 @@ Functions translated: 2723. SDK stubs: 1049. MetroTRK entries skipped: 184. Jump
   still fills it skips its remaining draws ("# gx: GPU command buffer full").
 - Real fix (also the perf target, gx state 100 ms in battle): send only changed
   state per draw (TEV/blend/depth/uniform dirty tracking).
-- White robo skins, launch cannons, robo cubes: not texture misses (only the EFB
-  copy destination misses). Top gaps: TEV output to REG1-3 (~446k hits), cull mode
-  (771k), three colour constants (360k), lines/points (70k), post-transform texmtx.
+- White robo skins, launch cannons, robo cubes (fixed): the robo TEV program is
+  REG2 = tex0 * K2a (+ C0); REG2 *= COLOR0; PREV = tex1 * K1a (+ C1);
+  PREV = PREV * COLOR1 + REG2 (diffuse texture + specular-lit second texture).
+  setup_tev now allocates GX registers per side (rgb/alpha): a register is a
+  per-draw constant until written, then lives in PICA previous; when another
+  register is written while it is still read later, its last PICA stage sets the
+  combiner-buffer update bit (stages 0-3, read from two stages later). Constants are
+  placed per PICA stage (stage constant, then the buffer's initial colour while no
+  update is scheduled); a lerp of two constants without a free buffer is split as
+  b*c + a*(1-c) folded on the CPU. Constants equal to 0/255 simplify the ops.
+- COLOR1/ALPHA1 are not lit (the shader computes COLOR0/ALPHA0 only): TEV reads of
+  COLOR1 get the unlit part (amb*mat when enabled, else mat). The robo's specular
+  term (COLOR1 = GX_AF_SPEC light 1) is therefore black: no highlights yet.
+- Remaining gaps in battle: cull mode, lines/points, post-transform texmtx,
+  projective texgen, EFB copy (TEXC without texture), two-sided alpha compare.
 - `# gx gaps` (every 300 frames) counts hits per unemulated feature; `# gx tex miss`
   names each texture drawn without its image and why.
 - Vertex buffer: 0x18000 vertices per half, u16 indices rebased past 0x10000.
