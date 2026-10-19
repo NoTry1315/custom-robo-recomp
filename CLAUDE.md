@@ -124,7 +124,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   campaign 84 -> 39 ms (5.4 -> 7.4 fps), title 28 -> 7 ms (15 -> 30 fps); replays give
   identical logs. `# time r<n> gx vertex:` splits uniforms/decode; uniforms (24 ms in
   battle) are next. Not yet on hardware. Details: unknowns "Vertex cache".
-- Hardware run 6 (2026-10-19): circle pad axes negated (were reversed). Stalls of
+- Hardware run 6 (2026-10-19): circle pad axes negated (were reversed); reverted later: the
+  real cause was the stubbed PADClamp (see "Pad" below). Stalls of
   seconds were SD log writes: log now buffered in memory, written by a background
   thread. 2x supersampling tried and reverted (too slow on hardware; jaggies still
   open). See unknowns "Hardware stalls and jaggies".
@@ -170,6 +171,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   campaign 31.3 -> 32.2 -> 26.3 (25.7 -> 25.6 -> 29.6 fps; different play each run, noisy). FLOATOPS is the
   default since 2026-10-19 (`make FLOATOPS=0` = exact Gekko rounding), on the assumption that ulp-level
   vertex/physics differences are invisible; not yet checked against Dolphin (framebuffer dumps). Details: unknowns "Float ops and native MTX".
+- Pad (2026-10-19): PADClamp/ClampStick translated from main.dol (recomp.py TRANSLATE_SDK_RANGES,
+  whole range or only the entry is translated). Without them the game's x*100/55 wrapped s8:
+  full tilt and diagonals flipped, no deadzone (drift). No axis negation. Confirmed in Citra.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

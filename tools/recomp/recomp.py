@@ -33,6 +33,8 @@ MTX_NATIVE = {0x801394c4, 0x801394f0, 0x80139524, 0x801395f0, 0x80139640, 0x8013
               0x8013a208, 0x8013a220, 0x8013a264, 0x8013a284}
 # SDK functions inside STUB_MODULES that are pure memory code: translated from the guest
 # (PADClamp + ClampStick: deadzone 15, circle radius 56/44, triggers 30..180)
+# Whole ranges: every instruction must be 'tr', not only the entry (else recomp_bad).
+TRANSLATE_SDK_RANGES = [(0x801409b0, 0x80140c64)]   # ClampStick 0x1a8 + PADClamp 0x10c
 TRANSLATE_SDK = {0x80140b58, 0x801409b0}
 
 
@@ -94,7 +96,7 @@ class Program:
         m = self.module(a)
         if a in NATIVE:
             return 'stub'
-        if a in TRANSLATE_SDK:
+        if any(lo <= a < hi for lo, hi in TRANSLATE_SDK_RANGES):
             return 'tr'
         return 'stub' if m in STUB_MODULES else 'skip' if m in SKIP_MODULES else 'tr'
 
