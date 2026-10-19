@@ -10,7 +10,7 @@ name, later ones get an _XXXXXXXX suffix. Functions not in the doc
 (sdk_*_unlisted_*) keep their weak logging stub in gen/sdk_stubs.c."""
 import re
 from pathlib import Path
-from recomp import ROOT, load_sdk_doc, STUB_MODULES
+from recomp import ROOT, load_sdk_doc, STUB_MODULES, TRANSLATE_SDK
 
 RUNTIME = ROOT / 'runtime'
 OUT = RUNTIME / 'sdk_log.c'
@@ -31,7 +31,7 @@ def main():
             hand |= set(re.findall(r'^void (sdk_\w+)\(void\)', f.read_text(encoding='utf-8'), re.M))
     seen, out = set(), []
     for a in sorted(names):
-        if module(a) not in STUB_MODULES:
+        if module(a) not in STUB_MODULES or a in TRANSLATE_SDK:
             continue
         n = 'sdk_' + re.sub(r'\W', '_', names[a])
         if n in seen:

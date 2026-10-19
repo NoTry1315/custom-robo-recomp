@@ -26,6 +26,9 @@ STUB_MODULES = {'base', 'OS', 'DB', 'DVD', 'VI', 'PAD', 'AI', 'AR', 'ARQ', 'AX',
 SKIP_MODULES = {'MetroTRK'}
 # C library functions outside STUB_MODULES replaced natively in runtime/libc.c
 NATIVE = {0x8000540c: 'memset', 0x800054f4: 'memcpy', 0x80169168: 'sqrt'}
+# SDK functions inside STUB_MODULES that are pure memory code: translated from the guest
+# (PADClamp + ClampStick: deadzone 15, circle radius 56/44, triggers 30..180)
+TRANSLATE_SDK = {0x80140b58, 0x801409b0}
 
 
 # ---------------------------------------------------------------- input
@@ -86,6 +89,8 @@ class Program:
         m = self.module(a)
         if a in NATIVE:
             return 'stub'
+        if a in TRANSLATE_SDK:
+            return 'tr'
         return 'stub' if m in STUB_MODULES else 'skip' if m in SKIP_MODULES else 'tr'
 
     def insn(self, a):
