@@ -139,7 +139,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 - Draw batching (2026-10-19): same-state consecutive GX draws merged into one
   C3D_DrawElements (91% of battle draws, 2200 -> ~190 per frame); Citra battle 4.6 -> 5.4
   fps (gx state 64 -> 31 ms), campaign 7.5 -> 8.5; replays identical. sdmc:/cr_batch_off.txt
-  disables it. Next: skip uniform rebuilds (gx vertex uniforms ~25 ms). Not yet on hardware.
+  disables it. Uniform setters skip unchanged inputs: battle 5.5 fps, campaign 8.8 (Citra
+  uniforms 26 -> 20 ms). Not yet on hardware.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

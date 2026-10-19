@@ -946,9 +946,14 @@ static void decode_vtx(const u8 *p, APlan *pl, int np, const PVtx *tm, PVtx *o) 
 #define VC_NONE 0xffffffffu
 typedef struct {
     const u8 *data; u32 n, sig, dhash, ahash, narr, used, gen, off;
+    u32 ixoff, ixn, prim;   /* the draw's index list in vc_ix (ixn 0: none yet) */
     const u8 *arr[VC_ARR]; u32 alen[VC_ARR];
 } VCache;
 static VCache vcache[VC_N];
+static VCache *vc_last;   /* entry of the last vc_draw, NULL if not kept */
+#define VC_IX (VC_VERTS * 3)
+static u16 vc_ix[VC_IX];
+static u32 vc_ixtop;
 
 static u32 hash_mem(const u8 *p, u32 n, u32 h) {
     u32 w;
@@ -990,12 +995,13 @@ static u32 vc_arrays_hash(const VCache *e) {
 
 static void vc_frame_begin(void) {   /* emptied when it filled up or is 3/4 full */
     if (!vc_full && vc_top < VC_VERTS / 4 * 3) return;
-    vc_gen++; vc_top = 0; vc_full = 0;
+    vc_gen++; vc_top = 0; vc_full = 0; vc_ixtop = 0;
 }
 
 /* Display-list draw: returns the arena vertex offset of its decoded vertices
  * (decoding them there on a miss), or VC_NONE when the caller decodes into vbuf */
 static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx *tm) {
+    vc_last = NULL;
     if (!vc_arena || n > 0x8000) return VC_NONE;
     u32 sig = plan_sig(pl, np, vs, tm);
     u32 slot = ((u32)(uintptr_t)data * 0x9e3779b1u ^ sig ^ (u32)n * 0x85ebca6bu) >> 18 & (VC_N - 1);
@@ -1010,6 +1016,7 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
     if (e->gen && e->data == data && e->n == (u32)n && e->sig == sig && e->dhash == dh && vc_arrays_hash(e) == e->ahash) {
         e->used = frames;
         vc_hits++;
+        vc_last = e;
         return e->off;
     }
     vc_misses++;
@@ -1029,7 +1036,8 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
     }
     e->data = data; e->n = n; e->sig = sig; e->dhash = dh; e->narr = narr; e->off = off;
     e->ahash = vc_arrays_hash(e);
-    e->used = frames; e->gen = vc_gen;
+    e->used = frames; e->gen = vc_gen; e->ixn = 0;
+    vc_last = e;
     return off;
 }
 
@@ -1045,7 +1053,19 @@ static void unif_set(int loc, const float (*v)[4], int n) {
 /* eye space -> clip space of the rotated 3DS framebuffer: GX projection, then the
  * viewport (ndc -> EFB pixel), EFB -> 400x240 and the 90-degree rotation, all
  * affine in (cx, cy, cw) so one 4x4 matrix */
+/* memo of a uniform setter's inputs: true when they equal the previous call's */
+static int same_inputs(void *last, int *valid, const void *key, size_t n) {
+    if (*valid && !memcmp(last, key, n)) return 1;
+    memcpy(last, key, n); *valid = 1;
+    return 0;
+}
+
 static void set_clip(void) {
+    struct { float proj[6], vp[4]; u32 ortho; s32 sc_off[2], w, h; } key;
+    static u8 last[sizeof key]; static int valid;
+    memcpy(key.proj, gx.proj, sizeof key.proj); memcpy(key.vp, gx.vp, sizeof key.vp);
+    key.ortho = gx.proj_ortho; key.sc_off[0] = gx.sc_off[0]; key.sc_off[1] = gx.sc_off[1]; key.w = gx.efb_w; key.h = gx.efb_h;
+    if (same_inputs(last, &valid, &key, sizeof key)) return;
     const float *p = gx.proj;
     float P[4][4] = {{0}}, m[4][4];
     if (gx.proj_ortho) { P[0][0] = p[0]; P[0][3] = p[1]; P[1][1] = p[2]; P[1][3] = p[3]; P[2][2] = p[4]; P[2][3] = p[5]; P[3][3] = 1; }
@@ -1063,6 +1083,7 @@ static void set_clip(void) {
 }
 
 static u32 xf_gen = 1;   /* bumped on every XF matrix write */
+static u32 light_gen = 1;   /* bumped on every GXLoadLightObjImm */
 
 static void set_mtx(int lit) {
     static u32 pos_gen, nrm_gen;
@@ -1076,6 +1097,16 @@ static void set_mtx(int lit) {
 
 /* texgen for PICA unit u: rows R0, R1, R2 with (s, t) = (R0.x / R2.x, R1.x / R2.x) */
 static void set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3], const u8 *v0, const APlan *pl, int np) {
+    struct { float tscale[3][2]; int tcoord[3]; u32 n, xf; TexGen g[8]; } key;
+    static u8 last[sizeof key]; static int valid; static s8 last_src[3];
+    int per_vtx = 0;
+    for (int u = 0; u < 3; u++) if (tcoord[u] >= 0 && tcoord[u] < 8 && gx.desc[1 + tcoord[u]]) per_vtx = 1;
+    memset(&key, 0, sizeof key);
+    memcpy(key.tscale, tscale, sizeof key.tscale); memcpy(key.tcoord, tcoord, sizeof key.tcoord);
+    key.n = gx.n_texgens; key.xf = xf_gen;
+    for (int i = 0; i < 8; i++) { key.g[i].func = gx.texgen[i].func; key.g[i].src = gx.texgen[i].src; key.g[i].normalize = gx.texgen[i].normalize; key.g[i].mtx = gx.texgen[i].mtx; }
+    if (per_vtx) valid = 0;   /* reads the first vertex */
+    else if (same_inputs(last, &valid, &key, sizeof key)) { memcpy(tsrc, last_src, 3); return; }
     float m[9][4];
     memset(m, 0, sizeof m);
     for (int u = 0; u < 3; u++) {
@@ -1108,6 +1139,7 @@ static void set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3]
         }
     }
     unif_set(u_tex, m, 9);
+    memcpy(last_src, tsrc, 3);
 }
 
 static void set_blit(int on, int n) {   /* light loop on/off and its count */
@@ -1119,6 +1151,7 @@ static void set_blit(int on, int n) {   /* light loop on/off and its count */
     last_on = on; if (on) last_n = n;
 }
 
+static int set_lighting_inner(const Chan *c0, const Chan *c2, int e0, int e2);
 /* COLOR0/ALPHA0 lighting; returns whether the shader's light loop runs */
 static int set_lighting(void) {
     const Chan *c0 = &gx.chan[0], *c2 = &gx.chan[2];
@@ -1126,6 +1159,16 @@ static int set_lighting(void) {
     mat_vtx[0] = mat_vtx[1] = mat_vtx[2] = gx.n_chans && c0->mat_src;
     mat_vtx[3] = gx.n_chans && c2->mat_src;
     for (int i = 0; i < 4; i++) mat_reg[i] = gx.n_chans ? gx.mat[0][i] : 0;
+    struct { Chan c[4]; u32 n, lg; u8 amb[4]; } key;
+    static u8 last[sizeof key]; static int valid, last_lit;
+    memset(&key, 0, sizeof key);
+    for (int i = 0; i < 4; i++) key.c[i] = gx.chan[i];
+    key.n = gx.n_chans; key.lg = light_gen; memcpy(key.amb, gx.amb[0], 4);
+    if (same_inputs(last, &valid, &key, sizeof key)) return last_lit;
+    last_lit = set_lighting_inner(c0, c2, e0, e2);
+    return last_lit;
+}
+static int set_lighting_inner(const Chan *c0, const Chan *c2, int e0, int e2) {
     if ((e0 && c0->amb_src) || (e2 && c2->amb_src)) ONCE("vertex ambient colour: register used\n");
     float amb[1][4];
     for (int i = 0; i < 4; i++) amb[0][i] = (i < 3 ? e0 : e2) ? gx.amb[0][i] / 255.0f : 1;
@@ -1243,6 +1286,8 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     recomp_prof[PROF_VX_DEC] += recomp_ticks() - td;
     u16 *ix = ibuf[vb_half] + ib_used;
     int k = 0;
+    VCache *ve = co != VC_NONE ? vc_last : NULL;
+    if (ve && ve->ixn && ve->prim == (u32)prim) { memcpy(ix, vc_ix + ve->ixoff, ve->ixn * 2); k = ve->ixn; ntri = 0; }
     for (int t = 0; t < ntri; t++) {
         int a, b, c;
         if (prim == 0x80) { int q = (t / 2) * 4; if (t & 1) { a = q; b = q + 2; c = q + 3; } else { a = q; b = q + 1; c = q + 2; } }
@@ -1251,6 +1296,10 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
         else { a = 0; b = t + 1; c = t + 2; }
         ix[k++] = v0 + a; ix[k++] = v0 + b; ix[k++] = v0 + c;
     }
+    if (ve && ntri && vc_ixtop + k <= VC_IX) {   /* keep the list for the entry's next hits */
+        memcpy(vc_ix + vc_ixtop, ix, k * 2); ve->ixoff = vc_ixtop; ve->ixn = k; ve->prim = prim; vc_ixtop += k;
+    }
+    ntri = k / 3;
     t0 = recomp_ticks() - t0;
     recomp_prof[PROF_GX_VTX] += t0;
     if (in_dl) recomp_prof[PROF_VX_DL] += t0;
@@ -1478,6 +1527,7 @@ void sdk_GXLoadLightObjImm(void) {
     LOG();
     for (int i = 0; i < 8; i++) if (R[4] == (1u << i)) {
         Light *l = &gx.light[i]; u32 o = R[3];
+        light_gen++;
         for (int k = 0; k < 3; k++) { l->a[k] = lf(o + 0x10, k); l->k[k] = lf(o + 0x1c, k); l->pos[k] = lf(o + 0x28, k); l->dir[k] = -lf(o + 0x34, k); }
         for (int k = 0; k < 4; k++) l->color[k] = rd8(o + 0xc + k);
         return;
