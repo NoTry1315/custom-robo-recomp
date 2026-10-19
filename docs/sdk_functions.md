@@ -754,8 +754,8 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x8014be78 | 0x38 | CARD_unk_8014be78 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x8014beb0 | 0xb8 | __CARDGetControlBlock | medium | Disable/Restore, 12 callers |
 | 0x8014bf68 | 0x64 | __CARDPutControlBlock | medium | Disable/Restore, 43 callers |
-| 0x8014bfcc | 0x30 | CARD_unk_8014bfcc | unk | in module range, no name match; callers=8 ext=8 callees=0 |
-| 0x8014bffc | 0x150 | CARD_unk_8014bffc | unk | in module range, no name match; callers=1 ext=1 callees=5 |
+| 0x8014bfcc | 0x30 | CARDGetResultCode | high | named from body + game call pattern (card.c) |
+| 0x8014bffc | 0x150 | CARDFreeBlocks | high | named from body + game call pattern (card.c) |
 | 0x8014c14c | 0x98 | __CARDSync | medium | OSSleepThread loop |
 | 0x8014c1e4 | 0x50 | CARD_unk_8014c1e4 | unk | in module range, no name match; callers=0 callees=1 |
 | 0x8014c234 | 0x16c | CARD_unk_8014c234 | unk | in module range, no name match; callers=1 callees=0 |
@@ -783,40 +783,40 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x8014e1b0 | 0x240 | CARD_unk_8014e1b0 | unk | in module range, no name match; callers=2 callees=1 |
 | 0x8014e3f0 | 0x284 | CARD_unk_8014e3f0 | unk | in module range, no name match; callers=2 callees=1 |
 | 0x8014e674 | 0x8c | CARD_unk_8014e674 | unk | in module range, no name match; callers=1 callees=3 |
-| 0x8014e700 | 0x590 | CARD_unk_8014e700 | unk | in module range, no name match; callers=1 ext=1 callees=11 |
+| 0x8014e700 | 0x590 | CARDCheckExAsync | high | named from body + game call pattern (card.c) |
 | 0x8014ec90 | 0xcc | CARD_unk_8014ec90 | unk | in module range, no name match; callers=2 callees=0 |
 | 0x8014ed5c | 0x17c | CARDProbeEx | high | (chan, memSize*, sectorSize*): chan>=2 -> -128, EXIProbeEx -1 -> -3 NOCARD, 0x110-byte control block per channel |
 | 0x8014eed8 | 0x410 | CARD_unk_8014eed8 | unk | in module range, no name match; callers=3 callees=15 |
 | 0x8014f2e8 | 0x138 | CARD_unk_8014f2e8 | unk | in module range, no name match; callers=4 callees=5 |
-| 0x8014f420 | 0x1a0 | CARD_unk_8014f420 | unk | in module range, no name match; callers=1 ext=1 callees=8 |
+| 0x8014f420 | 0x1a0 | CARDMountAsync | high | named from body + game call pattern (card.c) |
 | 0x8014f5c0 | 0x9c | CARD_unk_8014f5c0 | unk | in module range, no name match; callers=2 callees=5 |
-| 0x8014f65c | 0xac | CARD_unk_8014f65c | unk | in module range, no name match; callers=4 ext=2 callees=6 |
+| 0x8014f65c | 0xac | CARDUnmount | high | named from body + game call pattern (card.c) |
 | 0x8014f708 | 0x144 | CARD_unk_8014f708 | unk | in module range, no name match; callers=0 callees=4 |
 | 0x8014f84c | 0x658 | CARD_unk_8014f84c | unk | in module range, no name match; callers=1 hw=206e callees=12 |
-| 0x8014fea4 | 0x48 | CARD_unk_8014fea4 | unk | in module range, no name match; callers=1 ext=1 callees=2 |
+| 0x8014fea4 | 0x48 | CARDFormatAsync | high | named from body + game call pattern (card.c) |
 | 0x8014feec | 0x68 | CARD_unk_8014feec | unk | in module range, no name match; callers=2 callees=0 |
 | 0x8014ff54 | 0x94 | CARD_unk_8014ff54 | unk | in module range, no name match; callers=2 callees=1 |
 | 0x8014ffe8 | 0x134 | CARD_unk_8014ffe8 | unk | in module range, no name match; callers=2 callees=1 |
 | 0x8015011c | 0xf4 | CARD_unk_8015011c | unk | in module range, no name match; callers=2 callees=2 |
 | 0x80150210 | 0x150 | CARD_unk_80150210 | unk | in module range, no name match; callers=1 callees=2 |
-| 0x80150360 | 0x11c | CARD_unk_80150360 | unk | in module range, no name match; callers=1 ext=1 callees=5 |
-| 0x8015047c | 0x54 | CARD_unk_8015047c | unk | in module range, no name match; callers=3 ext=3 callees=2 |
+| 0x80150360 | 0x11c | CARDOpen | high | named from body + game call pattern (card.c) |
+| 0x8015047c | 0x54 | CARDClose | high | named from body + game call pattern (card.c) |
 | 0x801504d0 | 0x8 | CARD_unk_801504d0 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x801504d8 | 0x130 | CARD_unk_801504d8 | unk | in module range, no name match; callers=0 callees=6 |
-| 0x80150608 | 0x220 | CARD_unk_80150608 | unk | in module range, no name match; callers=1 ext=1 callees=9 |
+| 0x80150608 | 0x220 | CARDCreateAsync | high | named from body + game call pattern (card.c) |
 | 0x80150828 | 0x1b8 | CARD_unk_80150828 | unk | in module range, no name match; callers=2 callees=4 |
 | 0x801509e0 | 0x130 | CARD_unk_801509e0 | unk | in module range, no name match; callers=0 callees=3 |
-| 0x80150b10 | 0x144 | CARD_unk_80150b10 | unk | in module range, no name match; callers=1 ext=1 callees=6 |
+| 0x80150b10 | 0x144 | CARDReadAsync | high | named from body + game call pattern (card.c) |
 | 0x80150c54 | 0x170 | CARD_unk_80150c54 | unk | in module range, no name match; callers=0 callees=7 |
 | 0x80150dc4 | 0xb0 | CARD_unk_80150dc4 | unk | in module range, no name match; callers=0 callees=2 |
-| 0x80150e74 | 0x114 | CARD_unk_80150e74 | unk | in module range, no name match; callers=3 ext=3 callees=6 |
+| 0x80150e74 | 0x114 | CARDWriteAsync | high | named from body + game call pattern (card.c) |
 | 0x80150f88 | 0xa4 | CARD_unk_80150f88 | unk | in module range, no name match; callers=0 callees=2 |
-| 0x8015102c | 0x110 | CARD_unk_8015102c | unk | in module range, no name match; callers=1 ext=1 callees=7 |
+| 0x8015102c | 0x110 | CARDDeleteAsync | high | named from body + game call pattern (card.c) |
 | 0x8015113c | 0x1f8 | CARD_unk_8015113c | unk | in module range, no name match; callers=2 callees=0 |
-| 0x80151334 | 0x114 | CARD_unk_80151334 | unk | in module range, no name match; callers=3 ext=3 callees=6 |
-| 0x80151448 | 0x174 | CARD_unk_80151448 | unk | in module range, no name match; callers=1 callees=8 |
-| 0x801515bc | 0x48 | CARD_unk_801515bc | unk | in module range, no name match; callers=1 ext=1 callees=2 |
-| 0x80151604 | 0xc4 | CARD_unk_80151604 | unk | in module range, no name match; callers=2 ext=2 callees=2 |
+| 0x80151334 | 0x114 | CARDGetStatus | high | named from body + game call pattern (card.c) |
+| 0x80151448 | 0x174 | CARDSetStatusAsync | high | named from body + game call pattern (card.c) |
+| 0x801515bc | 0x48 | CARDSetStatus | high | named from body + game call pattern (card.c) |
+| 0x80151604 | 0xc4 | CARDGetSerialNo | high | named from body + game call pattern (card.c) |
 
 ## EXI and SI
 

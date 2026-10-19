@@ -128,6 +128,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   seconds were SD log writes: log now buffered in memory, written by a background
   thread. 2x supersampling tried and reverted (too slow on hardware; jaggies still
   open). See unknowns "Hardware stalls and jaggies".
+- HOME + saves (2026-10-19): aptMainLoop() every retrace (HOME/close work). Memory card
+  in slot A at the CARD API level (`runtime/card.c`): one file per save in
+  sdmc:/custom-robo/save/ (.bin + .stat), async calls finish at once; save + reload
+  confirmed in Citra. sdmc:/cr_card_off.txt = no card (old dialog path for autotests).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
