@@ -174,6 +174,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 - Pad (2026-10-19): PADClamp/ClampStick translated from main.dol (recomp.py TRANSLATE_SDK_RANGES,
   whole range or only the entry is translated). Without them the game's x*100/55 wrapped s8:
   full tilt and diagonals flipped, no deadzone (drift). No axis negation. Confirmed in Citra.
+- Frame pacing (2026-10-19): C3D_FrameBegin(SYNCDRAW) at the first draw waited for the next vblank every
+  frame, counted as "game" (all earlier game-ms figures include it). Now a 60 Hz cap only (vblank wait
+  when no vblank passed since the last frame began); `# time` has "gx sync"; sdmc:/cr_vsync_on.txt = old
+  wait. Citra: battle 12.8 -> 14.6 fps, campaign 29.7 -> 43.0, title 29.9 -> 48.3; SDK logs identical.
+  Not yet on hardware (check tearing). Details: unknowns "Frame pacing".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
