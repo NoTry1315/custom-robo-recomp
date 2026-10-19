@@ -193,7 +193,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 - DVD handles (2026-10-19): hw run 15 showed ~54 ms per SD read even for 0x80 bytes (fopen per read) and
   2.5-3.6 s freezes (# stall: log writes 0, so not the log thread). dvd.c now keeps 8 files open (LRU,
   unbuffered). Citra replay: SDK calls and scenes identical, fps unchanged (Citra SD is fast, so no signal
-  there). Not yet on hardware. Next if it holds: campaign GPU (scene 8 gpu 17.8 ms), battle game CPU.
+  there). Hardware run 16 (with register spills): boot fast, DVD slow lines 253 -> 24, longest read
+  3633 -> 187 ms, no # stall lines (log cr_autotest_2026-10-19_hw-run16-dvd-handles.log). Next: campaign GPU (scene 8 gpu 17.8 ms), battle game CPU.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
