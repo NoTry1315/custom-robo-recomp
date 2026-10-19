@@ -69,23 +69,38 @@ static void sampler_dump(u32 retrace) {
     sample_total = 0;
 }
 
+static u64 log_worst;   /* longest single recomp_log write since the last frame */
+
 void recomp_prof_frame(u32 retrace) {
     static u64 last, start, worst;
     static u64 sum[PROF_N];
     u64 now = svcGetSystemTick();
+    static u64 fsum[PROF_N];   /* per-frame snapshot, for the stall line */
     if (last) {
         u64 dt = now - last;
         if (dt > worst) worst = dt;
+        if (dt > SYSCLOCK_ARM11 / 2) {   /* one frame over 0.5 s: where it went */
+            double m = 1000.0 / SYSCLOCK_ARM11;
+            u64 d[PROF_N];
+            for (int i = 0; i < PROF_N; i++) d[i] = recomp_prof[i] - fsum[i];
+            u64 lw = log_worst;
+            recomp_log("# stall r%lu: frame %.0f ms: gx vertex %.0f, gx tex %.0f, gx state %.0f, gx end/wait %.0f, audio %.0f, log writes %.0f (longest %.0f), rest (game) %.0f\n",
+                (unsigned long)retrace, dt * m, d[PROF_GX_VTX] * m, d[PROF_GX_TEX] * m, d[PROF_GX_STATE] * m, d[PROF_GX_END] * m, d[PROF_AUDIO] * m,
+                d[PROF_LOG] * m, lw * m, (double)(dt - d[PROF_GX_VTX] - d[PROF_GX_TEX] - d[PROF_GX_STATE] - d[PROF_GX_END] - d[PROF_AUDIO]) * m);
+        }
     } else start = now;
     last = now;
+    for (int i = 0; i < PROF_N; i++) fsum[i] = recomp_prof[i];
+    log_worst = 0;
     if (retrace % 60 || retrace == 0) return;
     double ms = 1000.0 / SYSCLOCK_ARM11, wall = (now - start) * ms;
     double vtx = (recomp_prof[PROF_GX_VTX] - sum[PROF_GX_VTX]) * ms / 60, tex = (recomp_prof[PROF_GX_TEX] - sum[PROF_GX_TEX]) * ms / 60;
     double end = (recomp_prof[PROF_GX_END] - sum[PROF_GX_END]) * ms / 60, aud = (recomp_prof[PROF_AUDIO] - sum[PROF_AUDIO]) * ms / 60;
     double st = (recomp_prof[PROF_GX_STATE] - sum[PROF_GX_STATE]) * ms / 60;
     double frame = wall / 60;
-    recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, audio %.1f\n",
-               (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - aud, vtx, tex, st, end, aud);
+    recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, audio %.1f (log writes %.1f, inside the others)\n",
+               (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - aud, vtx, tex, st, end, aud,
+               (recomp_prof[PROF_LOG] - sum[PROF_LOG]) * ms / 60);
     if (retrace % 300 == 0) {
         double un = (recomp_prof[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (recomp_prof[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
         double dl = (recomp_prof[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;
@@ -122,9 +137,13 @@ void recomp_log(const char *fmt, ...) {
     va_list ap;
     if (!log_fp) return;
     LightLock_Lock(&lock);
+    u64 t0 = svcGetSystemTick();
     heartbeat++;
     va_start(ap, fmt); vfprintf(log_fp, fmt, ap); va_end(ap);
     fflush(log_fp);
+    u64 dt = svcGetSystemTick() - t0;
+    recomp_prof[PROF_LOG] += dt;
+    if (dt > log_worst) log_worst = dt;
     LightLock_Unlock(&lock);
 }
 
