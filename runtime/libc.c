@@ -13,7 +13,7 @@ static int ram_range(u32 a, u32 n) { return !IS_HW(a) && (a & RAM_MASK) + n <= R
 void sdk_memcpy(void) {
     u32 d = R[3], s = R[4], n = R[5];
     if (!n) return;
-    if (ram_range(d, n) && ram_range(s, n)) { memmove(ram + (d & RAM_MASK), ram + (s & RAM_MASK), n); return; }
+    if (ram_range(d, n) && ram_range(s, n)) { recomp_mark_ram(d, n); memmove(ram + (d & RAM_MASK), ram + (s & RAM_MASK), n); return; }
     if (s < d) for (u32 i = n; i--; ) wr8(d + i, rd8(s + i));
     else for (u32 i = 0; i < n; i++) wr8(d + i, rd8(s + i));
 }
@@ -23,7 +23,7 @@ void sdk_memset(void) {
     u32 d = R[3], n = R[5];
     u8 c = (u8)R[4];
     if (!n) return;
-    if (ram_range(d, n)) { memset(ram + (d & RAM_MASK), c, n); return; }
+    if (ram_range(d, n)) { recomp_mark_ram(d, n); memset(ram + (d & RAM_MASK), c, n); return; }
     for (u32 i = 0; i < n; i++) wr8(d + i, c);
 }
 

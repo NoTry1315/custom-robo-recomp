@@ -211,6 +211,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   per-frame validation (hash_mem over ~424 KB of list + array bytes, 0 misses). hash_mem now runs 4 independent
   lanes for n >= 32 (hash values are only compared in-process). Citra gx vertex 10.2 -> 9.2 ms; logs identical.
   Not yet on hardware.
+- DL write tracking (2026-10-19): guest stores (wr8/16/32, dcbz, bulk: memmove/memset natives, DVD reads, AR DMA,
+  native MTX) stamp a per-1 KB-page epoch (`ram_wr`, `recomp_wr_epoch` = gx frame + 1; stack stores via
+  wr*_ram are not stamped). The display-list cache skips hashing a list/array range whose pages are all older
+  than the entry's last hash (`vep`); ranges within 64 KB of r1 are always hashed. sdmc:/cr_dlclean_off.txt =
+  always hash. Citra battle frame 38.7 -> 36.3 ms (gx display lists 9.2 -> 5.1; store marking costs ~0.9 ms
+  of game time: tracking forced off = 39.5); logs identical, framebuffer dumps (r1500/1980/2100) identical
+  on vs off. Not yet on hardware (ARM11 store/cache cost unknown). Any new code that writes guest RAM
+  without wr8/16/32 must call recomp_mark_ram().
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

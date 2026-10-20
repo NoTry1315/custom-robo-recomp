@@ -35,14 +35,22 @@ extern u8 ram[];            /* 0x80000000 mirror, RAM_MASK+1 bytes (+8 pad) */
 u32  hw_read(u32 a, int size);
 void hw_write(u32 a, u32 v, int size);
 #define IS_HW(a) (((a) & 0xFE000000u) == 0xCC000000u)
+/* guest-write epochs per 1 KB page (wr8/16/32 and the runtime's bulk writers): the GX display-list cache
+ * skips re-hashing a list/array range whose pages were not written since it was last hashed. Stores
+ * through r1/r11 (wr*_ram) are not marked; the cache hashes ranges near the stack. */
+#define WR_PAGE_SHIFT 10
+extern u32 ram_wr[(RAM_MASK + 1) >> WR_PAGE_SHIFT];
+extern u32 recomp_wr_epoch;
+#define WR_MARK(a) (ram_wr[((a) & RAM_MASK) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
+void recomp_mark_ram(u32 a, u32 n);   /* bulk writers */
 
 static inline u8  rd8 (u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,1); return ram[a & RAM_MASK]; }
 static inline u16 rd16(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,2); u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
 static inline u32 rd32(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,4); u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
 static inline u64 rd64(u32 a){ return ((u64)rd32(a) << 32) | rd32(a + 4); }
-static inline void wr8 (u32 a, u8 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,1); return; } ram[a & RAM_MASK] = v; }
-static inline void wr16(u32 a, u16 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,2); return; } v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
-static inline void wr32(u32 a, u32 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,4); return; } v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
+static inline void wr8 (u32 a, u8 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,1); return; } WR_MARK(a); ram[a & RAM_MASK] = v; }
+static inline void wr16(u32 a, u16 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,2); return; } WR_MARK(a); v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
+static inline void wr32(u32 a, u32 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,4); return; } WR_MARK(a); v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
 static inline void wr64(u32 a, u64 v){ wr32(a, (u32)(v >> 32)); wr32(a + 4, (u32)v); }
 
 /* r1-relative (stack) accesses never reach hardware registers: no IS_HW check */

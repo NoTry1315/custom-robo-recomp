@@ -60,7 +60,7 @@ void sdk_DVDInit(void) {
     long n = ftell(f);
     fseek(f, 0, SEEK_SET);
     if ((u32)n > rd32(0x8000003c)) recomp_log("# DVD: fst.bin %ld bytes > FST max\n", n);
-    if (fread(ram + (fst & RAM_MASK), 1, n, f) != (size_t)n) recomp_log("# DVD: short fst.bin read\n");
+    if ((recomp_mark_ram(fst, n), fread(ram + (fst & RAM_MASK), 1, n, f)) != (size_t)n) recomp_log("# DVD: short fst.bin read\n");
     fclose(f);
     nentries = e_w2(0);
     strings = fst + 12 * nentries;
@@ -185,6 +185,7 @@ static s32 host_read(u32 fi, u32 addr, u32 len, u32 off) {
     h[slot].used = ++use_clock;
     FILE *f = h[slot].f;
     fseek(f, off, SEEK_SET);
+    recomp_mark_ram(addr, len);
     size_t got = fread(ram + (addr & RAM_MASK), 1, len, f);
     /* hw run 7: the frame that first reads sound/cubog39.hps took 4 s; time every read */
     static u32 frame, nreads;
@@ -200,6 +201,7 @@ static s32 host_read(u32 fi, u32 addr, u32 len, u32 off) {
         recomp_log("# DVD slow r%lu: %s off %lx len %lx %.0f ms (frame: %lu reads, %.0f ms)\n", (unsigned long)r,
                    paths[e] + sizeof DISC_DIR + 5, (unsigned long)off, (unsigned long)len, dt / 268111.856,
                    (unsigned long)nreads, sum / 268111.856);
+    if (got < len) recomp_mark_ram(addr + got, len - got);
     if (got < len) memset(ram + ((addr + got) & RAM_MASK), 0, len - got);   /* padding past EOF */
     wr32(fi + 0x10, off); wr32(fi + 0x14, len); wr32(fi + 0x18, addr);
     wr32(fi + 0x20, len);

@@ -8,6 +8,12 @@ CPU cpu;
 /* static: its address is a link-time constant in gen/, not a pointer reloaded after
  * every byte store (gen/ is built with -fno-strict-aliasing) */
 u8 ram[RAM_MASK + 1 + 8] __attribute__((aligned(64)));
+u32 ram_wr[(RAM_MASK + 1) >> WR_PAGE_SHIFT];
+u32 recomp_wr_epoch = 1;
+void recomp_mark_ram(u32 a, u32 n) {
+    if (!n) return;
+    for (u32 p = (a & RAM_MASK) >> WR_PAGE_SHIFT, e = ((a + n - 1) & RAM_MASK) >> WR_PAGE_SHIFT; p <= e; p++) ram_wr[p] = recomp_wr_epoch;
+}
 
 void cpu_init(void) {
     memset(&cpu, 0, sizeof cpu);

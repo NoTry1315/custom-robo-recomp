@@ -252,6 +252,7 @@ static void frame_end(void) {
     recomp_prof[PROF_GX_END] += recomp_ticks() - t0;
     frame_open = 0;
     frames++;
+    recomp_wr_epoch = frames + 1;
 }
 
 /* ---------------------------------------------------------------- textures */
@@ -1437,17 +1438,39 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
 #define DL_N 4096   /* 2-way */
 #define DL_ARR 12
 typedef struct {
-    const u8 *list; u32 n, sig, gen, slow, lhash, ahash, checked, used, narr, off, ixoff, ixn, prims, tris;
+    const u8 *list; u32 n, sig, gen, slow, lhash, ahash, checked, used, narr, off, ixoff, ixn, prims, tris, vep;
     const u8 *arr[DL_ARR]; u32 alen[DL_ARR], ah[DL_ARR];
 } DlCache;
 static DlCache dlcache[DL_N];
 static int dl_off = 2;
 static u32 dl_logged, dl_logframe = 0xffffffffu;
 
+static int dl_clean_off;   /* sdmc:/cr_dlclean_off.txt = always hash */
 static u32 dl_arrays_hash(DlCache *e, int keep) {
     u32 h = 0;
     for (u32 i = 0; i < e->narr; i++) { u32 a = arr_hash(e->arr[i], e->alen[i]); if (keep) e->ah[i] = a; h = (h ^ a) * 0x9e3779b1u; }
     return h;
+}
+
+/* No guest write since the entry was last hashed: every 1 KB page of the list and of each array
+ * has an epoch older than e->vep (a write sets the epoch to the current one, also in the epoch of
+ * the hash itself, so it is only ever re-hashed too often). A 4-byte store can straddle into the
+ * next page, hence one page before each range. Ranges near the stack are always hashed (stores
+ * through r1/r11 do not mark pages). */
+static int range_clean(const u8 *p, u32 n, u32 vep) {
+    u32 a = (u32)(p - ram) & RAM_MASK;
+    u32 sp = R[1] & RAM_MASK;
+    if (a + n > sp - 0x10000 && a < sp + 0x10000) return 0;
+    u32 lo = (a >> WR_PAGE_SHIFT) - (a >= (1u << WR_PAGE_SHIFT)), hi = (a + n - 1) >> WR_PAGE_SHIFT;
+    for (u32 k = lo; k <= hi; k++) if (ram_wr[k] >= vep) return 0;
+    return 1;
+}
+
+static int dl_clean(const DlCache *e, const u8 *list, u32 len) {
+    if (!e->vep || dl_clean_off) return 0;
+    if (!range_clean(list, len, e->vep)) return 0;
+    for (u32 i = 0; i < e->narr; i++) if (!range_clean(e->arr[i], e->alen[i], e->vep)) return 0;
+    return 1;
 }
 
 static void dl_log_miss(const u8 *list, u32 n, const char *why, DlCache *e) {
@@ -1465,6 +1488,9 @@ static void dl_log_miss(const u8 *list, u32 n, const char *why, DlCache *e) {
 static int dl_draw(const u8 *list, u32 len) {
     if (dl_off == 2) { FILE *f = fopen("sdmc:/cr_dlcache_off.txt", "rb"); dl_off = f != NULL; if (f) fclose(f);
         recomp_log("# gx: display-list cache %s\n", dl_off ? "off (cr_dlcache_off.txt)" : "on"); }
+    static int clean_chk;
+    if (!clean_chk) { clean_chk = 1; FILE *f = fopen("sdmc:/cr_dlclean_off.txt", "rb"); dl_clean_off = f != NULL; if (f) fclose(f);
+        recomp_log("# gx: display-list write tracking %s\n", dl_clean_off ? "off (cr_dlclean_off.txt)" : "on"); }
     if (dl_off || !vc_arena || len > 0x40000) return 0;
     u32 p0 = 0;
     while (p0 < len && !list[p0]) p0++;
@@ -1504,9 +1530,10 @@ static int dl_draw(const u8 *list, u32 len) {
     int same = e->gen && e->list == list && e->n == len && e->sig == sig;
     const char *why = same ? NULL : "new";
     if (same && e->checked != frames + 1) {
-        if (hash_mem(list, len, 0x811c9dc5u) != e->lhash) why = "list bytes";
+        if (dl_clean(e, list, len)) e->checked = frames + 1;
+        else if (hash_mem(list, len, 0x811c9dc5u) != e->lhash) why = "list bytes";
         else if (!e->slow && dl_arrays_hash(e, 0) != e->ahash) why = "arrays";
-        else e->checked = frames + 1;
+        else { e->checked = frames + 1; e->vep = recomp_wr_epoch; }
     }
     u32 w;
     if (!why) {   /* hit */
@@ -1530,7 +1557,7 @@ static int dl_draw(const u8 *list, u32 len) {
         }
         if (nv > 0x8000) slow = 1;
         e->list = list; e->n = len; e->sig = sig; e->used = frames; e->checked = frames + 1;
-        e->lhash = hash_mem(list, len, 0x811c9dc5u);
+        e->lhash = hash_mem(list, len, 0x811c9dc5u); e->vep = recomp_wr_epoch;
         if (slow) { e->slow = 1; e->gen = vc_gen; recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; st_dl_slow++; return 0; }
         if (vc_top + nv > VC_VERTS || vc_ixtop + nix > VC_IX) { vc_full = 1; recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; return 0; }
         u32 off = vc_top;

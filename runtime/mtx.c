@@ -16,7 +16,8 @@
 #define MTX_K0    0x80451cb4u   /* 0.0f at r2-25836 (PSMTXIdentity/Trans/Scale/Transpose) */
 
 static inline double L(u32 a) { return u2f(rd32_ram(a)); }
-static inline void S(u32 a, double v) { wr32_ram(a, f2u((float)v)); }
+static inline void wrm(u32 a, u32 v) { WR_MARK(a); wr32_ram(a, v); }   /* matrices can live anywhere */
+static inline void S(u32 a, double v) { wrm(a, f2u((float)v)); }
 
 /* selected mode: exactly the translated code's ops */
 #define MX(n) nat_##n
@@ -66,30 +67,30 @@ void f_8001e134(void);  /* gmtx_mul (game, scalar fmuls/fmadds): bench only */
 /* no arithmetic: stores of .sdata2 constants and arguments */
 static void nat_identity(u32 m) {
     u32 z = rd32_ram(MTX_K0), o = rd32_ram(MTX_K1);
-    for (int i = 0; i < 12; i++) wr32_ram(m + 4 * i, (i % 5) ? z : o);
+    for (int i = 0; i < 12; i++) wrm(m + 4 * i, (i % 5) ? z : o);
 }
 static void nat_copy(u32 s, u32 d) {
     if (s == d) return;
     u32 t[12];
     for (int i = 0; i < 12; i++) t[i] = rd32_ram(s + 4 * i);
-    for (int i = 0; i < 12; i++) wr32_ram(d + 4 * i, t[i]);
+    for (int i = 0; i < 12; i++) wrm(d + 4 * i, t[i]);
 }
 static void nat_transpose(u32 s, u32 d) {
     u32 t[9], z = rd32_ram(MTX_K0);
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) t[3 * i + j] = rd32_ram(s + 16 * j + 4 * i);
     for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) wr32_ram(d + 16 * i + 4 * j, t[3 * i + j]);
-        wr32_ram(d + 16 * i + 12, z);
+        for (int j = 0; j < 3; j++) wrm(d + 16 * i + 4 * j, t[3 * i + j]);
+        wrm(d + 16 * i + 12, z);
     }
 }
 static void nat_trans(u32 m, double x, double y, double z) {
     u32 k0 = rd32_ram(MTX_K0), k1 = rd32_ram(MTX_K1);
-    for (int i = 0; i < 12; i++) wr32_ram(m + 4 * i, (i % 5) ? k0 : k1);
+    for (int i = 0; i < 12; i++) wrm(m + 4 * i, (i % 5) ? k0 : k1);
     S(m + 12, x); S(m + 28, y); S(m + 44, z);
 }
 static void nat_scale(u32 m, double x, double y, double z) {
     u32 k0 = rd32_ram(MTX_K0);
-    for (int i = 0; i < 12; i++) wr32_ram(m + 4 * i, k0);
+    for (int i = 0; i < 12; i++) wrm(m + 4 * i, k0);
     S(m, x); S(m + 20, y); S(m + 40, z);
 }
 
@@ -130,8 +131,8 @@ static u32 ulp(u32 a, u32 b) {
     s64 d = (s64)x - y; return (u32)(d < 0 ? -d : d);
 }
 static u32 cmp_out(u32 n) { u32 m = 0; for (u32 i = 0; i < n; i++) { u32 u = ulp(rd32_ram(B_O1 + 4 * i), rd32_ram(B_O2 + 4 * i)); if (u > m) m = u; } return m; }
-static void fill(u32 a, int n) { for (int i = 0; i < n; i++) wr32_ram(a + 4 * i, f2u(rnd())); }
-static void clear_out(void) { for (int i = 0; i < 16; i++) { wr32_ram(B_O1 + 4 * i, 0); wr32_ram(B_O2 + 4 * i, 0); } }
+static void fill(u32 a, int n) { for (int i = 0; i < n; i++) wrm(a + 4 * i, f2u(rnd())); }
+static void clear_out(void) { for (int i = 0; i < 16; i++) { wrm(B_O1 + 4 * i, 0); wrm(B_O2 + 4 * i, 0); } }
 
 enum { T_CONCAT, T_MULTVEC, T_MULTVECSR, T_INVXPOSE, T_INVERSE, T_NORM, T_DOT, T_CROSS, T_MAG, T_SQMAG,
        T_ADD, T_SUB, T_SCALE, T_IDENT, T_COPY, T_TRANSPOSE, T_TRANS, T_MSCALE, T_N };
