@@ -223,6 +223,17 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   their pages were not stamped since the entry's last hash (`vep`, same epochs as the display-list cache);
   hash_bytes runs 4 lanes. Citra battle frame 36.25 -> 32.09 ms (gx tex 4.7 -> ~1); logs identical, fb dumps
   r1500/1980/2100 identical. Not yet on hardware.
+- Hardware runs 17-18 (2026-10-19, logs/ cr_autotest_2026-10-19_hw-run17a-normal / run17b-quarter /
+  run18-gx-hash-tracking; per-scene averages of # time lines): run 17a battle 41.3 ms = 24.2 fps (game 20.0,
+  sync 6.9, gpu 8.5), campaign 42.1 ms = 23.8 fps (gpu 16.6). 17b (quarter resolution): campaign gpu 16.6 -> 10.2,
+  battle 8.5 -> 7.0 (campaign partly fill-bound). Run 18 (with sdata2, GXBegin, hash lanes, DL/tex write
+  tracking): battle 33.6 ms = 29.7 fps (game 15.0, sync 11.2, gpu 12.3), title 57 fps, scene 5 59.7; no campaign
+  in the run. Battle vs run 4: 6 -> 30 fps. Open: 33.6 ms ~ two vblanks, so battle may be vblank-quantized to 30
+  (game + gpu > 16.7 ms, not yet checked); battle gpu 8.5 -> 12.3 (different play or a regression, unchecked).
+- Mid-frame C3D_FrameSplit tried and reverted (2026-10-19): every 1024 command words (~7 per battle
+  frame) queued mid-frame to overlap GPU with CPU. Hardware run 19 (logs/ hw-run19a-split-off, 19b-split-on):
+  battle 35.0 -> 39.3 ms, gx sync 12.1 -> 13.4 (no overlap gained). Note title has gx sync ~12 ms with gpu ~4,
+  so gx sync is not only GPU wait; what it waits on is not yet split out (vblank cap vs C3D_FrameBegin).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
@@ -231,8 +242,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 python tools/extract_disc.py "<disc>.iso" data/extracted   # once (--sys-only: sys/ only)
 PYTHONUTF8=1 python tools/recomp/recomp.py                   # -> gen/
 (cd tools/recomp && PYTHONUTF8=1 python gen_sdk_log.py)      # after adding an sdk_* to runtime/
-docker run --rm -v "C:/Users/Alexander/source/repos/custom-robo-recomp:/proj" -w /proj mkw3ds-build:2026-10-09 make
+docker run --rm -v "C:/Users/Alexander/source/repos/custom-robo-recomp:/proj" -w /proj mkw3ds-build:2026-10-09 make -j20
 ```
+Full rebuild ~36 s with -j20 (gen/ is ~46 files of 60 functions; recomp.py rewrites only files whose
+content changed, so an unchanged regen rebuilds nothing). Was 5-7 min serial with 11 large files.
 Citra: `tools/citra/autotest.ps1 -Fast -Shots 0` (title: add `-Pad '360 366 100; 450 456 100; 540 546 100; 630 636 100'`), never take desktop focus; log in
 `build/cr_autotest.log`. Needs `main.dol`, `boot.bin`, `fst.bin` from `data/extracted/sys/` and the
 `data/extracted/files/` tree copied to Citra's `user/sdmc/custom-robo/` (never commit them).
