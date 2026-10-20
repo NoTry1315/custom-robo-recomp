@@ -326,7 +326,7 @@ static void tex_decode(u32 *out, u32 src, int w, int h, int fmt, const Tlut *tl)
 
 static u32 pow2(u32 v) { u32 p = 8; while (p < v && p < 1024) p <<= 1; return p; }
 
-typedef struct { u32 img, tlut_addr, hash, last, pkey; u16 w, h; u8 fmt, tlut_fmt, used; C3D_Tex tex; } TexEntry;
+typedef struct { u32 img, tlut_addr, hash, last, pkey, vep, tlut_n; u16 w, h; u8 fmt, tlut_fmt, used; C3D_Tex tex; } TexEntry;
 #define TEX_CACHE 192
 static TexEntry tcache[TEX_CACHE];
 static u32 *decode_buf;
@@ -334,7 +334,16 @@ static u32 *decode_buf;
 static u32 hash_bytes(u32 addr, u32 n) {
     const u8 *p = ram + (addr & RAM_MASK);
     u32 h = 2166136261u;
-    for (u32 i = 0; i + 4 <= n; i += 4) { u32 v; memcpy(&v, p + i, 4); h = (h ^ v) * 16777619u; }
+    u32 i = 0;
+    if (n >= 32) {   /* four independent lanes: the single chain is bound by multiply latency */
+        u32 h1 = h ^ 0x85ebca6bu, h2 = h ^ 0xc2b2ae35u, h3 = h ^ 0x27d4eb2fu, v0, v1, v2, v3;
+        for (; i + 16 <= n; i += 16) {
+            memcpy(&v0, p + i, 4); memcpy(&v1, p + i + 4, 4); memcpy(&v2, p + i + 8, 4); memcpy(&v3, p + i + 12, 4);
+            h = (h ^ v0) * 16777619u; h1 = (h1 ^ v1) * 16777619u; h2 = (h2 ^ v2) * 16777619u; h3 = (h3 ^ v3) * 16777619u;
+        }
+        h = ((h * 0x85ebca6bu ^ h1) * 0xc2b2ae35u ^ h2) * 0x27d4eb2fu ^ h3;
+    }
+    for (; i + 4 <= n; i += 4) { u32 v; memcpy(&v, p + i, 4); h = (h ^ v) * 16777619u; }
     return h;
 }
 
@@ -420,6 +429,7 @@ static void tex_miss(const char *why, const TexMap *m) {
                m->fmt, m->w, m->h, m->ci, (unsigned long)frames);
 }
 
+static int range_clean(const u8 *p, u32 n, u32 vep);
 static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     if (!m->img) { tex_miss("no image", m); return NULL; }
     if (!tile_w[m->fmt & 15]) { tex_miss("format not decoded", m); return NULL; }
@@ -440,13 +450,25 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
         if (t->used && t->last == frames && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt &&
             t->tlut_addr == tla) { fidx[fk] = t; return tex_bind_params(t, m, su, sv); }
     }
-    u32 n = tex_bytes(m->w, m->h, m->fmt), hash = hash_bytes(m->img, n);
+    u32 n = tex_bytes(m->w, m->h, m->fmt), hash;
+    /* contents not written since the entry was last hashed (see range_clean): reuse it without hashing */
+    u32 tln = tl ? tl->n : 0;
+    for (int i = 0; i < TEX_CACHE; i++) {
+        t = &tcache[i];
+        if (t->used && t->vep && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt && t->tlut_addr == tla &&
+            t->tlut_n == tln && range_clean(ram + (m->img & RAM_MASK), n, t->vep) &&
+            (!tl || range_clean(ram + (tl->addr & RAM_MASK), tl->n * 2, t->vep))) {
+            t->last = frames; fidx[fk] = t;
+            return tex_bind_params(t, m, su, sv);
+        }
+    }
+    hash = hash_bytes(m->img, n);
     if (tl) hash ^= hash_bytes(tl->addr, tl->n * 2) * 31 + tl->fmt;
     TexEntry *e = NULL, *victim = NULL, *same = NULL;
     for (int i = 0; i < TEX_CACHE; i++) {
         TexEntry *t = &tcache[i];
         if (t->used && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt) {
-            if (t->hash == hash) { e = t; break; }
+            if (t->hash == hash) { e = t; e->vep = recomp_wr_epoch; e->tlut_n = tln; break; }
             if (t->last < frames) same = t;   /* changed contents: reuse its memory (the GPU is done with it) */
         }
         if (!t->used) { if (!victim || victim->used) victim = t; }
@@ -456,7 +478,7 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     if (!e && same) {
         e = same;
         tex_upload(e, m, e->tex.width, e->tex.height, pica_fmt(m->fmt), tl);
-        e->hash = hash;
+        e->hash = hash; e->vep = recomp_wr_epoch; e->tlut_n = tln;
     } else if (!e) {
         if (!victim) { ONCE("texture cache full\n"); tex_miss("cache full", m); return NULL; }
         e = victim;
@@ -473,7 +495,7 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
             st_evict++;
         }
         tex_upload(e, m, W, H, pf, tl);
-        e->img = m->img; e->w = m->w; e->h = m->h; e->fmt = m->fmt; e->hash = hash; e->used = 1;
+        e->img = m->img; e->w = m->w; e->h = m->h; e->fmt = m->fmt; e->hash = hash; e->used = 1; e->vep = recomp_wr_epoch; e->tlut_n = tln;
         e->pkey = 0;
     }
     e->last = frames;

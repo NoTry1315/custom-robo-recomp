@@ -219,6 +219,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   of game time: tracking forced off = 39.5); logs identical, framebuffer dumps (r1500/1980/2100) identical
   on vs off. Not yet on hardware (ARM11 store/cache cost unknown). Any new code that writes guest RAM
   without wr8/16/32 must call recomp_mark_ram().
+- Texture write tracking (2026-10-19): tex_get reuses a cache entry without hashing the texture (and TLUT) bytes when
+  their pages were not stamped since the entry's last hash (`vep`, same epochs as the display-list cache);
+  hash_bytes runs 4 lanes. Citra battle frame 36.25 -> 32.09 ms (gx tex 4.7 -> ~1); logs identical, fb dumps
+  r1500/1980/2100 identical. Not yet on hardware.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
