@@ -207,6 +207,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   on every WGPIPE write. Citra rec-to-battle scene 4 game 23.28 -> 19.51 ms (-16%, 2 runs identical);
   SDK/scene/pad lines identical (only OSTicksToCalendarTime host-clock arg differs). Not yet on hardware.
   Tried and dropped: int->double stack peephole (658 sites folded, -0.05%, GCC already forwards).
+- DL validation hash (2026-10-19): after the GXBegin fix the battle display-list hit path (10 ms Citra) is half
+  per-frame validation (hash_mem over ~424 KB of list + array bytes, 0 misses). hash_mem now runs 4 independent
+  lanes for n >= 32 (hash values are only compared in-process). Citra gx vertex 10.2 -> 9.2 ms; logs identical.
+  Not yet on hardware.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

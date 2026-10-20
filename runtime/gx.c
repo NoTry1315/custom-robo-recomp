@@ -994,8 +994,18 @@ static VCache *vc_last;   /* entry of the last vc_draw, NULL if not kept */
 static u16 vc_ix[VC_IX];
 static u32 vc_ixtop;
 
+
 static u32 hash_mem(const u8 *p, u32 n, u32 h) {
     u32 w;
+    if (n >= 32) {   /* four independent lanes: the single chain is bound by multiply latency */
+        u32 h1 = h ^ 0x85ebca6bu, h2 = h ^ 0xc2b2ae35u, h3 = h ^ 0x27d4eb2fu, w1, w2, w3;
+        for (; n >= 16; n -= 16, p += 16) {
+            memcpy(&w, p, 4); memcpy(&w1, p + 4, 4); memcpy(&w2, p + 8, 4); memcpy(&w3, p + 12, 4);
+            h = (h ^ w) * 0x9e3779b1u; h1 = (h1 ^ w1) * 0x9e3779b1u; h2 = (h2 ^ w2) * 0x9e3779b1u; h3 = (h3 ^ w3) * 0x9e3779b1u;
+            h ^= h >> 15; h1 ^= h1 >> 15; h2 ^= h2 >> 15; h3 ^= h3 >> 15;
+        }
+        h = ((h * 0x85ebca6bu ^ h1) * 0xc2b2ae35u ^ h2) * 0x27d4eb2fu ^ h3;
+    }
     for (; n >= 4; n -= 4, p += 4) { memcpy(&w, p, 4); h = (h ^ w) * 0x9e3779b1u; h ^= h >> 15; }
     for (; n; n--, p++) { h = (h ^ *p) * 0x9e3779b1u; h ^= h >> 15; }
     return h;
