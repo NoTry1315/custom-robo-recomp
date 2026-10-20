@@ -195,6 +195,13 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   unbuffered). Citra replay: SDK calls and scenes identical, fps unchanged (Citra SD is fast, so no signal
   there). Hardware run 16 (with register spills): boot fast, DVD slow lines 253 -> 24, longest read
   3633 -> 187 ms, no # stall lines (log cr_autotest_2026-10-19_hw-run16-dvd-handles.log). Next: campaign GPU (scene 8 gpu 17.8 ms), battle game CPU.
+- sdata2 constants (2026-10-19): battle `# prof` leaders 801961ac / 801a4728 are returns from
+  GXCallDisplayList / the frame's first GXBegin (host GX + gx sync), not game code; Citra FNPROF
+  shows battle game time spread (f_80090710 10%, f_8006eef8 7%, rest < 3%). recomp.py folds
+  r2-relative loads from .sdata2 to literals (r2 = 0x804581a0 set once in __start; no translated
+  store through r2; 10823 loads). Citra battle game 25.4 -> 24.4 ms (-3.8%); SDK/scene logs
+  identical, the battle vcache arena line still varies by build (open). Not yet on hardware.
+  Next: the int->double stack idiom (stw 0x43300000 / lfd / fsub, 20 sites in f_80090710).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

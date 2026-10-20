@@ -85,6 +85,30 @@ class Program:
         self.ranges, self.docnames = load_sdk_doc()
         self.unk = defaultdict(list)  # category -> [(addr, note)]
         self.jt = {}                  # bctr addr -> [targets]
+        self.sda2 = self._sda2()
+
+    def _sda2(self):
+        """(r2, lo, hi): r2 is set once in translated code (lis/ori in __start; skipped
+        MetroTRK reuses it) and the data section around it (.sdata2, constants) is never stored to through r2, so r2-relative loads from it are
+        folded to literals. None (no folding) if either does not hold."""
+        sets = []
+        for base, blob in self.dol.text:
+            for k in range(0, len(blob), 4):
+                w = struct.unpack_from('>I', blob, k)[0]
+                d = decode(w)
+                if d is None or self.kind(base + k) != 'tr':
+                    continue
+                if d.startswith(('st', 'psq_st')) and rA(w) == 2:
+                    return None
+                if d in ('addis', 'addi') and rD(w) == 2 or d == 'ori' and rA(w) == 2:
+                    sets.append((d, w))
+        if [d for d, _ in sets] != ['addis', 'ori'] or rA(sets[0][1]) != 0 or rD(sets[1][1]) != 2:
+            return None
+        r2 = (sets[0][1] & 0xFFFF) << 16 | (sets[1][1] & 0xFFFF)
+        for base, blob in self.dol.data:
+            if base <= r2 - 0x8000 < base + len(blob) or base <= r2 < base + len(blob):
+                return r2, base, base + len(blob)
+        return None
 
     def module(self, a):
         for lo, hi, mod in self.ranges:
@@ -590,6 +614,17 @@ def emit_op(p, a, w, d):
         o(f'ppc_sc(0x{a:08x});')
     else:
         raise ValueError(f'no emitter for {d} at {a:08x}')
+    if A == 2 and p.sda2 and d in ('lwz', 'lhz', 'lha', 'lbz', 'lfs', 'lfd'):
+        ea = p.sda2[0] + simm(w)
+        n = {'lbz': 1, 'lhz': 2, 'lha': 2}.get(d, 8 if d == 'lfd' else 4)
+        if p.sda2[1] <= ea and ea + n <= p.sda2[2]:
+            blob = next(b for base, b in p.dol.data if base == p.sda2[1])
+            v = int.from_bytes(blob[ea - p.sda2[1]:ea - p.sda2[1] + n], 'big')
+            out = [{'lwz': f'R[{D}] = 0x{v:x}u;', 'lhz': f'R[{D}] = 0x{v:x}u;', 'lbz': f'R[{D}] = 0x{v:x}u;',
+                    'lha': f'R[{D}] = 0x{(v - 0x10000 if v & 0x8000 else v) & 0xFFFFFFFF:x}u;',
+                    'lfs': f'{{ double v = u2f(0x{v:x}u); F[{D}].ps0 = v; F[{D}].ps1 = v; }}',
+                    'lfd': f'F[{D}].ps0 = u2d(0x{v:x}ull);'}[d]]
+            p.sda2_folds = getattr(p, 'sda2_folds', 0) + 1
     if A == 1 and (d in LOADS or d in STORES or d[:-1] in LOADS or d[:-1] in STORES or
                    d in ('lmw', 'stmw') or d[:3] in ('lfs', 'lfd', 'stf')):
         out = [re.sub(r'\b(rd|wr)(8|16|32|64)\(', r'\1\2_ram(', x) for x in out]
@@ -1177,6 +1212,8 @@ def main():
     write_unknowns(p, len(tr), len(set(p.stubs.values())), len(skip))
     print(f'translated {len(tr)} functions, {len(p.stubs)} sdk stubs, {len(skip)} skipped, '
           f'{len(p.jt)} jump tables, {sum(len(v) for v in p.unk.values())} unknown sites')
+    if p.sda2:
+        print(f'r2 = 0x{p.sda2[0]:08x}: {getattr(p, "sda2_folds", 0)} sdata2 loads folded to constants')
 
 
 def write_unknowns(p, ntr, nstub, nskip):
