@@ -1611,6 +1611,7 @@ static void fb_dump(void) {
 /* ---------------------------------------------------------------- FIFO */
 static u8 fifo[0x40000];
 static u32 fifo_n;
+static u32 fifo_need;   /* bytes of the primitive GXBegin started (header + n * vtx_size), 0 = unknown */
 
 /* GX command stream: draws are decoded; CP/XF/BP register writes are not
  * emulated (the GX calls above keep the state) and are logged once. Returns
@@ -1677,6 +1678,7 @@ static void fifo_parse(void) {
     u32 pos = parse_cmds(fifo, fifo_n);
     memmove(fifo, fifo + pos, fifo_n - pos);
     fifo_n -= pos;
+    fifo_need = 0;
 }
 
 static void fifo_put(u32 v, int size) {
@@ -1687,7 +1689,9 @@ static void fifo_put(u32 v, int size) {
 /* write-gather pipe (hw_write 0xCC008000) */
 void recomp_gx_fifo_write(u32 v, int size) {
     fifo_put(v, size);
-    if (fifo_n >= 3 && fifo[0] >= 0x80) {
+    if (fifo_need) {
+        if (fifo_n >= fifo_need) fifo_parse();
+    } else if (fifo_n >= 3 && fifo[0] >= 0x80) {
         u32 n = fifo[1] << 8 | fifo[2];
         if (fifo_n >= 3 + n * vtx_size(fifo[0] & 7)) fifo_parse();
     } else if (fifo_n && fifo[0] < 0x80) fifo_parse();
@@ -1710,10 +1714,13 @@ void sdk_GXDrawDone(void) { LOG(); draw_done_pending = 1; deliver_draw_done(); }
 /* ---------------------------------------------------------------- vertex format */
 void sdk_GXBegin(void) {
     LOG();
+    fifo_need = 0;
     if (fifo_n) { ONCE("GXBegin with %lu bytes of the previous primitive missing\n", (unsigned long)fifo_n); fifo_n = 0; }
     fifo_put((R[3] & 0xf8) | (R[4] & 7), 1);
     fifo_put(R[5] & 0xffff, 2);
-    if ((R[5] & 0xffff) == 0 || vtx_size(R[4] & 7) == 0) fifo_n = 0;
+    int vs = vtx_size(R[4] & 7);
+    if ((R[5] & 0xffff) == 0 || vs == 0) fifo_n = 0;
+    else fifo_need = 3 + (R[5] & 0xffff) * vs;
 }
 void sdk_GXSetVtxDesc(void) { LOG(); if (R[3] < A_MAX) gx.desc[R[3]] = R[4] & 3; else ONCE("GXSetVtxDesc attr %lu\n", (unsigned long)R[3]); }
 void sdk_GXClearVtxDesc(void) { LOG(); memset(gx.desc, 0, sizeof gx.desc); gx.desc[A_POS] = 1; }

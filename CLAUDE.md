@@ -202,6 +202,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   store through r2; 10823 loads). Citra battle game 25.4 -> 24.4 ms (-3.8%); SDK/scene logs
   identical, the battle vcache arena line still varies by build (open). Not yet on hardware.
   Next: the int->double stack idiom (stw 0x43300000 / lfd / fsub, 20 sites in f_80090710).
+- GXBegin FIFO size (2026-10-19): sdk_GXBegin stores the primitive's total byte count (3 + n * vtx_size) in
+  `fifo_need`; recomp_gx_fifo_write compares against it instead of recomputing vtx_size (21 attr_size calls)
+  on every WGPIPE write. Citra rec-to-battle scene 4 game 23.28 -> 19.51 ms (-16%, 2 runs identical);
+  SDK/scene/pad lines identical (only OSTicksToCalendarTime host-clock arg differs). Not yet on hardware.
+  Tried and dropped: int->double stack peephole (658 sites folded, -0.05%, GCC already forwards).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
