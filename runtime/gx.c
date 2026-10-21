@@ -63,6 +63,7 @@ static struct {
     TexGen texgen[8];
     TevStage tev[16];
     u8 tev_reg[4][4], kcolor[4][4];  /* PREV, REG0..2 / K0..3 (RGBA, 0..255) */
+    s16 tev_s10[4][4];         /* the same registers as set, signed (GXSetTevColorS10) */
     Chan chan[4];              /* COLOR0, COLOR1, ALPHA0, ALPHA1 */
     u8 mat[2][4], amb[2][4];
     Light light[8];
@@ -738,18 +739,113 @@ static void place_srcs(Src *s, int alpha, int pstage, u8 sc[4], int *scu) {
 static int tev_changed(void) {
     static TevStage tev[16];
     static u8 reg[16], kc[16], mat[4], amb[4];
+    static s16 s10[16];
     static int uom[8];
     static Chan chan[4];
     static u32 n, nch;
     static int valid;
     u32 ns = gx.n_stages < 16 ? gx.n_stages : 16;
     if (valid && ns == n && gx.n_chans == nch && !memcmp(tev, gx.tev, ns * sizeof(TevStage)) &&
-        !memcmp(reg, gx.tev_reg, 16) && !memcmp(kc, gx.kcolor, 16) && !memcmp(uom, unit_of_map, sizeof uom) &&
+        !memcmp(reg, gx.tev_reg, 16) && !memcmp(s10, gx.tev_s10, 32) && !memcmp(kc, gx.kcolor, 16) && !memcmp(uom, unit_of_map, sizeof uom) &&
         !memcmp(chan, gx.chan, sizeof chan) && !memcmp(mat, gx.mat[1], 4) && !memcmp(amb, gx.amb[1], 4)) return 0;
     n = ns; nch = gx.n_chans;
-    memcpy(tev, gx.tev, ns * sizeof(TevStage)); memcpy(reg, gx.tev_reg, 16); memcpy(kc, gx.kcolor, 16);
+    memcpy(tev, gx.tev, ns * sizeof(TevStage)); memcpy(reg, gx.tev_reg, 16); memcpy(s10, gx.tev_s10, 32); memcpy(kc, gx.kcolor, 16);
     memcpy(uom, unit_of_map, sizeof uom); memcpy(chan, gx.chan, sizeof chan); memcpy(mat, gx.mat[1], 4); memcpy(amb, gx.amb[1], 4);
     valid = 1;
+    return 1;
+}
+
+/* The THP movie's YUV -> RGB program (4 GX stages, maps Y/U/V as I8): signed intermediates
+ * (GXSetTevColorS10 REG1 = -90, 0, -114) that PICA's 0..1 clamped stages cannot hold. Per channel
+ * the program is out = Y + c0 + cu*U + cv*V (red/blue from the colour side, green from the alpha
+ * side, picked by stage 3's KONST 255/0 lerp); the coefficients are read from the registers.
+ * PICA computes it at half scale with only additions before one final subtraction:
+ * 0.5*Y + pos offsets, + |c|/2*X for c > 0, + |c|/2*(1-X) for c < 0 (moving -|c|/2 into the
+ * offset), then - neg offsets with scale 2. A sum clamped at 1 early means the result saturates
+ * anyway, since everything subtracted later is the final offset only. */
+static int tev_yuv(void) {
+    const TevStage *t = gx.tev;
+    if (gx.n_stages != 4) return 0;
+    for (int s = 0; s < 3; s++) if (t[s].map > 7 || t[s].tex_swap || t[s].c.bias || t[s].a.bias || t[s].c.out || t[s].a.out) return 0;
+    /* 0: d + U*K (colour), d -+ U*K (alpha); 1: (prev + V*K) * scale; 2: Y + prev; 3: lerp(APREV, CPREV, K) */
+    if (t[0].c.a != 15 || t[0].c.b != 8 || t[0].c.c != 14 || (t[0].c.d & 1) || t[0].c.d > 6 || t[0].c.op || t[0].c.scale) return 0;
+    if (t[0].a.a != 7 || t[0].a.b != 4 || t[0].a.c != 6 || t[0].a.d > 3 || t[0].a.op > 1 || t[0].a.scale) return 0;
+    if (t[1].c.a != 15 || t[1].c.b != 8 || t[1].c.c != 14 || t[1].c.d != 0 || t[1].c.op || t[1].c.scale > 2) return 0;
+    if (t[1].a.a != 7 || t[1].a.b != 4 || t[1].a.c != 6 || t[1].a.d != 0 || t[1].a.op > 1 || t[1].a.scale > 2) return 0;
+    if (t[2].c.a != 15 || t[2].c.b != 8 || t[2].c.c != 12 || t[2].c.d != 0 || t[2].c.op || t[2].c.scale) return 0;
+    if (t[2].a.a != 4 || t[2].a.b != 7 || t[2].a.c != 7 || t[2].a.d != 0 || t[2].a.op || t[2].a.scale) return 0;
+    if (t[3].c.a != 1 || t[3].c.b != 0 || t[3].c.c != 14 || t[3].c.d != 15 || t[3].c.op || t[3].c.scale || t[3].c.out) return 0;
+    if (t[3].a.a != 7 || t[3].a.b != 7 || t[3].a.c != 7 || t[3].a.d != 7) return 0;
+    u8 k0[4], k1[4], k3[4], ka0[4], ka1[4];
+    if (!konst_value(t[0].ksel_c, 0, k0) || !konst_value(t[1].ksel_c, 0, k1) || !konst_value(t[3].ksel_c, 0, k3) ||
+        !konst_value(t[0].ksel_a, 1, ka0) || !konst_value(t[1].ksel_a, 1, ka1)) return 0;
+    for (int i = 0; i < 3; i++) if (k3[i] != 0 && k3[i] != 255) return 0;
+    float c0[3], cu[3], cv[3];
+    float sc = t[1].c.scale == 1 ? 2.f : t[1].c.scale == 2 ? 4.f : 1.f, sa = t[1].a.scale == 1 ? 2.f : t[1].a.scale == 2 ? 4.f : 1.f;
+    float su = t[0].a.op ? -1.f : 1.f, sv = t[1].a.op ? -1.f : 1.f;
+    for (int i = 0; i < 3; i++) {
+        if (k3[i]) { c0[i] = sc * gx.tev_s10[t[0].c.d >> 1][i] / 255.f; cu[i] = sc * k0[i] / 255.f; cv[i] = sc * k1[i] / 255.f; }
+        else { c0[i] = sa * gx.tev_s10[t[0].a.d][3] / 255.f; cu[i] = sa * su * ka0[0] / 255.f; cv[i] = sa * sv * ka1[0] / 255.f; }
+        if (cu[i] > 2 || cu[i] < -2 || cv[i] > 2 || cv[i] < -2) return 0;
+    }
+    int ty = unit_of_map[t[2].map], tu = unit_of_map[t[0].map], tv = unit_of_map[t[1].map];
+    if (ty < 0 || tu < 0 || tv < 0) return 0;
+    float off[3];
+    u8 kpos[4] = {0, 0, 0, 0}, kneg[4] = {0, 0, 0, 0};
+    struct { int unit, inv; u8 k[4]; } term[4];
+    int nt = 0;
+    for (int x = 0; x < 2; x++)
+        for (int inv = 0; inv < 2; inv++) {
+            const float *c = x ? cv : cu;
+            u8 k[4] = {0, 0, 0, 0}; int any = 0;
+            for (int i = 0; i < 3; i++) if (inv ? c[i] < 0 : c[i] > 0) { float h = (c[i] < 0 ? -c[i] : c[i]) / 2; k[i] = (u8)(h * 255 + 0.5f); any = 1; }
+            if (!any) continue;
+            term[nt].unit = x ? tv : tu; term[nt].inv = inv; memcpy(term[nt].k, k, 4); nt++;
+        }
+    for (int i = 0; i < 3; i++) {
+        off[i] = c0[i] / 2;
+        if (cu[i] < 0) off[i] += cu[i] / 2;
+        if (cv[i] < 0) off[i] += cv[i] / 2;
+        float v = off[i] < 0 ? -off[i] : off[i];
+        u8 b = v > 1 ? 255 : (u8)(v * 255 + 0.5f);
+        if (off[i] < 0) kneg[i] = b; else kpos[i] = b;
+    }
+    int pstage = 0;
+    C3D_TexEnv *env = C3D_GetTexEnv(pstage++);   /* 0.5 * Y + positive offsets (buffer colour) */
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_RGB, (GPU_TEVSRC)(GPU_TEXTURE0 + ty), GPU_CONSTANT, GPU_PREVIOUS_BUFFER);
+    C3D_TexEnvFunc(env, C3D_RGB, GPU_MULTIPLY_ADD);
+    C3D_TexEnvSrc(env, C3D_Alpha, GPU_CONSTANT, 0, 0);
+    C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+    C3D_TexEnvColor(env, 128 | 128 << 8 | 128 << 16);
+    for (int k = 0; k < nt; k++) {
+        env = C3D_GetTexEnv(pstage++);
+        C3D_TexEnvInit(env);
+        C3D_TexEnvSrc(env, C3D_RGB, (GPU_TEVSRC)(GPU_TEXTURE0 + term[k].unit), GPU_CONSTANT, GPU_PREVIOUS);
+        C3D_TexEnvOpRgb(env, term[k].inv ? GPU_TEVOP_RGB_ONE_MINUS_SRC_COLOR : GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR, GPU_TEVOP_RGB_SRC_COLOR);
+        C3D_TexEnvFunc(env, C3D_RGB, GPU_MULTIPLY_ADD);
+        C3D_TexEnvSrc(env, C3D_Alpha, GPU_CONSTANT, 0, 0);
+        C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+        C3D_TexEnvColor(env, term[k].k[0] | term[k].k[1] << 8 | term[k].k[2] << 16);
+    }
+    env = C3D_GetTexEnv(pstage++);   /* (sum - negative offsets) * 2 */
+    C3D_TexEnvInit(env);
+    C3D_TexEnvSrc(env, C3D_RGB, GPU_PREVIOUS, GPU_CONSTANT, 0);
+    C3D_TexEnvFunc(env, C3D_RGB, GPU_SUBTRACT);
+    C3D_TexEnvScale(env, C3D_RGB, GPU_TEVSCALE_2);
+    C3D_TexEnvSrc(env, C3D_Alpha, GPU_CONSTANT, 0, 0);
+    C3D_TexEnvFunc(env, C3D_Alpha, GPU_REPLACE);
+    C3D_TexEnvColor(env, kneg[0] | kneg[1] << 8 | kneg[2] << 16);
+    C3D_TexEnvBufUpdate(C3D_RGB, 0);
+    C3D_TexEnvBufUpdate(C3D_Alpha, 0);
+    C3D_TexEnvBufColor(kpos[0] | kpos[1] << 8 | kpos[2] << 16);
+    for (int i = pstage; i < 6; i++) {
+        env = C3D_GetTexEnv(i);
+        C3D_TexEnvInit(env);
+        C3D_TexEnvSrc(env, C3D_Both, GPU_PREVIOUS, 0, 0);
+        C3D_TexEnvFunc(env, C3D_Both, GPU_REPLACE);
+    }
+    ONCE("TEV YUV -> RGB program (THP) as %d PICA stages\n", pstage);
     return 1;
 }
 
@@ -757,6 +853,7 @@ static void setup_tev(void) {
     int pstage = 0;
     if (!tev_changed()) return;
     pend_flush();
+    if (tev_yuv()) return;
     memset(tr, 0, sizeof tr);
     for (int x = 0; x < 2; x++) { tr[x].prev_reg = tr[x].buf_reg = -1; tr[x].buf_ready = 99; }
     for (u32 si = 0; si < gx.n_stages && si < 16; si++) {
@@ -2041,8 +2138,8 @@ void sdk_GXSetTevOp(void) {
     t->c.op = t->c.bias = t->c.scale = t->c.out = 0; t->c.clamp = 1;
     t->a.op = t->a.bias = t->a.scale = t->a.out = 0; t->a.clamp = 1;
 }
-void sdk_GXSetTevColor(void) { LOG(); if (R[3] < 4) set_color(gx.tev_reg[R[3]], R[4]); }
-void sdk_GXSetTevColorS10(void) { LOG(); if (R[3] < 4) for (int i = 0; i < 4; i++) { s16 v = rd16(R[4] + i * 2); gx.tev_reg[R[3]][i] = v < 0 ? 0 : v > 255 ? 255 : v; } }
+void sdk_GXSetTevColor(void) { LOG(); if (R[3] < 4) { set_color(gx.tev_reg[R[3]], R[4]); for (int i = 0; i < 4; i++) gx.tev_s10[R[3]][i] = gx.tev_reg[R[3]][i]; } }
+void sdk_GXSetTevColorS10(void) { LOG(); if (R[3] < 4) for (int i = 0; i < 4; i++) { s16 v = rd16(R[4] + i * 2); gx.tev_s10[R[3]][i] = v; gx.tev_reg[R[3]][i] = v < 0 ? 0 : v > 255 ? 255 : v; } }
 void sdk_GXSetTevKColor(void) { LOG(); if (R[3] < 4) set_color(gx.kcolor[R[3]], R[4]); }
 void sdk_GXSetTevKColorSel(void) { LOG(); if (R[3] < 16) gx.tev[R[3]].ksel_c = R[4]; }
 void sdk_GXSetTevKAlphaSel(void) { LOG(); if (R[3] < 16) gx.tev[R[3]].ksel_a = R[4]; }

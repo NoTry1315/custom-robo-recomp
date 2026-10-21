@@ -40,7 +40,10 @@ MTX_NATIVE = {0x801394c4, 0x801394f0, 0x80139524, 0x801395f0, 0x80139640, 0x8013
 # SDK functions inside STUB_MODULES that are pure memory code: translated from the guest
 # (PADClamp + ClampStick: deadzone 15, circle radius 56/44, triggers 30..180)
 # Whole ranges: every instruction must be 'tr', not only the entry (else recomp_bad).
-TRANSLATE_SDK_RANGES = [(0x801409b0, 0x80140c64)]   # ClampStick 0x1a8 + PADClamp 0x10c
+TRANSLATE_SDK_RANGES = [(0x801409b0, 0x80140c64),   # ClampStick 0x1a8 + PADClamp 0x10c
+                        # THP decoders (video 0x801aeb40.., audio 0x801b60a8..); THPInit
+                        # 0x801b6008 is native (runtime/thp.c: locked cache at LC_BASE)
+                        (0x801aeb40, 0x801b6008), (0x801b60a8, 0x801b65d8)]   # 0x801b65d8: padding
 TRANSLATE_SDK = {0x80140b58, 0x801409b0}
 # Functions only reached through pointers the scans miss (leaf, no prologue; address built
 # far from its addi). Seen as recomp_bad call_indirect in a played log.

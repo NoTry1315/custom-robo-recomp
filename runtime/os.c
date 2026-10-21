@@ -213,5 +213,51 @@ void sdk_OSPanic(void) {
     recomp_done("OSPanic");
 }
 
+/* ---- caches. The locked cache is plain RAM at LC_BASE (ppc.h); a DMA between it and main
+ * RAM is a copy that finishes at once, so LCQueueWait has nothing to wait for. ---- */
+static u32 hid2;
+void sdk_PPCMfhid2(void) { LOG(); R[3] = hid2; }
+void sdk_LCEnable(void) { LOG(); hid2 |= 0x10000000u; }    /* HID2[LCE] */
+void sdk_LCDisable(void) { LOG(); hid2 &= ~0x10000000u; }
+void sdk_LCQueueWait(void) { LOG(); }
+
+/* main RAM range [a, a+n) without wrapping the mirror */
+static int ram_range(u32 a, u32 n) { return !IS_HW(a) && (a & RAM_MASK) + n <= RAM_MASK + 1; }
+static void copy_lines(u32 d, u32 s, u32 n) {
+    if (ram_range(d, n) && ram_range(s, n)) { recomp_mark_ram(d, n); memmove(ram + (d & RAM_MASK), ram + (s & RAM_MASK), n); return; }
+    for (u32 i = 0; i < n; i += 4) wr32(d + i, rd32(s + i));
+}
+
+/* LCStoreData(dst r3, lc src r4, n r5) -> number of DMA transactions (128 lines each);
+ * whole 32-byte lines, addresses taken as given (the SDK masks them to 32 bytes) */
+void sdk_LCStoreData(void) {
+    LOG();
+    u32 lines = (R[5] + 31) >> 5;
+    copy_lines(R[3] & ~31u, R[4] & ~31u, lines << 5);
+    R[3] = (lines + 127) >> 7;
+}
+/* LCStoreBlocks(dst r3, lc src r4, blocks r5): 0 blocks = 128 */
+void sdk_LCStoreBlocks(void) {
+    LOG();
+    u32 lines = R[5] & 0x7f ? R[5] & 0x7f : 128;
+    copy_lines(R[3] & ~31u, R[4] & ~31u, lines << 5);
+}
+
+/* DCZeroRange(a r3, n r4): dcbz every line touching [a, a+n) */
+void sdk_DCZeroRange(void) {
+    LOG();
+    u32 a = R[3] & ~31u, n = R[4];
+    if (!n) return;
+    n = ((n + (R[3] & 31) + 31) >> 5) << 5;
+    if (ram_range(a, n)) { recomp_mark_ram(a, n); memset(ram + (a & RAM_MASK), 0, n); return; }
+    for (u32 i = 0; i < n; i += 4) wr32(a + i, 0);
+}
+
+/* SRAM sound mode (flags bit 2): stereo, as in Dolphin's default SRAM. The game reads it at
+ * boot (0x8009921c) and otherwise mixes in mono, e.g. the THP movie's downmix (0x80017a0c). */
+static u32 sound_mode = 1;
+void sdk_OSGetSoundMode(void) { LOG(); R[3] = sound_mode; }
+void sdk_OSSetSoundMode(void) { LOG(); sound_mode = R[3] & 1; }   /* rlwinm r3, 2, 29, 29 */
+
 /* reset button never pressed; the game latches a reset request on non-zero */
 void sdk_OSGetResetButtonState(void) { LOG(); R[3] = 0; }

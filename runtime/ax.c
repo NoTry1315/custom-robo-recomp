@@ -355,13 +355,36 @@ static void ax_frame(void) {
         mix_voice(v);
     }
     if (active > st.active_max) st.active_max = active;
-    out_frame();
     if (++st.frames % 1000 == 0) {          /* every 5 s of audio = 300 retraces */
         recomp_log("# AX: frame %lu voices started %lu max active %lu ended %lu loops %lu peak %lu ndsp bufs %lu dropped frames %lu rms %lu\n",
                    (unsigned long)st.frames, (unsigned long)voices_started, (unsigned long)st.active_max,
                    (unsigned long)st.ended, (unsigned long)st.looped, (unsigned long)st.peak, (unsigned long)st.queued, (unsigned long)st.dropped,
                    (unsigned long)__builtin_sqrt((double)st.sumsq / (FRAME * 1000)));
         st.active_max = st.peak = st.ended = st.looped = st.queued = st.dropped = 0; st.sumsq = 0;
+    }
+}
+
+/* ---- AI DMA chain (runtime/ai.c): while the game has its own AI callback in front of
+ * AX's (the THP movie), each frame runs the chain and plays the buffer it leaves ---- */
+#define AX_OUT 0x81808000u                 /* 3 AX output buffers, after the VPBs */
+static u32 out_idx;
+
+/* 0x80145a00 __AXOutAiCallback, reached through the guest's AI callback: the frame just
+ * mixed becomes the next DMA buffer, big-endian R, L pairs (Dolphin's HLE AX output order) */
+void sdk___AXOutAiCallback(void) {
+    LOG();
+    u32 b = AX_OUT + out_idx * FRAME * 4;
+    out_idx = (out_idx + 1) % 3;
+    for (int i = 0; i < FRAME; i++) { wr16(b + i * 4, clamp16(mixR[i])); wr16(b + i * 4 + 2, clamp16(mixL[i])); }
+    recomp_ai_dma_addr = b & 0x03ffffe0u; recomp_ai_dma_len = FRAME * 4;
+}
+
+static void ai_frame(void) {
+    recomp_call_guest(recomp_ai_dma_cb, 0);
+    u32 a = 0x80000000u | recomp_ai_dma_addr, n = recomp_ai_dma_len / 4 < FRAME ? recomp_ai_dma_len / 4 : FRAME;
+    for (u32 i = 0; i < FRAME; i++) {
+        mixR[i] = i < n ? (s16)rd16(a + i * 4) : 0;
+        mixL[i] = i < n ? (s16)rd16(a + i * 4 + 2) : 0;
     }
 }
 
@@ -373,6 +396,8 @@ void recomp_ax_service(void) {
     u32 due = frames * 10 / 3;
     for (; done < due; done++) {
         ax_frame();
+        if (recomp_ai_dma_cb && recomp_ai_dma_cb != AX_AI_CALLBACK) ai_frame();
+        out_frame();
         if (ax_cb) recomp_call_guest(ax_cb, 0);
     }
     recomp_prof[PROF_AUDIO] += recomp_ticks() - t0;
