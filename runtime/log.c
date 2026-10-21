@@ -121,8 +121,12 @@ void recomp_prof_frame(u32 retrace) {
                (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - sync - aud, vtx, tex, st, end, sync, aud,
                (recomp_prof[PROF_LOG] - sum[PROF_LOG]) * ms / 60);
     double pre = (recomp_prof[PROF_PREDRAW] - sum[PROF_PREDRAW]) * ms / 60, gpu = (recomp_prof[PROF_GPU] - sum[PROF_GPU]) * ms / 60;
-    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (queue: draws + display transfer, parallel to the CPU)\n",
-               (unsigned long)retrace, pre, frame - pre, gpu);
+    double span = (recomp_prof[PROF_GPU_SPAN] - sum[PROF_GPU_SPAN]) * ms / 60;
+    static u32 flips;   /* a window with a ZL toggle in it mixes both modes */
+    const char *kick = recomp_gx_kick_flips != flips ? "mixed" : recomp_gx_kick_on ? "on" : "off";
+    flips = recomp_gx_kick_flips;
+    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s\n",
+               (unsigned long)retrace, pre, frame - pre, gpu, span, kick);
     if (retrace % 300 == 0) {
         double un = (recomp_prof[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (recomp_prof[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
         double dl = (recomp_prof[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;

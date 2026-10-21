@@ -58,6 +58,7 @@ export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 
 .PHONY: all clean
 all: $(BUILD)
+	@sh tools/buildinfo.sh $(BUILD)/buildinfo.h
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 	@python3 tools/check_3dsx.py $(TARGET).3dsx
 $(BUILD):

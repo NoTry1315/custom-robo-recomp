@@ -254,7 +254,7 @@ u32  recomp_retrace_count(void);         /* frames so far (VI retraces) */
 void recomp_ax_service(void);           /* AX frame callbacks due since the last retrace */
 /* frame timing (runtime/log.c): ticks spent per bucket, logged by VI */
 enum { PROF_GX_VTX, PROF_GX_TEX, PROF_GX_END, PROF_AUDIO, PROF_GX_STATE,
-       PROF_VX_UNIF, PROF_VX_DEC, PROF_VX_DL, PROF_LOG, PROF_PREDRAW, PROF_GX_SYNC, PROF_GPU, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others); PROF_GX_SYNC: C3D_FrameBegin (vblank cap + GPU queue wait); PROF_GPU: GPU queue time of each frame (C3D_GetDrawingTime, runs in parallel with the CPU) */
+       PROF_VX_UNIF, PROF_VX_DEC, PROF_VX_DL, PROF_LOG, PROF_PREDRAW, PROF_GX_SYNC, PROF_GPU, PROF_GPU_SPAN, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others); PROF_GX_SYNC: C3D_FrameBegin (vblank cap + GPU queue wait); PROF_GPU: GPU queue time from C3D_FrameEnd to queue done (C3D_GetDrawingTime; with mid-frame submits only the tail); PROF_GPU_SPAN: first mid-frame submit (else C3D_FrameEnd) to queue done */
 extern u64 recomp_prof[PROF_N];
 extern u64 recomp_first_draw;   /* tick of the frame's first GX draw (0 = none yet); PROF_PREDRAW: frame time before it */
 extern u32 recomp_run_frames;
@@ -267,6 +267,9 @@ u8 recomp_aram_read8(u32 a);            /* ARAM byte (runtime/ar.c) */
 void recomp_wait_point(void);           /* pending "interrupts": DVD, then ARQ */
 u64  recomp_timebase(void);             /* Gekko timebase, 40.5 MHz */
 void recomp_gx_init(void);             /* citro3d, render target, shader */
+void recomp_gx_kick_toggle(void);      /* ZL: mid-frame GPU submit on/off from the next frame */
+extern int recomp_gx_kick_on;          /* mid-frame GPU submit mode now (for the # time lines) */
+extern u32 recomp_gx_kick_flips;       /* ZL toggles so far */
 extern u32 recomp_gx_dbg[3];           /* last draw: gpucmd offset at entry, prim, vertex count */
 void recomp_gx_fifo_write(u32 v, int size); /* WGPIPE 0xCC008000 */
 void recomp_log_open(void);

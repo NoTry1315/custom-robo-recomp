@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <setjmp.h>
 #include "ppc.h"
+#include "buildinfo.h"   /* RECOMP_BUILD, written by tools/buildinfo.sh every make */
 
 void cpu_init(void);
 void recomp_mtx_init(void);
@@ -25,6 +26,19 @@ int main(void) {
     if (recomp_load_dol() == 0) {
         recomp_mtx_init();
         printf("main.dol loaded, running __start\n");
+        printf("build %s\n", RECOMP_BUILD);
+        recomp_log("# build %s\n", RECOMP_BUILD);
+        /* sdmc flag files present at boot, so a hardware run shows what it tested */
+        static const char *const flags[] = { "cr_batch_off", "cr_dlcache_off", "cr_dlclean_off", "cr_gpukick_off",
+            "cr_mtx_off", "cr_vsync_on", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_pad_script", "cr_pad_replay" };
+        int nf = 0;
+        printf("flags:");
+        for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; i++) {
+            char p[48]; snprintf(p, sizeof p, "sdmc:/%s.txt", flags[i]);
+            FILE *f = fopen(p, "rb");
+            if (f) { fclose(f); printf(" %s", flags[i]); nf++; }
+        }
+        printf(nf ? "\n" : " none\n");
         if (!setjmp(recomp_exit_jmp)) {
             f_80003154();
             recomp_done("__start returned");

@@ -176,6 +176,46 @@ static void use_buf(const PVtx *p) {
 }
 static void vc_frame_begin(void);
 
+/* Mid-frame GPU submit. C3D_FrameBegin stops citro3d's GX queue, and a
+ * C3D_FrameSplit chunk only reaches the GPU once the queue runs, which citro3d
+ * does in C3D_FrameEnd: so the GPU idled while the CPU built the frame. Every
+ * KICK_WORDS command words the pending draw is issued, the vertex/index data
+ * written since the last submit is flushed from the CPU cache, the chunk is
+ * split off and the queue is started (gxCmdQueueRun), so the GPU draws it while
+ * the CPU builds the rest. libctru has no getter for the queue: it is the first
+ * member (gxQueue) of citro3d's non-static global C3D_Context __C3D_Context
+ * (source/base.c, source/internal.h). Each submit takes one of the queue's 32
+ * entries (C3D_Init), so at most KICK_MAX per frame. sdmc:/cr_gpukick_off.txt =
+ * start with the old one submit at C3D_FrameEnd; pressing ZL toggles it. */
+#define KICK_WORDS 2048
+#define KICK_MAX 12
+extern gxCmdQueue_s __C3D_Context;
+static int kick_off = 2, kick_req;
+void recomp_gx_kick_toggle(void) { kick_req = 1; }
+int recomp_gx_kick_on;
+u32 recomp_gx_kick_flips;
+static u32 vb_fl, ib_fl, kicks, st_kick_cap;   /* vb_fl/ib_fl: vbuf/ibuf flushed up to here this frame */
+static u64 kick_t0;   /* ticks of the frame's first submit (0: none yet) */
+static void flush_new(void) {
+    if (vb_used > vb_fl) GSPGPU_FlushDataCache(vbuf[vb_half] + vb_fl, (vb_used - vb_fl) * sizeof(PVtx));
+    if (ib_used > ib_fl) GSPGPU_FlushDataCache(ibuf[vb_half] + ib_fl, (ib_used - ib_fl) * 2);
+    if (vc_dhi > vc_dlo) GSPGPU_FlushDataCache(vc_arena + vc_dlo, (vc_dhi - vc_dlo) * sizeof(PVtx));
+    vc_dlo = 0xffffffffu; vc_dhi = 0;
+    vb_fl = vb_used; ib_fl = ib_used;
+}
+static void gpu_kick(void) {
+    if (kicks >= KICK_MAX) {
+        if (!st_kick_cap++) recomp_log("# gx: mid-frame submit cap (%d) hit at frame %lu\n", KICK_MAX, (unsigned long)frames);
+        return;
+    }
+    pend_issue();   /* not pend_flush: the next draw may still merge (same stats as with submits off) */
+    flush_new();
+    C3D_FrameSplit(GX_CMDLIST_FLUSH);   /* void in citro3d 1.7.1; cb_off >= KICK_WORDS, so there is a chunk */
+    gxCmdQueueRun(&__C3D_Context);   /* the queue may have drained and stopped since the last submit */
+    if (!kicks++) kick_t0 = recomp_ticks();
+}
+static u64 fe_t;   /* ticks at the previous C3D_FrameEnd */
+
 /* Frame pacing. C3D_FRAME_SYNCDRAW runs C3D_FrameSync, which always waits for the
  * next vblank: every frame idled up to 16.7 ms at its first draw, counted as game
  * time (hw run 13 battle: ~14 of 53.6 ms). Now a frame waits for a vblank only when
@@ -188,13 +228,26 @@ static void frame_begin(void) {
     if (frame_open) return;
     if (vsync_on == 2) { FILE *f = fopen("sdmc:/cr_vsync_on.txt", "rb"); vsync_on = f != NULL; if (f) fclose(f);
         recomp_log("# gx: frame pacing %s\n", vsync_on ? "vblank wait every frame (cr_vsync_on.txt)" : "60 Hz cap only"); }
+    if (kick_off == 2) { FILE *f = fopen("sdmc:/cr_gpukick_off.txt", "rb"); kick_off = f != NULL; if (f) fclose(f);
+        if (kick_off) recomp_log("# gx: mid-frame GPU submit off (cr_gpukick_off.txt)\n");
+        else recomp_log("# gx: mid-frame GPU submit on (every %d command words, at most %d per frame)\n", KICK_WORDS, KICK_MAX);
+        printf("gpukick %s (ZL toggles)\n", kick_off ? "OFF" : "ON"); }   /* bottom screen */
+    recomp_gx_kick_on = !kick_off;
+    if (kick_req) { kick_req = 0; kick_off ^= 1; recomp_gx_kick_on = !kick_off; recomp_gx_kick_flips++;   /* ZL (runtime/pad.c), applied between frames */
+        recomp_log("# gx r%lu: mid-frame GPU submit %s (ZL)\n", (unsigned long)recomp_retrace_count(), kick_off ? "off" : "on");
+        printf("r%lu gpukick %s\n", (unsigned long)recomp_retrace_count(), kick_off ? "OFF" : "ON"); }
     u64 ts = recomp_ticks();
     if (!vsync_on && C3D_FrameCounter(0) == last_vbl) C3D_FrameSync();
     if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
     last_vbl = C3D_FrameCounter(0);
     recomp_prof[PROF_GX_SYNC] += recomp_ticks() - ts;
     /* the previous frame's queue (draws + display transfer) is finished here: its GPU time, in ms */
-    if (frames) recomp_prof[PROF_GPU] += (u64)(C3D_GetDrawingTime() * (SYSCLOCK_ARM11 / 1000.0));
+    if (frames) {
+        u64 g = (u64)(C3D_GetDrawingTime() * (SYSCLOCK_ARM11 / 1000.0));
+        recomp_prof[PROF_GPU] += g;
+        recomp_prof[PROF_GPU_SPAN] += (kick_t0 ? fe_t - kick_t0 : 0) + g;
+    }
+    kicks = 0; kick_t0 = 0; vb_fl = ib_fl = 0;
     if (!C3D_FrameDrawOn(target)) recomp_log("# gx: C3D_FrameDrawOn failed at frame %lu\n", (unsigned long)frames);
     frame_open = 1;
     vb_half = frames & 1; vb_used = ib_used = 0;
@@ -218,10 +271,10 @@ static void frame_end(void) {
     if (in_draw) recomp_log("# gx: frame ended inside a draw at frame %lu (guest lr %08lx)\n", (unsigned long)frames, (unsigned long)cpu.lr);
     frame_begin();
     if (frames % 300 == 0) {   /* draw stats every 300 copies */
-        recomp_log("# gx frame %lu: draws %lu tris %lu textured %lu evicted %lu uploads %lu (%lu KB) efb %dx%d clear %02x%02x%02x%02x cmdbuf-full skips %lu, cmdbuf %d%%\n", (unsigned long)frames,
+        recomp_log("# gx frame %lu: draws %lu tris %lu textured %lu evicted %lu uploads %lu (%lu KB) efb %dx%d clear %02x%02x%02x%02x cmdbuf-full skips %lu, cmdbuf %d%%, mid-frame submits %lu (cap skips %lu)\n", (unsigned long)frames,
             (unsigned long)st_draws, (unsigned long)st_tris, (unsigned long)st_tex, (unsigned long)st_evict, (unsigned long)st_upload, (unsigned long)(st_upbytes >> 10), gx.efb_w, gx.efb_h,
             gx.clear_color[0], gx.clear_color[1], gx.clear_color[2], gx.clear_color[3],
-            (unsigned long)st_split, (int)(C3D_GetCmdBufUsage() * 100));
+            (unsigned long)st_split, (int)(C3D_GetCmdBufUsage() * 100), (unsigned long)kicks, (unsigned long)st_kick_cap);
         recomp_log("# gx batch frame %lu: draws %lu mergeable %lu (%lu%%) -> %lu DrawElements%s\n", (unsigned long)frames, (unsigned long)st_draws,
             (unsigned long)st_merged, st_draws ? (unsigned long)(st_merged * 100 / st_draws) : 0ul,
             (unsigned long)(batch_off ? st_draws : st_draws - st_merged), batch_off ? " (batching off)" : "");
@@ -237,16 +290,14 @@ static void frame_end(void) {
                    (unsigned long)st_dl_hits, (unsigned long)st_dl_misses, (unsigned long)st_dl_slow);
     vc_hits = vc_misses = 0;
     st_dl_calls = st_dl_prims = st_dl_hits = st_dl_misses = st_dl_slow = 0;
-    st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = st_merged = 0;
+    st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = st_merged = st_kick_cap = 0;
     /* a frame with no draws still shows the clear color (frame_begin above) */
     pend_flush();
     last_end = NULL;
     u64 t0 = recomp_ticks();
-    /* one flush per frame: the GPU reads the buffers only at C3D_FrameEnd */
-    if (vb_used) GSPGPU_FlushDataCache(vbuf[vb_half], vb_used * sizeof(PVtx));
-    if (ib_used) GSPGPU_FlushDataCache(ibuf[vb_half], ib_used * 2);
-    if (vc_dhi > vc_dlo) GSPGPU_FlushDataCache(vc_arena + vc_dlo, (vc_dhi - vc_dlo) * sizeof(PVtx));
-    vc_dlo = 0xffffffffu; vc_dhi = 0;
+    /* the buffers written since the last mid-frame submit (all of them with submits off) */
+    flush_new();
+    fe_t = recomp_ticks();
     C3D_FrameEnd(GX_CMDLIST_FLUSH);   /* buffers + textures flushed above; skips the whole-linear-heap flush */
     fb_dump();
     recomp_prof[PROF_GX_END] += recomp_ticks() - t0;
@@ -1314,6 +1365,7 @@ static int in_dl;   /* inside GXCallDisplayList */
 static int cmdbuf_room(int prim, int n) {
     u32 *cb_addr, cb_size, cb_off;
     GPUCMD_GetBuffer(&cb_addr, &cb_size, &cb_off);   /* words; C3D_GetCmdBufUsage is only updated per frame */
+    if (!kick_off && cb_off >= KICK_WORDS) { gpu_kick(); GPUCMD_GetBuffer(&cb_addr, &cb_size, &cb_off); }   /* offset restarts after a split */
     recomp_gx_dbg[0] = cb_off; recomp_gx_dbg[1] = prim; recomp_gx_dbg[2] = n;
     if (cb_off + 1024 > cb_size) {
         if (!st_split++) recomp_log("# gx: GPU command buffer full at frame %lu: rest of the frame's draws skipped\n", (unsigned long)frames);
