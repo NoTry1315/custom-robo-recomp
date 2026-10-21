@@ -14,12 +14,16 @@ with sound, memory card saves, the attract movie and the HOME button.
 
 Frame rates on hardware (New 3DS, averages of the in-game timing log):
 
-| Scene | fps |
-|---|---|
-| Title, menus | 45-60 |
-| Vs. battle | ~35 |
-| Campaign | ~30 |
-| Attract movie | ~9 |
+| Scene | fps | Game speed |
+|---|---|---|
+| Title, menus | 45-60 | 75-100% |
+| Vs. battle | ~35 | ~58% |
+| Campaign | ~30 | ~50% |
+| Attract movie | ~9 | ~30% |
+
+The game runs one logic step per frame, so game speed is fps / 60: at 35 fps a
+battle plays in slow motion at 58% of real time. 100% needs a steady 60 fps.
+The movie is measured against its own 30 fps (3446 frames in ~115 s).
 
 Known problems:
 
