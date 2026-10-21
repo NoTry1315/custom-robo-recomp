@@ -59,10 +59,11 @@ logged here with addresses or turned into a runtime call that reports it
 ## DVD / PAD / ARAM (phase 4; to verify against Dolphin)
 
 - DVD is replaced at the dvdfs level (runtime/dvd.c), not dvdlow: reads come from
-  sdmc:/custom-robo/files/<FST path>, found by the FileInfo's startAddr. Reads finish on
-  the host at once; async callbacks run at the next wait point (VIWaitForRetrace,
-  DVDGetCommandBlockStatus, DVDGetDriveStatus). Read timing therefore differs from a
-  real drive (no seek/transfer delay).
+  sdmc:/custom-robo/files/<FST path>, found by the FileInfo's startAddr. Async callbacks
+  run at the next wait point (VIWaitForRetrace, DVDGetCommandBlockStatus,
+  DVDGetDriveStatus); since 2026-10-21 reads run on a reader thread and a read slower than
+  a real drive completes at a later wait point (see "DVD reader thread"). Otherwise read
+  timing differs from a real drive (no seek/transfer delay).
 - DVDGetDriveStatus always DVD_STATE_END, DVDCheckDisk TRUE, DVDCancel only drops a
   pending callback.
 - ARAM is a 16 MB host buffer (runtime/ar.c), ARInit reserves 0x4000; ARQ DMA is
@@ -530,6 +531,49 @@ Profile (Citra battle replay r3600, `make FNPROF=1`): game-side top 0x801a4558 1
   campaign are CPU-bound. No garbage geometry reported. Campaign hits the 12-submit cap in bursts
   (frames ~1968-2315, safe: the rest of the frame goes in C3D_FrameEnd); a larger KICK_WORDS or cap
   is untested. Boot screen now shows build/flags (tools/buildinfo.sh, runtime/main.c).
+
+## DVD reader thread (2026-10-21)
+
+- Symptom (hw runs 15-21): single-frame freezes of 1-4 s, each one a single SD access. Run 21:
+  cubog39.hps off 200c0 len 20 2844 ms (r736), cubog53.hps off 40100 len 20 3509 ms (r1227) and
+  off 14f420 len 20 1914 ms (r2442), snr_map.BIN off 0 len 800 3529 ms (r44); run 20:
+  v_cubog09.hps off 1d0420 len 20 3273 ms (r4130). The .hps reads come from the AX callback, so
+  the `# stall` lines put them in "audio".
+- Not the open or the seek: the stalled .hps files were first read 70-2000 frames earlier and
+  streamed since (handles open in the 8-file LRU). Runs 17b and 19b stalled 4.0-4.1 s at r13 in
+  "gx state", which is a failed fopen of a flag file (gx.c cr_batch_off.txt etc.), with no read
+  at all. libctru 2.7.0 archive_dev.o: archive_seek calls FSFILE_GetSize only for SEEK_END
+  (SEEK_SET is arithmetic), archive_read is one FSFILE_Read with the offset. So FSUSER_OpenFile/
+  FSFILE_Read directly would send the same request. The SD/FS itself is busy for seconds.
+- Likely cause (not yet confirmed): our own SD writes. Hw run 6 measured single log
+  fwrite+fflush calls of up to 4.1 s; ax.c notes the WAV dump's small writes gave multi-second
+  stalls. The log writer still appends + fflushes every ~100 ms from its thread, and a read
+  queued behind a stalled write waits with it. Check: `# log write slow r<n>: <bytes> at <KB>
+  took <ms>` (writes > 250 ms) and the log-writer part of each `# DVD slow` line.
+- Fix (runtime/dvd.c): reads run on a reader thread (aux core, priority above the game), FIFO.
+  The game thread still waits for each read at the next wait point, as before, but at most
+  50 ms + len / 2.5 MB/s (about a GameCube drive) from the read's start; a read still running then
+  completes in the background, its block stays BUSY (DVDGetDriveStatus says BUSY too) and its
+  callback runs at a later wait point. Guest RAM is written by the reader directly (like DMA) and
+  stamped at issue and again at delivery (write tracking). DVDCancel waits for the read to land,
+  then drops the callback (the game never calls DVDCancel, DVDReadPrio or
+  DVDGetCommandBlockStatus; all reads are DVDReadAsyncPrio + DVDGetDriveStatus).
+- Logs: `# DVD slow` keeps its old text and appends `open X, seek Y, read Z; log writer: busy N ms
+  at start, M writes done during, busy|idle at end`. `# DVD late r<issue>: ... game waited N ms,
+  went on at r<a>, callback at r<b>` = a stall that no longer froze the game. `dvd wait` (time the
+  game thread waited for the reader) is in the `# time` parenthetical and the `# stall` line.
+- Flags: sdmc:/cr_dvdasync_off.txt = the game waits for each read at issue without limit (old
+  timing). sdmc:/cr_dvd_stalltest.txt = every 64th .hps read sleeps 3 s on the reader (tests the
+  late path).
+- Citra (replays of hw run 21 to r2900 and hw run 20 to r4400, Citra save restored before each):
+  SDK call, pad, scene and summary-count lines identical to the HEAD build apart from the
+  OSTicksToCalendarTime wall-clock value; `# DVD` lines identical (Citra's SD delay model, 0.6 ms +
+  183 ns/byte, is inside the budget: font.out 0x184480 takes 292 ms of a 686 ms budget); frame/game
+  ms unchanged. Stall test on run 21: cubog49.hps 0x4000 read 3004 ms, game waited 57 ms, went on
+  at r1279, callback at r1391; worst frame in that window 83 ms, no `# stall`; scenes as without
+  the stall; the WAV keeps its level through the stall (the voice replays its ARAM buffer) and
+  fades where the no-stall run fades. Not yet on hardware.
+- Still on the game thread: lazy flag fopens in gx.c (the r13 stall), card.c saves, the WAV dump.
 
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py

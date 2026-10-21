@@ -64,6 +64,7 @@ static Thread aux_thread(ThreadFunc f, size_t stack, int prio) {
     }
     return threadCreate(f, NULL, stack, prio, aux_core, true);
 }
+Thread recomp_aux_thread(ThreadFunc f, size_t stack, int prio) { return aux_thread(f, stack, prio); }
 
 void recomp_prof_sampler_start(void) {
     s32 prio = 0x30;
@@ -102,9 +103,9 @@ void recomp_prof_frame(u32 retrace) {
             u64 d[PROF_N];
             for (int i = 0; i < PROF_N; i++) d[i] = recomp_prof[i] - fsum[i];
             u64 lw = log_worst;
-            recomp_log("# stall r%lu: frame %.0f ms: gx vertex %.0f, gx tex %.0f, gx state %.0f, gx end/wait %.0f, gx sync %.0f, audio %.0f, log writes %.0f (longest %.0f), rest (game) %.0f\n",
+            recomp_log("# stall r%lu: frame %.0f ms: gx vertex %.0f, gx tex %.0f, gx state %.0f, gx end/wait %.0f, gx sync %.0f, audio %.0f, log writes %.0f (longest %.0f), dvd wait %.0f, rest (game) %.0f\n",
                 (unsigned long)retrace, dt * m, d[PROF_GX_VTX] * m, d[PROF_GX_TEX] * m, d[PROF_GX_STATE] * m, d[PROF_GX_END] * m, d[PROF_GX_SYNC] * m, d[PROF_AUDIO] * m,
-                d[PROF_LOG] * m, lw * m, (double)(dt - d[PROF_GX_VTX] - d[PROF_GX_TEX] - d[PROF_GX_STATE] - d[PROF_GX_END] - d[PROF_GX_SYNC] - d[PROF_AUDIO]) * m);
+                d[PROF_LOG] * m, lw * m, d[PROF_DVD] * m, (double)(dt - d[PROF_GX_VTX] - d[PROF_GX_TEX] - d[PROF_GX_STATE] - d[PROF_GX_END] - d[PROF_GX_SYNC] - d[PROF_AUDIO]) * m);
         }
     } else start = now;
     last = now;
@@ -117,9 +118,9 @@ void recomp_prof_frame(u32 retrace) {
     double end = (recomp_prof[PROF_GX_END] - sum[PROF_GX_END]) * ms / 60, aud = (recomp_prof[PROF_AUDIO] - sum[PROF_AUDIO]) * ms / 60;
     double st = (recomp_prof[PROF_GX_STATE] - sum[PROF_GX_STATE]) * ms / 60, sync = (recomp_prof[PROF_GX_SYNC] - sum[PROF_GX_SYNC]) * ms / 60;
     double frame = wall / 60;
-    recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, gx sync %.1f, audio %.1f (log writes %.1f, inside the others)\n",
+    recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, gx sync %.1f, audio %.1f (log writes %.1f, dvd wait %.1f, inside the others)\n",
                (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - sync - aud, vtx, tex, st, end, sync, aud,
-               (recomp_prof[PROF_LOG] - sum[PROF_LOG]) * ms / 60);
+               (recomp_prof[PROF_LOG] - sum[PROF_LOG]) * ms / 60, (recomp_prof[PROF_DVD] - sum[PROF_DVD]) * ms / 60);
     double pre = (recomp_prof[PROF_PREDRAW] - sum[PROF_PREDRAW]) * ms / 60, gpu = (recomp_prof[PROF_GPU] - sum[PROF_GPU]) * ms / 60;
     double span = (recomp_prof[PROF_GPU_SPAN] - sum[PROF_GPU_SPAN]) * ms / 60;
     static u32 flips;   /* a window with a ZL toggle in it mixes both modes */
@@ -169,11 +170,16 @@ static volatile u32 log_head, log_tail;   /* free-running byte counts: written /
 static LightLock wlock;                   /* fwrite and log_tail */
 static LightEvent log_ev;
 static volatile int log_closing;
+/* hw runs 15-21: single DVD reads (and a failed fopen) took 2-4 s; these let
+ * dvd.c say whether a log write was on the card at the same time */
+volatile u32 recomp_logw_since, recomp_logw_n;
 
 static void log_drain(void) {
     LightLock_Lock(&wlock);
     u32 t = log_tail, h = log_head;
+    u64 t0 = svcGetSystemTick(), dt = 0;
     if (log_fp && t != h) {
+        recomp_logw_since = (u32)t0 | 1;
         while (t != h) {
             u32 o = t & (LOGBUF - 1), n = h - t;
             if (n > LOGBUF - o) n = LOGBUF - o;
@@ -181,9 +187,16 @@ static void log_drain(void) {
             t += n;
         }
         fflush(log_fp);
+        dt = svcGetSystemTick() - t0;
+        recomp_logw_since = 0;
+        recomp_logw_n++;
     }
+    u32 n = t - log_tail;
     log_tail = t;
     LightLock_Unlock(&wlock);
+    if (dt > SYSCLOCK_ARM11 / 4)
+        recomp_log("# log write slow r%lu: %lu bytes at %lu KB took %.0f ms\n", (unsigned long)recomp_retrace_count(),
+                   (unsigned long)n, (unsigned long)((t - n) >> 10), dt * 1000.0 / SYSCLOCK_ARM11);
 }
 
 static void log_writer(void *arg) {
