@@ -22,12 +22,12 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | PAD | 0x801409b0-0x80141fa4 | 6 / 14 | 3 | 3 | 0 |
 | VI | 0x8013eb5c-0x801409b0 | 24 / 24 | 10 | 13 | 1 |
 | GX | 0x801516c8-0x80159530 | 114 / 165 | 61 | 53 | 0 |
-| AI | 0x80141fa4-0x8014288c | 11 / 19 | 3 | 8 | 0 |
-| DSP/AR/ARQ/AX | 0x8014288c-0x8014af50 | 37 / 122 | 12 | 18 | 7 |
+| AI | 0x80141fa4-0x8014288c | 11 / 19 | 4 | 7 | 0 |
+| DSP/AR/ARQ/AX | 0x8014288c-0x8014af50 | 38 / 122 | 12 | 19 | 7 |
 | CARD | 0x8014af50-0x801516c8 | 17 / 84 | 6 | 11 | 0 |
 | EXI/SI | 0x80169484-0x8016d42c | 46 / 59 | 27 | 18 | 1 |
 | MTX | 0x801394c4-0x8013a2c0 | 30 / 30 | 19 | 11 | 0 |
-| THP | 0x801aeb40-0x801b65e0 | 3 / 23 | 1 | 0 | 2 |
+| THP | 0x801aeb40-0x801b65e0 | 3 / 23 | 2 | 1 | 0 |
 | other | 0x80003100-0x80169484 | 38 / 321 | 16 | 18 | 4 |
 | **SDK modules (excl. other)** | | **521 / 818** | | | |
 | **overall (incl. other)** | | **559 / 1139** | | | |
@@ -574,14 +574,14 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 
 ## AI
 
-11 identified of 19 functions (high 3, medium 8, low 0).
+11 identified of 19 functions (high 4, medium 7, low 0).
 
 | address | size | name | confidence | evidence |
 |---|---|---|---|---|
 | 0x80141fa4 | 0x44 | AIRegisterDMACallback | medium | swaps r13 callback under Disable/Restore |
 | 0x80141fe8 | 0x88 | AIInitDMA | medium | writes DSP regs 0xCC005030/32/36 (AI DMA start/len) |
 | 0x80142070 | 0x18 | AIStartDMA | medium | DSP 0xCC005036 /= 0x8000 |
-| 0x80142088 | 0x1c | AIStopDMA | medium | DSP 0xCC005036 &= ~0x8000 |
+| 0x80142088 | 0x1c | AIGetDMAStartAddr | high | returns DSP 0xCC005030/32 as a physical address (hi & 0x3ff, lo & 0xffe0); the THP movie callback adds 0x80000000. Was listed as AIStopDMA |
 | 0x801420a4 | 0xd8 | AISetStreamPlayState | high | AICR bit 0, SRC init on start |
 | 0x8014217c | 0x10 | AIGetStreamPlayState | high | AICR bit 0 |
 | 0x8014218c | 0xe0 | AISetDSPSampleRate | medium | AI regs 0xCC006C00; caller in AX init (0x8017980c) |
@@ -600,7 +600,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 
 ## AR, ARQ, AX, DSP
 
-37 identified of 122 functions (high 12, medium 18, low 7).
+38 identified of 122 functions (high 12, medium 19, low 7).
 
 | address | size | name | confidence | evidence |
 |---|---|---|---|---|
@@ -650,7 +650,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80145810 | 0x24 | AX_unk_80145810 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80145834 | 0x14 | AX_unk_80145834 | unk | in module range, no name match; callers=3 ext=3 callees=0 |
 | 0x80145848 | 0x1b8 | AX_unk_80145848 | unk | in module range, no name match; callers=2 callees=12 |
-| 0x80145a00 | 0xbc | AX_unk_80145a00 | unk | in module range, no name match; callers=0 callees=4 |
+| 0x80145a00 | 0xbc | __AXOutAiCallback | medium | AX's AI DMA callback: passed to AIRegisterDMACallback at 0x80145f14, AIInitDMA of the next 0x280-byte output buffer (3 at 0x80422e20) |
 | 0x80145abc | 0xc | AX_unk_80145abc | unk | in module range, no name match; callers=0 callees=0 |
 | 0x80145ac8 | 0x58 | AX_unk_80145ac8 | unk | in module range, no name match; callers=0 callees=2 |
 | 0x80145b20 | 0x2c | AX_unk_80145b20 | unk | in module range, no name match; callers=0 callees=1 |
@@ -923,11 +923,11 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 
 ## THP (movie decode; Dolphin SDK add-on)
 
-3 identified of 23 functions (high 1, medium 0, low 2).
+3 identified of 23 functions (high 2, medium 1, low 0). All but THPInit are translated from main.dol (recomp.py TRANSLATE_SDK_RANGES); names here are for reading only.
 
 | address | size | name | confidence | evidence |
 |---|---|---|---|---|
-| 0x801aeb40 | 0x244 | THP_unk_801aeb40 | unk | in module range, no name match; callers=2 ext=2 callees=9 |
+| 0x801aeb40 | 0x244 | THPVideoDecode | high | (file, Y, U, V, work) from seq_movie; checks HID2[LCE] (PPCMfhid2), JPEG marker loop; non-zero -> OSPanic "Fail to decode video data" |
 | 0x801aed84 | 0x44 | THP_unk_801aed84 | unk | in module range, no name match; callers=1 ext=1 callees=0 |
 | 0x801aedc8 | 0x13c | THP_unk_801aedc8 | unk | in module range, no name match; callers=1 ext=1 callees=0 |
 | 0x801aef04 | 0x11c | THP_unk_801aef04 | unk | in module range, no name match; callers=1 ext=1 callees=0 |
@@ -938,7 +938,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x801af714 | 0x1bc | THP_unk_801af714 | unk | in module range, no name match; callers=1 ext=1 callees=0 |
 | 0x801af8d0 | 0x54 | THP_unk_801af8d0 | unk | in module range, no name match; callers=1 ext=1 callees=0 |
 | 0x801af924 | 0x24c | THP_unk_801af924 | unk | in module range, no name match; callers=1 ext=1 callees=0 |
-| 0x801afb70 | 0x10c | THPVideoDecode | low | calls the three PS decode loops 0x801afc7c/0x801b1704/0x801b3190 |
+| 0x801afb70 | 0x10c | THP_unk_801afb70 | unk | calls the three PS decode loops 0x801afc7c/0x801b1704/0x801b3190 (was listed as THPVideoDecode) |
 | 0x801afc7c | 0x1a88 | THP_unk_801afc7c | unk | in module range, no name match; callers=1 ext=1 callees=5 |
 | 0x801b1704 | 0x1a8c | THP_unk_801b1704 | unk | in module range, no name match; callers=1 ext=1 callees=5 |
 | 0x801b3190 | 0x1aac | THP_unk_801b3190 | unk | in module range, no name match; callers=1 ext=1 callees=5 |
@@ -946,7 +946,7 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x801b52b8 | 0x6a8 | THP_unk_801b52b8 | unk | in module range, no name match; callers=3 ext=3 callees=0 |
 | 0x801b5960 | 0x6a8 | THP_unk_801b5960 | unk | in module range, no name match; callers=3 ext=3 callees=0 |
 | 0x801b6008 | 0xa0 | THPInit | high | OSRegisterVersion caller (13th), GQR setup spr 914-917 |
-| 0x801b60a8 | 0x464 | THPAudioDecode | low | ADPCM-style loop using __shl2i/__shr2i (64-bit shifts) |
+| 0x801b60a8 | 0x464 | THPAudioDecode | medium | ADPCM-style loop using __shl2i/__shr2i (64-bit shifts) |
 | 0x801b650c | 0x90 | THP_unk_801b650c | unk | in module range, no name match; callers=3 ext=3 callees=0 |
 | 0x801b659c | 0x3c | THP_unk_801b659c | unk | in module range, no name match; callers=3 ext=3 callees=0 |
 | 0x801b65d8 | 0x8 | THP_unk_801b65d8 | unk | in module range, no name match; callers=0 callees=0 |

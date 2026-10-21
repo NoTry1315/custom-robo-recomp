@@ -80,8 +80,8 @@ logged here with addresses or turned into a runtime call that reports it
 - Scene state: struct 0x80321d88 (+0 scene, +8 next, +0x10 substate, +0x38 flags, +0x40
   fade); scenes 0 SEQ_LOGO, 1 SEQ_MOVIE, 2 SEQ_TITLE (name table 0x801deab4). The VI log
   line every 30 retraces prints it. Our boot goes LOGO -> TITLE at frame ~300 without
-  SEQ_MOVIE (the code path after the second logo sets next = 2); whether Dolphin plays
-  opening_a.thp first (e.g. after idling on the title) is not checked.
+  SEQ_MOVIE (the code path after the second logo sets next = 2). Idling on the title goes to
+  SEQ_MOVIE (thpdemo/opening_a.thp) and back: see "Attract movie (THP)" below.
 
 ## GX -> PICA200 (phase 5; to verify against Dolphin)
 
@@ -357,6 +357,7 @@ interprocedural register summaries and emits each call's stores/reloads separate
   cannot be overlapped with GX by splitting the frame at the first draw.
 - Title autotest with the A-press pad script ends in OSPanic before and after (card is
   now present, so the pad script no longer matches the dialogs; not caused by this).
+  Later found to be the attract movie panic (seq_movie.c:184), fixed 2026-10-21.
 - Hardware run 8 (2026-10-19, interactive, SD cr_autotest_2026-10-19_hw-run8-perf-wins.log):
   helper threads on core 2. Battle (scene 4 sub 2) 105-122 ms = 8.2-9.5 fps (run 4: 165 ms,
   6 fps): game 45-60, gx vertex 26-28, gx state 21, gx tex 10-12, end/wait 0.4-0.6; split
@@ -460,7 +461,7 @@ Profile (Citra battle replay r3600, `make FNPROF=1`): game-side top 0x801a4558 1
   title (A-press pad, r1920) 29.9 -> 48.3 fps (sync 12.7 -> 0). Every other bucket is equal to
   0.1 ms. SDK/scene logs identical for battle and campaign; title differs in one line (a leftover r4
   at a VIGetRetraceCount call, wall-clock derived). Title still ends in the known OSPanic of that pad
-  script. Not yet on hardware.
+  script (the attract movie, fixed 2026-10-21). Not yet on hardware.
 - Open: the cap keys on frame begins, not on buffer swaps, so a frame that starts just before a vblank
   may be presented while the next one renders. The game runs one logic step per frame, so above 60 Hz
   is impossible and below it the game is slower than real time, as before.
@@ -531,10 +532,54 @@ Profile (Citra battle replay r3600, `make FNPROF=1`): game-side top 0x801a4558 1
   (frames ~1968-2315, safe: the rest of the frame goes in C3D_FrameEnd); a larger KICK_WORDS or cap
   is untested. Boot screen now shows build/flags (tools/buildinfo.sh, runtime/main.c).
 
+## Attract movie (THP) (2026-10-21)
+
+- Symptom: idle on the title for ~37 s (scene 2 sub 4 counts down from ~0x7ff to 0, then sub 5)
+  and the game enters SEQ_MOVIE (scene 1), opens thpdemo/opening_a.thp and ended in
+  `OSPanic: seq_movie.c:184: Fail to decode video data` (retrace ~2520 idle, ~2250 with the
+  title A-press script). THPVideoDecode (0x801aeb40) was an empty SDK stub.
+- THP is a CPU-only library, so it is now translated from main.dol (recomp.py
+  TRANSLATE_SDK_RANGES 0x801aeb40-0x801b6008 and 0x801b60a8-0x801b65d8, 22 functions). Native
+  pieces it needs: THPInit (runtime/thp.c) points the decoders' locked-cache buffers at LC_BASE
+  0x81E00000 (RAM above 24 MB) instead of 0xE0000000, which the RAM mask would fold onto
+  0x80000000 (boot info); PPCMfhid2 reports HID2[LCE] after LCEnable; LCStoreData/LCStoreBlocks
+  copy at once; DCZeroRange zeroes (it was a no-op stub, the decoder's work area needs it).
+- The player then stalled after 3 frames: seq_movie mixes the movie audio from its own AI DMA
+  callback (0x80017668, put in front of AX's __AXOutAiCallback 0x80145a00) and waits for it to
+  consume each audio buffer. AI DMA is now modelled (runtime/ai.c): AIRegisterDMACallback swaps
+  (starting value = AX's callback, as AXInit would register), AIInitDMA/AIGetDMAStartAddr keep the
+  buffer. While another callback is registered, every 5 ms AX frame (ax.c) runs it; the native
+  __AXOutAiCallback writes the AX mix as the next DMA buffer (big-endian R, L pairs, Dolphin's HLE
+  AX order) and ax.c plays the buffer the chain leaves. When the movie restores AX's callback the
+  old direct path is back. 0x80142088 is AIGetDMAStartAddr (was listed as AIStopDMA).
+- OSGetSoundMode was a stub returning a stale r3 (0x4000), so the game chose mono at boot and the
+  movie mixer averaged L and R. Now native, SRAM sound bit = stereo as in Dolphin's default SRAM.
+  This affects all game audio: in the rec-to-battle replay the only SDK difference is the sound
+  driver turning ITD on (AXSetVoiceItdOn/ItdTarget 0, 26 each; the mixer ignores ITD).
+- Citra (private Citra copy, 20000-retrace idle run, no input): title -> movie (232 VI lines of
+  scene 1 = ~6960 retraces, 3437 of the file's 3446 frames decoded) -> title -> movie -> title,
+  no crash. Both cycles play opening_a.thp (opening_b.thp never opened; Dolphin not checked).
+  Audio: smooth (lag-1 correlation ~0.94), L and R differ. rec-to-battle replay: same scenes and
+  SDK call counts as the base build apart from the ITD calls above. Title A-press script no longer
+  panics. Start pressed mid-movie (r4000): fade out, title again by r4080.
+- Colours: the movie's YUV -> RGB is the THP SDK's 4-stage TEV program with signed
+  intermediates (GXSetTevColorS10 REG1 = -90, 0, -114, 135; K0 0,0,226/88, K1 179,0,0/182, K2
+  255,0,255 picks R/B from the colour side and G from the alpha side). setup_tev clamped REG1 to 0
+  and the picture came out magenta. gx.c tev_yuv() now recognises that program (stage structure
+  checked exactly, coefficients read from the registers, gx.tev_s10 keeps the signed values) and
+  draws it as 6 PICA stages at half scale: 0.5*Y + positive offsets, + |c|/2 * X (or (1-X) for
+  negative c), then minus the negative offsets with scale 2. Logged once as "TEV YUV -> RGB program
+  (THP)". Check: GX frame 3000 = movie frame 457 (luma correlation 0.9996); against a PIL decode of
+  that JPEG (full-range BT.601) the mean abs difference is 2.2 / 1.9 / 2.8 per R/G/B. Battle
+  replay (rec-to-battle): SDK/pad/scene log identical, framebuffer dumps r1500/1980/2100
+  byte-identical to the build without tev_yuv; one draw batch at r2100 splits differently (the
+  signed registers are now part of the TEV change check).
+- Not timed on hardware: 640x480 JPEG decode at 30 fps on the ARM11 is the likely cost.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
-Functions translated: 2723. SDK stubs: 1068. MetroTRK entries skipped: 184. Jump tables as switch: 52.
+Functions translated: 2744. SDK stubs: 1047. MetroTRK entries skipped: 184. Jump tables as switch: 52.
 
 ### flow into non-translated code that is not a known entry (1)
 
@@ -572,7 +617,7 @@ Functions translated: 2723. SDK stubs: 1068. MetroTRK entries skipped: 184. Jump
 
 0x80003408 mtmsr
 
-### valid code not reached from any function start (605)
+### valid code not reached from any function start (606)
 
 0x800034b0, 0x800034b4, 0x800034b8, 0x800034bc, 0x800034c0, 0x800034c4, 0x800034c8, 0x800034cc, 0x800034d0, 0x800034d4, 0x800034d8, 0x800035ac, 0x800036ac, 0x800036b0, 0x800036b4, 0x800036b8, 0x800036bc, 0x800036c0, 0x800036c4, 0x800036c8, 0x800036cc, 0x800036d0, 0x800036d4, 0x800036d8, 0x800036dc, 0x800036e0, 0x800036e4, 0x800036e8, 0x800036ec, 0x800036f0, 0x800036f4, 0x800037ac, 0x800037b0, 0x800037b4, 0x800037b8, 0x800037bc, 0x800037c0, 0x800037c4, 0x800037c8, 0x800037cc, 0x800037d0, 0x800037d4, 0x800037d8, 0x800037dc, 0x800038ac, 0x800038b0, 0x800038b4, 0x800038b8, 0x800038bc, 0x800038c0, 0x800038c4, 0x800038c8, 0x800038cc, 0x800038d0, 0x800038d4, 0x800038d8, 0x800038dc, 0x800039ac, 0x800039b0, 0x800039b4, 0x800039b8, 0x800039bc, 0x800039c0, 0x800039c4, 0x800039c8, 0x800039cc, 0x800039d0, 0x800039d4, 0x800039d8, 0x800039dc, 0x80003aac, 0x80003ab0, 0x80003ab4, 0x80003ab8, 0x80003abc, 0x80003ac0, 0x80003ac4, 0x80003ac8, 0x80003acc, 0x80003ad0, 0x80003ad4, 0x80003ad8, 0x80003adc, 0x80003bac, 0x80003bb0, 0x80003bb4, 0x80003bb8, 0x80003bbc, 0x80003bc0, 0x80003bc4, 0x80003bc8, 0x80003bcc, 0x80003bd0, 0x80003bd4, 0x80003bd8, 0x80003bdc, 0x80003cac, 0x80003cb0, 0x80003cb4, 0x80003cb8, 0x80003cbc, 0x80003cc0, 0x80003cc4, 0x80003cc8, 0x80003ccc, 0x80003cd0, 0x80003cd4, 0x80003cd8, 0x80003cdc, 0x80003dac, 0x80003db0, 0x80003db4, 0x80003db8, 0x80003dbc, 0x80003dc0, 0x80003dc4, 0x80003dc8, 0x80003dcc, 0x80003dd0, 0x80003dd4, 0x80003dd8, 0x80003ddc, 0x800040ac, 0x800040b0, 0x800040b4, 0x800040b8, 0x800040bc, 0x800040c0, 0x800040c4, 0x800040c8, 0x800040cc, 0x800040d0, 0x800040d4, 0x800040d8, 0x800040dc, 0x800041ac, 0x800041b0, 0x800041b4, 0x800041b8, 0x800041bc, 0x800041c0, 0x800041c4, 0x800041c8, 0x800041cc, 0x800041d0, 0x800041d4, 0x800041d8, 0x800041dc, 0x800042ac, 0x800042b0, 0x800042b4, 0x800042b8, 0x800042bc, 0x800042c0, 0x800042c4, 0x800042c8, 0x800042cc, 0x800042d0, 0x800042d4, 0x800042d8, 0x800042dc, 0x800043ac, 0x800043cc, 0x800043d0, 0x800043d4, 0x800043d8, 0x800043dc, 0x800043e0, 0x800043e4, 0x800043e8, 0x800043ec, 0x800043f0, 0x800043f4, 0x800043f8, 0x800043fc, 0x80004400, 0x80004404, 0x80004408, 0x8000440c, 0x80004410, 0x80004414, 0x80004418, 0x8000441c, 0x80004420, 0x80004424, 0x80004428, 0x8000442c, 0x80004430, 0x800044ac, 0x800044b0, 0x800044b4, 0x800044b8, 0x800044bc, 0x800044c0, 0x800044c4, 0x800044c8, 0x800044cc, 0x800044d0, 0x800044d4, 0x800044d8 ...
 

@@ -27,6 +27,9 @@ extern CPU cpu;
 extern u8 ram[];            /* 0x80000000 mirror, RAM_MASK+1 bytes (+8 pad) */
 #define RAM_MASK 0x01FFFFFFu
 #define STACK_TOP 0x80462ac0u     /* initial r1 (crt0 table) = linker __ArenaLo */
+/* the 16 KB locked cache (0xE0000000 on the GameCube) lives in RAM above the guest's 24 MB:
+ * THPInit hands the THP decoders this address instead (runtime/thp.c, os.c LC*) */
+#define LC_BASE 0x81E00000u
 
 #define R cpu.gpr
 #define F cpu.fpr
@@ -252,6 +255,8 @@ void recomp_poll_events(void);          /* delivers due events if MSR[EE] */
 #define RECOMP_POLL() do { if (__builtin_expect(recomp_event_pending, 0)) recomp_poll_events(); } while (0)
 u32  recomp_retrace_count(void);         /* frames so far (VI retraces) */
 void recomp_ax_service(void);           /* AX frame callbacks due since the last retrace */
+#define AX_AI_CALLBACK 0x80145a00u        /* __AXOutAiCallback: AX's AI DMA callback */
+extern u32 recomp_ai_dma_cb, recomp_ai_dma_addr, recomp_ai_dma_len;   /* AI DMA (runtime/ai.c) */
 /* frame timing (runtime/log.c): ticks spent per bucket, logged by VI */
 enum { PROF_GX_VTX, PROF_GX_TEX, PROF_GX_END, PROF_AUDIO, PROF_GX_STATE,
        PROF_VX_UNIF, PROF_VX_DEC, PROF_VX_DL, PROF_LOG, PROF_PREDRAW, PROF_GX_SYNC, PROF_GPU, PROF_GPU_SPAN, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others); PROF_GX_SYNC: C3D_FrameBegin (vblank cap + GPU queue wait); PROF_GPU: GPU queue time from C3D_FrameEnd to queue done (C3D_GetDrawingTime; with mid-frame submits only the tail); PROF_GPU_SPAN: first mid-frame submit (else C3D_FrameEnd) to queue done */
