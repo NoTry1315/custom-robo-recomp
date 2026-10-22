@@ -351,23 +351,11 @@ extern u32 recomp_gx_thread_flips;     /* GX thread switches so far (for the # t
 void recomp_status_row(int row, const char *s);   /* stats row 0..RECOMP_STAT_ROWS-1, redrawn only when changed (menu.c; game thread) */
 void recomp_menu_init(void);           /* bottom screen console + layout (menu.c) */
 void recomp_menu_header(const char *build, const char *flags);   /* build id + sdmc flags rows */
-void recomp_menu_touch(int px, int py); /* PADRead: a new touch, in pixels */
-void recomp_menu_retrace(void);        /* recomp_gx_retrace after the sync: apply bound-flag toggles, redraw buttons */
-void recomp_menu_bind(const char *name, int *var, void (*changed)(void));   /* live-toggle a flag variable from its button (menu.c btn[]) */
-extern u32 recomp_menu_flips;          /* bound-flag toggles so far */
 int  recomp_gx_thread_ok(void);        /* the GX thread exists (core 2) */
 extern volatile u32 recomp_gx_stat[4];  /* GX frames, draws, triangles (running totals), linear heap free (bytes); written by whoever runs GX */
 extern u32 recomp_dvd_slow_n, recomp_dvd_late_n;   /* dvd.c */
-void recomp_gx_kick_toggle(void);      /* ZL: mid-frame GPU submit on/off from the next frame */
-extern int recomp_gx_cull_off;         /* sdmc:/cr_cull_off.txt: GXSetCullMode ignored */
-void recomp_gx_cull_toggle(void);      /* flips recomp_gx_cull_off at the next frame start */
-extern u32 recomp_gx_cull_flips;
 extern int recomp_gx_kick_on;          /* mid-frame GPU submit mode now (for the # time lines) */
 extern u32 recomp_gx_kick_flips;       /* ZL toggles so far */
-extern int recomp_tex_mip_off, recomp_tex_fmt_off;   /* gx.c: sdmc:/cr_mip_off.txt, cr_texfmt_off.txt (for the # time lines) */
-void recomp_tex_mip_toggle(void);      /* flip mipmaps / 16-bit formats at the next frame boundary (texture cache invalidated) */
-void recomp_tex_fmt_toggle(void);
-extern u32 recomp_tex_flips;           /* texture flag flips so far */
 extern u32 recomp_gx_dbg[3];           /* last draw: gpucmd offset at entry, prim, vertex count */
 void recomp_gx_fifo_write(u32 v, int size); /* WGPIPE 0xCC008000 */
 void recomp_log_open(void);

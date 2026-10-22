@@ -144,11 +144,6 @@ static int scissor_lost = 1;   /* C3D_FrameDrawOn -> C3D_SetViewport disables th
 static u16 *pend_ix;
 static u16 *last_end;   /* end of the previous draw's indices; NULL after a state change */
 static u32 pend_n, st_merged, batch_off;   /* batch_off: read in recomp_gx_start */
-int recomp_gx_cull_off;   /* sdmc:/cr_cull_off.txt (setup_pixel), read in recomp_gx_start */
-#define cull_off recomp_gx_cull_off
-static volatile int cull_req;   /* recomp_gx_cull_toggle (bottom-screen menu), applied by frame_begin */
-void recomp_gx_cull_toggle(void) { cull_req = 1; }
-u32 recomp_gx_cull_flips;
 static void pend_issue(void) {
     if (!pend_n) return;
     C3D_DrawElements(GPU_TRIANGLES, pend_n, C3D_UNSIGNED_SHORT, pend_ix);
@@ -245,8 +240,6 @@ static void use_buf(const PVtx *p) {
 #define KICK_MAX 12
 extern gxCmdQueue_s __C3D_Context;
 static int kick_off;   /* sdmc:/cr_gpukick_off.txt, read in recomp_gx_start */
-static volatile int kick_req;   /* set on the game thread (PADRead), applied by frame_begin */
-void recomp_gx_kick_toggle(void) { kick_req = 1; }
 int recomp_gx_kick_on;
 u32 recomp_gx_kick_flips;
 static u32 vb_fl, ib_fl, kicks, st_kick_cap;   /* vb_fl/ib_fl: vbuf/ibuf flushed up to here this frame */
@@ -279,26 +272,10 @@ static u64 fe_t;   /* ticks at the previous C3D_FrameEnd */
 static int vsync_on;   /* read in recomp_gx_start */
 static u32 last_vbl;
 
-static volatile int tex_mip_req, tex_fmt_req;
 static u8 tex_gen;
-static int tex_fliptest;   /* sdmc:/cr_tex_fliptest.txt: 16-bit formats flip every 300 retraces (test of the toggle) */
-static void tex_flush_index(void);
 static void frame_begin(void) {
     if (frame_open) return;
     recomp_gx_kick_on = !kick_off;
-    if (kick_req) { kick_req = 0; kick_off ^= 1; recomp_gx_kick_on = !kick_off; recomp_gx_kick_flips++;   /* ZL (runtime/pad.c), applied between frames */
-        recomp_log("# gx r%lu: mid-frame GPU submit %s (ZL)\n", (unsigned long)recomp_retrace_count(), kick_off ? "off" : "on"); }   /* bottom screen: menu.c button */
-    if (cull_req) { cull_req = 0; cull_off ^= 1; recomp_gx_cull_flips++;
-        recomp_log("# gx r%lu: cull %s\n", (unsigned long)recomp_retrace_count(), cull_off ? "off" : "on"); }
-    if (tex_fliptest && recomp_retrace_count() % 300 == 150) tex_fmt_req = 1;
-    if (tex_mip_req || tex_fmt_req) {
-        int mip = tex_mip_req;   /* one flip per frame */
-        if (mip) { tex_mip_req = 0; recomp_tex_mip_off ^= 1; } else { tex_fmt_req = 0; recomp_tex_fmt_off ^= 1; }
-        tex_gen++; recomp_tex_flips++;
-        tex_flush_index();
-        recomp_log("# gx r%lu: %s %s\n", (unsigned long)recomp_retrace_count(), mip ? "texture mipmaps" : "lossless 16-bit texture formats",
-                   (mip ? recomp_tex_mip_off : recomp_tex_fmt_off) ? "off" : "on");
-    }
     u64 ts = recomp_ticks();
     if (!vsync_on && C3D_FrameCounter(0) == last_vbl) C3D_FrameSync();
     if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
@@ -347,8 +324,8 @@ static void frame_end(void) {
     if (frames % 300 == 0) {
         u32 tb, te;
         tex_resident(&tb, &te);
-        recomp_log("# gx tex frame %lu: resident %lu KB (as ETC1/ETC1A4 %lu KB), mipmaps %s, 16-bit formats %s\n", (unsigned long)frames,
-                   (unsigned long)(tb >> 10), (unsigned long)(te >> 10), recomp_tex_mip_off ? "off" : "on", recomp_tex_fmt_off ? "off" : "on");
+        recomp_log("# gx tex frame %lu: resident %lu KB (as ETC1/ETC1A4 %lu KB)\n", (unsigned long)frames,
+                   (unsigned long)(tb >> 10), (unsigned long)(te >> 10));
         gap_dump();
         recomp_log("# gx vcache frame %lu: hits %lu misses %lu (draws), arena %lu KB, index ring %lu KB, evicted %lu + %lu, full %lu + %lu (since start), linear free %lu KB\n", (unsigned long)frames,
                    (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vring.live * sizeof(PVtx) >> 10), (unsigned long)(iring.live * 2 >> 10),
@@ -455,15 +432,6 @@ typedef struct { u32 img, tlut_addr, hash, last, pkey, vep, tlut_n, etc1; u16 w,
 #define TEX_CACHE 192
 static TexEntry tcache[TEX_CACHE];
 static u32 *decode_buf;
-/* sdmc:/cr_mip_off.txt = level 0 only; sdmc:/cr_texfmt_off.txt = no lossless 16-bit formats
- * (all but I4/I8/IA4/IA8/RGB565 as RGBA8); read in recomp_gx_start */
-int recomp_tex_mip_off, recomp_tex_fmt_off;
-/* runtime A/B: recomp_tex_mip_toggle / recomp_tex_fmt_toggle (any thread) flip one between frames
- * (frame_begin); the texture cache is then invalidated: tex_gen is part of every entry's key, old
- * entries are only evicted (by LRU, once the GPU is done with them) */
-u32 recomp_tex_flips;
-void recomp_tex_mip_toggle(void) { tex_mip_req = 1; }
-void recomp_tex_fmt_toggle(void) { tex_fmt_req = 1; }
 
 static u32 hash_bytes(u32 addr, u32 n) {
     const u8 *p = ram + (addr & RAM_MASK);
@@ -488,12 +456,12 @@ static u32 tex_bytes(int w, int h, int fmt) {
 }
 static int lvdim(int v, int l) { v >>= l; return v ? v : 1; }
 /* the texmap fields tex_levels depends on besides the size: entries are per (img, w, h, fmt, lk) */
-static u8 tex_lk(const TexMap *m) { return recomp_tex_mip_off || m->min_f < 2 ? 0 : (u8)(m->max_lod + 1); }
+static u8 tex_lk(const TexMap *m) { return m->min_f < 2 ? 0 : (u8)(m->max_lod + 1); }
 
 /* PICA levels for a texmap: the GX chain (mip min filter: max_lod rounded up + 1, as Dolphin,
  * at most down to 1x1) cut at the PICA minimum of 8x8 for the W x H allocation */
 static int tex_levels(const TexMap *m, u32 W, u32 H) {
-    if (recomp_tex_mip_off || m->min_f < 2) return 1;
+    if (m->min_f < 2) return 1;
     int n = (m->max_lod + 15) / 16 + 1, lg = 0, pl = 1;
     for (u32 v = m->w > m->h ? m->w : m->h; v > 1; v >>= 1) lg++;
     if (n > lg + 1) n = lg + 1;
@@ -530,7 +498,7 @@ static GPU_TEXCOLOR tex_classify(const TexMap *m, const Tlut *tl, int lv, int *a
     int w = m->w > 1024 ? 1024 : m->w, h = m->h > 1024 ? 1024 : m->h;
     if (!decode_buf) decode_buf = malloc(1024 * 1024 * 4 * 4 / 3 + 64);
     u32 src = m->img, o = 0;
-    int f565 = !recomp_tex_fmt_off, f5551 = f565, fla8 = f565, fla4 = f565, f4 = f565, a = 0;
+    int f565 = 1, f5551 = f565, fla8 = f565, fla4 = f565, f4 = f565, a = 0;
     for (int l = 0; l < lv; l++) {
         int wl = lvdim(w, l), hl = lvdim(h, l);
         lv_off[l] = o;
@@ -670,7 +638,6 @@ static void tex_miss(const char *why, const TexMap *m) {
 static int range_clean(const u8 *p, u32 n, u32 vep);
 static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float *su, float *sv);
 static TexEntry *fidx[256];
-static void tex_flush_index(void) { memset(fidx, 0, sizeof fidx); }
 /* used entries chained by (img, w, h, fmt), each chain in tcache index order: the lookups below
  * visit the same candidates in the same order as a scan of the whole cache. Links are index + 1. */
 #define TEX_HASH 256
@@ -1193,10 +1160,10 @@ static void setup_pixel(void) {
     /* GX cull 1 front / 2 back, front = clockwise in window space (y down). set_clip
      * maps window space to PICA clip space with a mirror (det < 0); the mapping below
      * was checked with framebuffer dumps (unknowns "Cull mode"). 3 (all) has no PICA
-     * mode: drawn unculled, logged. sdmc:/cr_cull_off.txt = never cull (old behaviour). */
+     * mode: drawn unculled, logged. */
     GPU_CULLMODE cm = GPU_CULL_NONE;
-    if (!cull_off && gx.cull == 1) cm = GPU_CULL_BACK_CCW;
-    else if (!cull_off && gx.cull == 2) cm = GPU_CULL_FRONT_CCW;
+    if (gx.cull == 1) cm = GPU_CULL_BACK_CCW;
+    else if (gx.cull == 2) cm = GPU_CULL_FRONT_CCW;
     else if (gx.cull == 3) ONCE("cull mode 3 (all) drawn without culling\n");
     SET_IF_CHANGED(C3D_CullFace(cm), cm);
     /* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated) */
@@ -2315,7 +2282,6 @@ void recomp_gx_retrace(void) {
             recomp_log("# gx r%lu: GX thread %s (%s)\n", (unsigned long)recomp_retrace_count(), recomp_gx_thread ? "on" : "off", why);
         }
     }
-    recomp_menu_retrace();
 }
 
 void recomp_gx_stop(void) {
@@ -2352,10 +2318,6 @@ void recomp_gx_start(void) {
     batch_off = flag_file("cr_batch_off");
     dl_off = flag_file("cr_dlcache_off");
     dl_clean_off = flag_file("cr_dlclean_off");
-    cull_off = flag_file("cr_cull_off");
-    recomp_tex_mip_off = flag_file("cr_mip_off");
-    recomp_tex_fmt_off = flag_file("cr_texfmt_off");
-    tex_fliptest = flag_file("cr_tex_fliptest");
     if (flag_file("cr_vcache_small")) {   /* test: rings at 5/8 so that replays evict (ring_alloc) */
         vring.size = VC_VERTS / 8 * 5; iring.size = VC_IXN / 8 * 5;
         recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu vertices, %lu indices\n", (unsigned long)vring.size, (unsigned long)iring.size);
@@ -2370,9 +2332,6 @@ void recomp_gx_start(void) {
     recomp_log("# gx: draw batching %s\n", batch_off ? "off (cr_batch_off.txt)" : "on");
     recomp_log("# gx: display-list cache %s\n", dl_off ? "off (cr_dlcache_off.txt)" : "on");
     recomp_log("# gx: display-list write tracking %s\n", dl_clean_off ? "off (cr_dlclean_off.txt)" : "on");
-    recomp_log("# gx: cull mode %s\n", cull_off ? "ignored (cr_cull_off.txt)" : "honoured");
-    recomp_log("# gx: texture mipmaps %s, lossless 16-bit formats %s\n", recomp_tex_mip_off ? "off (cr_mip_off.txt)" : "on",
-               recomp_tex_fmt_off ? "off (cr_texfmt_off.txt)" : "on");
     if (fbd) recomp_log("# gx: framebuffer dump at %lu frames\n", (unsigned long)nwant);
     int off = flag_file("cr_gxthread_off");   /* only the starting mode: the thread exists either way */
     gq_fliptest = flag_file("cr_gxthread_fliptest");
