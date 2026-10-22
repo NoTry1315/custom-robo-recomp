@@ -101,7 +101,7 @@ static void t_mark2(int b, int part) { u64 t = recomp_ticks(); recomp_prof[b] +=
 
 /* ---------------------------------------------------------------- PICA side */
 #define VB_VERTS 0x6000      /* per frame half: immediate draws and display-list draws the vertex cache does not take; u16 indices are relative to vb_base (rebased) */
-#define IB_INDICES 0x48000   /* per frame half */
+#define IB_INDICES 0x30000   /* per frame half (immediate draws; cached lists are drawn from vc_ixa) */
 #define VC_VERTS 0x14000     /* vertex cache arena (5.4 MB) */
 typedef struct { float pos[4]; u8 mat[4]; float nrm[3], tc[3][3]; } PVtx;   /* vshader.v.pica inputs */
 
@@ -111,9 +111,23 @@ static shaderProgram_s vsh;
 static PVtx *vbuf[2];
 static u16 *ibuf[2];
 static u32 vb_used, ib_used, vb_half;
-/* display-list vertex cache, see vc_draw */
+/* display-list vertex cache, see vc_draw: decoded vertices in vc_arena, index lists in vc_ixa,
+ * both linear memory the GPU reads in place, each allocated through a ring (ring_alloc) */
+#define VC_IXN 0x30000       /* index ring (u16) */
 static PVtx *vc_arena;
-static u32 vc_top, vc_gen = 1, vc_full, vc_dlo = 0xffffffffu, vc_dhi, vc_hits, vc_misses;
+static u16 *vc_ixa;
+static u32 vc_hits, vc_misses;
+#define VC_REC 32768   /* allocation records per ring */
+typedef struct { u32 off, len, last, owner; } VcRec;   /* owner: OWN_DL | dlcache index, a vcache index, or OWN_NONE */
+typedef struct {
+    u8 *base; u32 unit, size;   /* units of unit bytes */
+    u32 top, live, evicted, fails, dlo, dhi;   /* dlo..dhi: written since the last flush */
+    u32 nfree, qh, qn;          /* free records; queue of live ones in arena order from top */
+    u16 freel[VC_REC], q[VC_REC];
+    VcRec rec[VC_REC];
+} VcRing;
+static VcRing vring, iring;   /* vertices (PVtx), indices (u16) */
+static void ring_flush(VcRing *g);
 static u8 mat_vtx[4], mat_reg[4];   /* material colour per component: vertex CLR0 or register */
 static float ushadow[96][4];        /* last value written per float uniform */
 static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop;
@@ -163,6 +177,15 @@ void recomp_gx_init(void) {
     ibuf[0] = linearAlloc(2 * IB_INDICES * 2);
     if (!vbuf[0] || !ibuf[0]) { recomp_log("# gx: linearAlloc of vertex/index buffers failed (linear free %lu)\n",(unsigned long)linearSpaceFree()); abort(); }
     ibuf[1] = ibuf[0] + IB_INDICES;
+    vc_ixa = vc_arena ? linearAlloc(VC_IXN * 2) : NULL;
+    if (vc_arena && !vc_ixa) { recomp_log("# gx: no linear memory for the index ring: no vertex cache\n"); linearFree(vc_arena); vc_arena = NULL; }
+    VcRing *rg[2] = {&vring, &iring};
+    for (int k = 0; k < 2; k++) {
+        VcRing *g = rg[k];
+        g->base = k ? (u8 *)vc_ixa : (u8 *)vc_arena; g->unit = k ? 2 : sizeof(PVtx); g->size = k ? VC_IXN : VC_VERTS;
+        g->dlo = 0xffffffffu; g->nfree = VC_REC;
+        for (u32 i = 0; i < VC_REC; i++) g->freel[i] = (u16)(VC_REC - 1 - i);
+    }
     shaderInstance_s *si = vsh.vertexShader;
     u_clip = shaderInstanceGetUniformLocation(si, "clipm"); u_pos = shaderInstanceGetUniformLocation(si, "posm");
     u_nrm = shaderInstanceGetUniformLocation(si, "nrmm"); u_tex = shaderInstanceGetUniformLocation(si, "texm");
@@ -200,7 +223,6 @@ static void use_buf(const PVtx *p) {
     BufInfo_Init(bi);
     BufInfo_Add(bi, p, sizeof(PVtx), 6, 0x543210);
 }
-static void vc_frame_begin(void);
 
 /* Mid-frame GPU submit. C3D_FrameBegin stops citro3d's GX queue, and a
  * C3D_FrameSplit chunk only reaches the GPU once the queue runs, which citro3d
@@ -226,8 +248,7 @@ static u64 kick_t0;   /* ticks of the frame's first submit (0: none yet) */
 static void flush_new(void) {
     if (vb_used > vb_fl) GSPGPU_FlushDataCache(vbuf[vb_half] + vb_fl, (vb_used - vb_fl) * sizeof(PVtx));
     if (ib_used > ib_fl) GSPGPU_FlushDataCache(ibuf[vb_half] + ib_fl, (ib_used - ib_fl) * 2);
-    if (vc_dhi > vc_dlo) GSPGPU_FlushDataCache(vc_arena + vc_dlo, (vc_dhi - vc_dlo) * sizeof(PVtx));
-    vc_dlo = 0xffffffffu; vc_dhi = 0;
+    ring_flush(&vring); ring_flush(&iring);
     vb_fl = vb_used; ib_fl = ib_used;
 }
 static void gpu_kick(void) {
@@ -274,7 +295,6 @@ static void frame_begin(void) {
     vb_half = frames & 1; vb_used = ib_used = 0;
     vb_base = 0; cur_buf = NULL;
     use_buf(vbuf[vb_half]);
-    vc_frame_begin();
     if (clear_pending) {
         u32 c = gx.clear_color[0] << 24 | gx.clear_color[1] << 16 | gx.clear_color[2] << 8 | gx.clear_color[3];
         pend_flush();
@@ -304,8 +324,9 @@ static void frame_end(void) {
     }
     if (frames % 300 == 0) {
         gap_dump();
-        recomp_log("# gx vcache frame %lu: hits %lu misses %lu (draws), arena %lu KB, linear free %lu KB\n", (unsigned long)frames,
-                   (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vc_top * sizeof(PVtx) >> 10), (unsigned long)(linearSpaceFree() >> 10));
+        recomp_log("# gx vcache frame %lu: hits %lu misses %lu (draws), arena %lu KB, index ring %lu KB, evicted %lu + %lu, full %lu + %lu (since start), linear free %lu KB\n", (unsigned long)frames,
+                   (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vring.live * sizeof(PVtx) >> 10), (unsigned long)(iring.live * 2 >> 10),
+                   (unsigned long)vring.evicted, (unsigned long)iring.evicted, (unsigned long)vring.fails, (unsigned long)iring.fails, (unsigned long)(linearSpaceFree() >> 10));
     }
     if (frames % 300 == 0)
         recomp_log("# gx dl frame %lu: calls %lu prims %lu (%lu per call) cache hits %lu misses %lu slow %lu\n", (unsigned long)frames,
@@ -1215,10 +1236,9 @@ static void decode_vtx(const u8 *p, APlan *pl, int np, const PVtx *tm, PVtx *o) 
  * Decoded vertices of display-list draws, keyed by the vertex data address,
  * count, and a signature of everything decode reads besides guest memory (plan,
  * template vertex). Valid while a hash of the draw's vertex bytes and of each
- * indexed array (see arr_hash) still matches. Entries live in a
- * linear-memory arena the GPU reads directly (no copy into vbuf); the arena
- * is bump-allocated and emptied at a frame start once it filled up (with
- * C3D_FRAME_SYNCDRAW the previous frame is done with it by then). */
+ * indexed array (see arr_hash) still matches. Entries live in linear memory
+ * the GPU reads directly (no copy into vbuf or ibuf): vertices in vc_arena,
+ * index lists in vc_ixa, each allocated from a ring (ring_alloc). */
 #define VC_N 16384
 #define CACHE_WAYS 4   /* both caches: sets of 4 slots, least recently used way replaced. 2-way
                         * thrashed: ~250 display-list keys a battle frame in 2048 sets put 3 in
@@ -1227,14 +1247,102 @@ static void decode_vtx(const u8 *p, APlan *pl, int np, const PVtx *tm, PVtx *o) 
 #define VC_NONE 0xffffffffu
 typedef struct {
     const u8 *data; u32 n, sig, dhash, ahash, narr, used, gen, off, checked;
-    u32 ixoff, ixn, prim;   /* the draw's index list in vc_ix (ixn 0: none yet) */
+    u32 ixoff, ixn, prim;   /* the draw's index list in vc_ixa (ixn 0: none yet) */
+    u32 vrec, irec;         /* ring records of off and ixoff (index + 1, 0: none) */
     const u8 *arr[VC_ARR]; u32 alen[VC_ARR], ah[VC_ARR];
 } VCache;
 static VCache vcache[VC_N];
 static VCache *vc_last;   /* entry of the last vc_draw, NULL if not kept */
-#define VC_IX (VC_VERTS * 3)
-static u16 vc_ix[VC_IX];
-static u32 vc_ixtop;
+/* display-list cache entries (see dl_draw) */
+#define DL_N 4096   /* CACHE_WAYS-way */
+#define DL_ARR 12
+typedef struct {
+    const u8 *list; u32 n, sig, gen, slow, lhash, ahash, checked, used, narr, off, ixoff, ixn, prims, tris, vep, vrec, irec;
+    const u8 *arr[DL_ARR]; u32 alen[DL_ARR], ah[DL_ARR];
+} DlCache;
+static DlCache dlcache[DL_N];
+
+/* Ring allocation (vring: vertices, iring: index lists). Each allocation has a record; the
+ * records of live allocations are queued in arena order starting at the ring's pointer (top),
+ * so the next allocation in the way is always the queue's front. An allocation takes the space
+ * at top: allocations in the way are evicted (their owner entry dropped: it misses and decodes
+ * again) unless drawn in this GX frame (record last == frames), since the GPU may still read
+ * those; top then moves past them. The previous frame's are free to go: frame_begin's
+ * C3D_FrameBegin waits for its GPU queue. Second chance: allocations drawn in the last 3 frames
+ * are also passed over until a whole lap found no room (a plain ring evicted entries drawn every
+ * frame, which were decoded again the next frame and evicted the next ones: a wave of decodes
+ * the size of the new allocation, every frame). Was: bump allocation, and the whole arena
+ * emptied at a frame start when 3/4 full (every entry decoded again in one frame).
+ * Entries hold their records as index + 1; a record's owner is cleared (OWN_NONE) when the
+ * entry gets a new allocation, and that space is reused once top passes it. */
+#define OWN_NONE 0xffffffffu
+#define OWN_DL 0x80000000u
+static u32 own_vc(const VCache *e) { return (u32)(e - vcache); }
+static u32 own_dl(const DlCache *e) { return OWN_DL | (u32)(e - dlcache); }
+static void ring_flush(VcRing *g) {
+    if (g->dhi > g->dlo) GSPGPU_FlushDataCache(g->base + g->dlo * g->unit, (g->dhi - g->dlo) * g->unit);
+    g->dlo = 0xffffffffu; g->dhi = 0;
+}
+static void ring_rotate(VcRing *g) {   /* the front record goes behind top: last in arena order */
+    g->q[(g->qh + g->qn) % VC_REC] = g->q[g->qh];
+    g->qh = (g->qh + 1) % VC_REC;
+}
+static void ring_evict(VcRing *g, u32 ri) {   /* the record at the front: its owner loses it */
+    u32 o = g->rec[ri].owner;
+    if (o != OWN_NONE && (o & OWN_DL)) {
+        DlCache *e = &dlcache[o & ~OWN_DL];
+        u32 *rp = g == &vring ? &e->vrec : &e->irec;
+        if (*rp == ri + 1) { *rp = 0; e->gen = 0; }
+    } else if (o != OWN_NONE) {
+        VCache *e = &vcache[o];
+        if (g == &vring && e->vrec == ri + 1) { e->vrec = 0; e->gen = 0; }
+        if (g == &iring && e->irec == ri + 1) { e->irec = 0; e->ixn = 0; }   /* the vertices stay */
+    }
+    g->qh = (g->qh + 1) % VC_REC; g->qn--;
+    g->freel[g->nfree++] = (u16)ri;
+    g->live -= g->rec[ri].len;
+    g->evicted++;
+}
+/* n units for owner; *rec gets its record (index + 1). VC_NONE when this frame's draws leave
+ * no room or no record is free. */
+static u32 ring_alloc(VcRing *g, u32 n, u32 owner, u32 *rec) {
+    *rec = 0;
+    if (!n || n > g->size || !g->nfree) { g->fails++; return VC_NONE; }
+    u32 moved = 0;   /* units top went past without allocating: a lap, then recent ones go too; 2.5 laps: no room */
+    for (;;) {
+        if (moved > 2 * g->size + g->size / 2) { g->fails++; return VC_NONE; }
+        if (g->top + n > g->size) {   /* too short before the end: wrap, the allocations there stay */
+            for (u32 k = g->qn; k && g->rec[g->q[g->qh]].off >= g->top; k--) ring_rotate(g);
+            moved += g->size - g->top; g->top = 0;
+            continue;
+        }
+        if (!g->qn) break;
+        u32 ri = g->q[g->qh];
+        const VcRec *r = &g->rec[ri];
+        if (r->off < g->top || r->off >= g->top + n) break;   /* nothing (else) in the way */
+        /* drawn this frame: never evicted; drawn in the last 3 frames: only once a lap found nothing older */
+        if (r->last == frames || (moved < g->size && frames - r->last < 4)) {
+            moved += r->off + r->len - g->top; g->top = r->off + r->len; ring_rotate(g); continue;
+        }
+        ring_evict(g, ri);
+    }
+    u32 ri = g->freel[--g->nfree];
+    VcRec *r = &g->rec[ri];
+    r->off = g->top; r->len = n; r->last = frames; r->owner = owner;
+    g->q[(g->qh + g->qn++) % VC_REC] = (u16)ri;
+    if (g->dhi > g->dlo && r->off != g->dhi) ring_flush(g);   /* not contiguous with what was written: flush that now */
+    if (g->dhi <= g->dlo) g->dlo = r->off;
+    g->dhi = r->off + n;
+    g->top += n; g->live += n;
+    *rec = ri + 1;
+    return r->off;
+}
+/* the entry gets a new allocation (or none): its old one becomes unowned, reused once top passes it */
+static void ring_detach(VcRing *g, u32 *rec) {
+    if (*rec) g->rec[*rec - 1].owner = OWN_NONE;
+    *rec = 0;
+}
+static void ring_used(VcRing *g, u32 rec) { if (rec) g->rec[rec - 1].last = frames; }   /* drawn this frame: kept until the next */
 
 
 static u32 hash_mem(const u8 *p, u32 n, u32 h) {
@@ -1289,11 +1397,6 @@ static u32 vc_arrays_hash(VCache *e) {
     return h;
 }
 
-static void vc_frame_begin(void) {   /* emptied when it filled up or is 3/4 full */
-    if (!vc_full && vc_top < VC_VERTS / 4 * 3) return;
-    vc_gen++; vc_top = 0; vc_full = 0; vc_ixtop = 0;
-}
-
 /* Display-list draw: returns the arena vertex offset of its decoded vertices
  * (decoding them there on a miss), or VC_NONE when the caller decodes into vbuf */
 static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx *tm) {
@@ -1304,7 +1407,6 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
     VCache *set = &vcache[slot & ~(CACHE_WAYS - 1u)], *e = NULL, *v = set;
     for (int i = 0; i < CACHE_WAYS; i++) {
         VCache *c = set + i;
-        if (c->gen != vc_gen) c->gen = 0;
         if (c->gen && c->data == data && c->n == (u32)n && c->sig == sig) { e = c; break; }
         if (v->gen && (!c->gen || c->used < v->used)) v = c;   /* replace the empty or least recently used way */
     }
@@ -1313,7 +1415,7 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
      * assumption as arr_hash: not rewritten between two draws of a frame) */
     int same = e->gen && e->data == data && e->n == (u32)n && e->sig == sig;
     if (same && e->checked == frames + 1) {
-        e->used = frames;
+        e->used = frames; ring_used(&vring, e->vrec);
         vc_hits++;
         vc_last = e;
         return e->off;
@@ -1321,7 +1423,7 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
     u32 dh = hash_mem(data, (u32)n * vs, 0x811c9dc5u);
     if (same && e->dhash == dh && vc_arrays_hash(e) == e->ahash) {
         e->checked = frames + 1;
-        e->used = frames;
+        e->used = frames; ring_used(&vring, e->vrec);
         vc_hits++;
         vc_last = e;
         return e->off;
@@ -1339,23 +1441,21 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
                        !same ? "new" : e->dhash != dh ? "vertex bytes" : "arrays", a);
         }
     }
-    e->gen = 0;
-    if (vc_top + n > VC_VERTS) { vc_full = 1; return VC_NONE; }
-    u32 off = vc_top;
-    vc_top += n;
+    e->gen = 0; e->ixn = 0;
+    ring_detach(&vring, &e->vrec); ring_detach(&iring, &e->irec);
+    u32 vr, off = ring_alloc(&vring, n, own_vc(e), &vr);
+    if (off == VC_NONE) return VC_NONE;
     PVtx *o = vc_arena + off;
     for (int i = 0; i < n; i++) decode_vtx(data + i * vs, pl, np, tm, &o[i]);
-    if (off < vc_dlo) vc_dlo = off;
-    if (vc_top > vc_dhi) vc_dhi = vc_top;
     u32 narr = 0;
     for (int i = 0; i < np; i++) if (pl[i].d >= 2 && pl[i].kind != K_PNMTX) {
-        if (narr == VC_ARR) return off;   /* drawn from the arena, not kept */
+        if (narr == VC_ARR) { ring_detach(&vring, &vr); return off; }   /* drawn from the arena, not kept */
         e->arr[narr] = pl[i].base;
         e->alen[narr++] = pl[i].imax * pl[i].stride + pl[i].size;
     }
     e->data = data; e->n = n; e->sig = sig; e->dhash = dh; e->narr = narr; e->off = off;
     e->ahash = vc_arrays_hash(e);
-    e->used = frames; e->gen = vc_gen; e->ixn = 0; e->checked = frames + 1;
+    e->used = frames; e->gen = 1; e->vrec = vr; e->checked = frames + 1;
     vc_last = e;
     return off;
 }
@@ -1590,14 +1690,14 @@ static int gen_ix(int prim, int ntri, u32 v0, u16 *ix) {
     return k;
 }
 
-/* indices written at ibuf + ib_used: appended to the pending draw or issued */
-static int emit_ix(u16 *ix, int k) {
+/* indices at ix (ibuf + ib_used, or a list in vc_ixa: cached) appended to the pending draw or issued */
+static int emit_ix(u16 *ix, int k, int cached) {
     int merge = last_end == ix && pend_n + k <= 0xfff0;
     if (merge && pend_n) pend_n += k;
     else { pend_issue(); pend_ix = ix; pend_n = k; }
     if (batch_off) pend_issue();
     last_end = ix + k;
-    ib_used += k;
+    if (!cached) ib_used += k;
     return merge;
 }
 
@@ -1647,18 +1747,20 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
         v0 = vb_used - vb_base; vadd = n;
     }
     t_mark2(PROF_GX_VTX, PROF_VX_DEC);
-    u16 *ix = ibuf[vb_half] + ib_used;
-    int k = 0;
+    /* a cached entry's index list is kept in vc_ixa and drawn from there */
+    u16 *ix;
+    int k = 0, own = 1;
     VCache *ve = co != VC_NONE ? vc_last : NULL;
-    int kept = ve && ve->ixn && ve->prim == (u32)prim;
-    if (kept) { memcpy(ix, vc_ix + ve->ixoff, ve->ixn * 2); k = ve->ixn; }
-    else k = gen_ix(prim, ntri, v0, ix);
-    if (ve && !kept && vc_ixtop + k <= VC_IX) {   /* keep the list for the entry's next hits */
-        memcpy(vc_ix + vc_ixtop, ix, k * 2); ve->ixoff = vc_ixtop; ve->ixn = k; ve->prim = prim; vc_ixtop += k;
+    if (ve && ve->ixn && ve->prim == (u32)prim) { ix = vc_ixa + ve->ixoff; k = ve->ixn; ring_used(&iring, ve->irec); }
+    else {
+        u32 io = VC_NONE;
+        if (ve) { ve->ixn = 0; ring_detach(&iring, &ve->irec); io = ring_alloc(&iring, ntri * 3, own_vc(ve), &ve->irec); }
+        if (io != VC_NONE) { ix = vc_ixa + io; ve->ixoff = io; ve->prim = prim; ve->ixn = k = gen_ix(prim, ntri, v0, ix); }
+        else { ix = ibuf[vb_half] + ib_used; k = gen_ix(prim, ntri, v0, ix); own = 0; }
     }
     ntri = k / 3;
     st_draws++; st_tris += ntri; if (nunits) st_tex++;
-    if (emit_ix(ix, k)) st_merged++;
+    if (emit_ix(ix, k, own)) st_merged++;
     vb_used += vadd;
     t_mark(PROF_GX_VTX);
     if (in_dl) recomp_prof[PROF_VX_DL] += t_last - tv;
@@ -1670,18 +1772,11 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
  * whole list is set up once (textures, TEV, pixel, uniforms, vertex plan),
  * keyed by (list address, size, plan signature); its primitives are decoded
  * into the vertex cache arena once and their merged triangle list kept in
- * vc_ix. A hit copies that list as one draw. Valid while the arena generation,
- * the list bytes and the indexed arrays (checked once per frame, as in the
- * vertex cache) match. Lists with nested calls, other commands, mixed vertex
+ * vc_ixa. A hit draws that list in place as one draw. Valid while the entry
+ * keeps its allocations (ring_alloc), the list bytes and the indexed arrays
+ * (checked once per frame, as in the vertex cache) match. Lists with nested calls, other commands, mixed vertex
  * formats, lines/points or per-vertex texture matrices take the per-primitive
  * path (entry marked slow). sdmc:/cr_dlcache_off.txt disables it. */
-#define DL_N 4096   /* CACHE_WAYS-way */
-#define DL_ARR 12
-typedef struct {
-    const u8 *list; u32 n, sig, gen, slow, lhash, ahash, checked, used, narr, off, ixoff, ixn, prims, tris, vep;
-    const u8 *arr[DL_ARR]; u32 alen[DL_ARR], ah[DL_ARR];
-} DlCache;
-static DlCache dlcache[DL_N];
 static int dl_off;   /* read in recomp_gx_start, like dl_clean_off */
 static u32 dl_logged, dl_logframe = 0xffffffffu;
 
@@ -1726,7 +1821,7 @@ static void dl_log_miss(const u8 *list, u32 n, const char *why, DlCache *e) {
 
 /* 1 = drawn (or skipped) here; 0 = the caller parses the list per primitive */
 static int dl_draw(const u8 *list, u32 len) {
-    if (dl_off || !vc_arena || len > 0x40000) return 0;
+    if (dl_off || !vc_arena || len > 0x40000) return 0;   /* (no vc_arena: no vc_ixa either) */
     u32 p0 = 0;
     while (p0 < len && !list[p0]) p0++;
     if (len - p0 < 3) return 0;
@@ -1757,7 +1852,6 @@ static int dl_draw(const u8 *list, u32 len) {
     DlCache *set = &dlcache[slot & ~(CACHE_WAYS - 1u)], *e = NULL, *v = set;
     for (int i = 0; i < CACHE_WAYS; i++) {
         DlCache *c = set + i;
-        if (c->gen != vc_gen) c->gen = 0;
         if (c->gen && c->list == list && c->n == len && c->sig == sig) { e = c; break; }
         if (v->gen && (!c->gen || c->used < v->used)) v = c;
     }
@@ -1776,10 +1870,13 @@ static int dl_draw(const u8 *list, u32 len) {
         e->used = frames;
         if (e->slow) { t_mark(PROF_GX_VTX); st_dl_slow++; return 0; }
         st_dl_hits++;
+        if (!e->ixn) { t_mark(PROF_GX_VTX); return 1; }
+        ring_used(&vring, e->vrec); ring_used(&iring, e->irec);
     } else {
         st_dl_misses++;
         dl_log_miss(list, len, why, same ? e : NULL);
         e->gen = 0;
+        ring_detach(&vring, &e->vrec); ring_detach(&iring, &e->irec);
         u32 ep = epoch_now();   /* before the list and arrays are read for the entry */
         /* walk: one vertex format, triangle primitives and NOPs only */
         u32 pos = p0, nv = 0, nix = 0, slow = 0;
@@ -1795,14 +1892,19 @@ static int dl_draw(const u8 *list, u32 len) {
         if (nv > 0x8000) slow = 1;
         e->list = list; e->n = len; e->sig = sig; e->used = frames; e->checked = frames + 1;
         e->lhash = hash_mem(list, len, 0x811c9dc5u); e->vep = ep;
-        if (slow) { e->slow = 1; e->gen = vc_gen; t_mark(PROF_GX_VTX); st_dl_slow++; return 0; }
-        if (vc_top + nv > VC_VERTS || vc_ixtop + nix > VC_IX) { vc_full = 1; t_mark(PROF_GX_VTX); return 0; }
-        u32 off = vc_top;
-        vc_top += nv;
+        if (slow) { e->slow = 1; e->gen = 1; t_mark(PROF_GX_VTX); st_dl_slow++; return 0; }
+        e->slow = 0; e->ixn = 0;
+        if (!nix) { e->narr = 0; e->gen = 1; t_mark(PROF_GX_VTX); return 1; }   /* no triangles: nothing to draw */
+        u32 off = ring_alloc(&vring, nv, own_dl(e), &e->vrec), io = VC_NONE;
+        if (off != VC_NONE) io = ring_alloc(&iring, nix, own_dl(e), &e->irec);
+        if (io == VC_NONE) {   /* no room this frame: per primitive (vc_draw, or vbuf) */
+            if (e->vrec) { vring.rec[e->vrec - 1].last = frames - 1; ring_detach(&vring, &e->vrec); }   /* not drawn: free to go */
+            t_mark(PROF_GX_VTX); return 0;
+        }
         w = off & ~0x7fffu;
         t_mark(PROF_GX_VTX);
         PVtx *o = vc_arena + off;
-        u16 *ix = vc_ix + vc_ixtop;
+        u16 *ix = vc_ixa + io;
         u32 v = 0, k = 0, prims = 0;
         for (pos = p0; pos < len;) {
             u8 op = list[pos];
@@ -1816,8 +1918,6 @@ static int dl_draw(const u8 *list, u32 len) {
             pos += 3 + n * vs;
         }
         t_mark2(PROF_GX_VTX, PROF_VX_DEC);
-        if (off < vc_dlo) vc_dlo = off;
-        if (vc_top > vc_dhi) vc_dhi = vc_top;
         u32 narr = 0;
         for (int i = 0; i < np; i++) if (pl[i].d >= 2 && pl[i].kind != K_PNMTX) {
             u32 al = pl[i].imax * pl[i].stride + pl[i].size, j;
@@ -1826,24 +1926,15 @@ static int dl_draw(const u8 *list, u32 len) {
             if (narr == DL_ARR) { narr = DL_ARR + 1; break; }
             e->arr[narr] = pl[i].base; e->alen[narr++] = al;
         }
-        e->ixoff = vc_ixtop; e->ixn = k; e->prims = prims; e->tris = k / 3; e->off = off; e->slow = 0;
-        vc_ixtop += k;
-        if (narr <= DL_ARR) { e->narr = narr; e->ahash = dl_arrays_hash(e, 1); e->gen = vc_gen; }   /* else drawn once, not kept */
+        e->ixoff = io; e->ixn = k; e->prims = prims; e->tris = k / 3; e->off = off;
+        if (narr <= DL_ARR) { e->narr = narr; e->ahash = dl_arrays_hash(e, 1); e->gen = 1; }   /* else drawn once, not kept: */
+        else { ring_detach(&vring, &e->vrec); ring_detach(&iring, &e->irec); }                   /* the space is reused after this frame */
     }
     w = e->off & ~0x7fffu;
-    if (!e->ixn) { t_mark(PROF_GX_VTX); return 1; }
-    static u32 full_logged;
-    if (ib_used + e->ixn > IB_INDICES) {
-        if (full_logged < 8) { full_logged++; recomp_log("# gx: index buffer full at frame %lu (display list %lu indices, used %lu)\n",
-            (unsigned long)frames, (unsigned long)e->ixn, (unsigned long)ib_used); }
-        return 1;
-    }
     use_buf(vc_arena + w);
-    u16 *ix = ibuf[vb_half] + ib_used;
-    memcpy(ix, vc_ix + e->ixoff, e->ixn * 2);
     u32 prims = e->prims, tris = e->tris;
     st_dl_prims += prims; st_draws += prims; st_tris += tris; if (nunits) st_tex += prims;
-    st_merged += prims - 1 + emit_ix(ix, e->ixn);
+    st_merged += prims - 1 + emit_ix(vc_ixa + e->ixoff, e->ixn, 1);
     t_mark(PROF_GX_VTX);
     recomp_prof[PROF_VX_DL] += t_last - tp;
     return 1;
@@ -2050,6 +2141,10 @@ void recomp_gx_start(void) {
     batch_off = flag_file("cr_batch_off");
     dl_off = flag_file("cr_dlcache_off");
     dl_clean_off = flag_file("cr_dlclean_off");
+    if (flag_file("cr_vcache_small")) {   /* test: rings at 5/8 so that replays evict (ring_alloc) */
+        vring.size = VC_VERTS / 8 * 5; iring.size = VC_IXN / 8 * 5;
+        recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu vertices, %lu indices\n", (unsigned long)vring.size, (unsigned long)iring.size);
+    }
     FILE *f = fopen("sdmc:/cr_fbdump.txt", "rb");
     int fbd = f != NULL;
     if (f) { unsigned long v; while (nwant < 64 && fscanf(f, "%lu", &v) == 1) want[nwant++] = v; fclose(f); }
