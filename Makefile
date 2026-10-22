@@ -34,7 +34,9 @@ CFLAGS	+=	-DRECOMP_FLOATOPS
 endif
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 ASFLAGS	:=	-g $(ARCH)
-LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=svcBreak
+# --wrap=linear*: a lock around libctru's linear heap, which the game and GX threads both use (runtime/gx.c)
+LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=svcBreak \
+			-Wl,--wrap=linearAlloc,--wrap=linearMemAlign,--wrap=linearFree
 LIBS	:= -lcitro3d -lctru -lm
 LIBDIRS	:= $(CTRULIB)
 

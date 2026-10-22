@@ -24,16 +24,23 @@
 #define GAP_SITES 64
 static struct { const char *fmt; u32 n; } gap[GAP_SITES];
 static int gap_n;
-static u32 frames;
+static u32 frames;        /* GXCopyDisp handled (GX thread) */
+static u32 game_frames;   /* GXCopyDisp called (game thread); equal to frames without the GX thread */
 u32 recomp_gx_dbg[3];
-#define ONCE(...) do { static int id_ = -1; \
-    if (id_ < 0) { id_ = gap_n < GAP_SITES ? gap_n++ : GAP_SITES - 1; gap[id_].fmt = #__VA_ARGS__; \
-        recomp_log("# gx: frame %lu: ", (unsigned long)frames); recomp_log(__VA_ARGS__); } \
+/* sites are hit from both threads (ONCE: GX thread / handlers, ONCE_G: game thread):
+ * the slot is taken atomically, the line is one recomp_log call */
+#define ONCE_AT(fr, ...) do { static int id_ = -1; \
+    if (id_ < 0) { int k_ = __atomic_fetch_add(&gap_n, 1, __ATOMIC_RELAXED); id_ = k_ < GAP_SITES ? k_ : GAP_SITES - 1; \
+        gap[id_].fmt = #__VA_ARGS__; char m_[256]; snprintf(m_, sizeof m_, __VA_ARGS__); \
+        recomp_log("# gx: frame %lu: %s", (unsigned long)(fr), m_); } \
     gap[id_].n++; } while (0)
+#define ONCE(...) ONCE_AT(frames, __VA_ARGS__)
+#define ONCE_G(...) ONCE_AT(game_frames, __VA_ARGS__)
 static void gap_dump(void) {
-    if (!gap_n) return;
+    int n = gap_n < GAP_SITES ? gap_n : GAP_SITES;
+    if (!n) return;
     recomp_log("# gx gaps (hits since start):");
-    for (int i = 0; i < gap_n; i++) recomp_log(" [%lu] %.40s;", (unsigned long)gap[i].n, gap[i].fmt + 1);
+    for (int i = 0; i < n; i++) if (gap[i].fmt) recomp_log(" [%lu] %.40s;", (unsigned long)gap[i].n, gap[i].fmt + 1);   /* fmt is set just after the slot is taken */
     recomp_log("\n");
 }
 #define GUEST(a) (((a) & RAM_MASK) | 0x80000000u)
@@ -74,7 +81,15 @@ static struct {
     u8 cull, alpha_cmp[5];
     u8 clear_color[4]; u32 clear_z;
     u16 efb_w, efb_h;
-} gx;
+} gx;   /* GX thread (see "GX thread" below) */
+/* the game thread's own copies of what it reads itself: the vertex format (where a
+ * FIFO primitive ends) and projection/viewport (GXGetProjectionv, GXGetViewportv) */
+static struct { u8 desc[A_MAX]; VtxFmt vat[8][A_MAX]; float proj[6]; u32 proj_ortho; float vp[6]; } gs;
+static u32 cur_r1;   /* guest r1 recorded with the draw being handled (range_clean) */
+/* write-tracking epoch for a cache entry about to hash guest memory: taken before the
+ * hash (the game thread advances it at GXCopyDisp, after a barrier), so every write
+ * stamped below it happened before the hash read */
+static u32 epoch_now(void) { u32 e = *(volatile u32 *)&recomp_wr_epoch; __dmb(); return e; }
 
 /* ---------------------------------------------------------------- PICA side */
 #define VB_VERTS 0x6000      /* per frame half: immediate draws and display-list draws the vertex cache does not take; u16 indices are relative to vb_base (rebased) */
@@ -104,7 +119,7 @@ static int frame_open, clear_pending = 1;
  * counted as mergeable). */
 static u16 *pend_ix;
 static u16 *last_end;   /* end of the previous draw's indices; NULL after a state change */
-static u32 pend_n, st_merged, batch_off = 2;
+static u32 pend_n, st_merged, batch_off;   /* batch_off: read in recomp_gx_start */
 static void pend_issue(void) {
     if (!pend_n) return;
     C3D_DrawElements(GPU_TRIANGLES, pend_n, C3D_UNSIGNED_SHORT, pend_ix);
@@ -191,7 +206,8 @@ static void vc_frame_begin(void);
 #define KICK_WORDS 2048
 #define KICK_MAX 12
 extern gxCmdQueue_s __C3D_Context;
-static int kick_off = 2, kick_req;
+static int kick_off;   /* sdmc:/cr_gpukick_off.txt, read in recomp_gx_start */
+static volatile int kick_req;   /* set on the game thread (PADRead), applied by frame_begin */
 void recomp_gx_kick_toggle(void) { kick_req = 1; }
 int recomp_gx_kick_on;
 u32 recomp_gx_kick_flips;
@@ -221,22 +237,16 @@ static u64 fe_t;   /* ticks at the previous C3D_FrameEnd */
  * next vblank: every frame idled up to 16.7 ms at its first draw, counted as game
  * time (hw run 13 battle: ~14 of 53.6 ms). Now a frame waits for a vblank only when
  * none has passed since the previous frame began (a 60 Hz cap), then only for the
- * GPU to finish the previous frame. sdmc:/cr_vsync_on.txt = the old wait. */
-static int vsync_on = 2;
+ * GPU to finish the previous frame. sdmc:/cr_vsync_on.txt = the old wait. With the GX
+ * thread this wait is on that thread; the game thread meets it at GXDrawDone. */
+static int vsync_on;   /* read in recomp_gx_start */
 static u32 last_vbl;
 
 static void frame_begin(void) {
     if (frame_open) return;
-    if (vsync_on == 2) { FILE *f = fopen("sdmc:/cr_vsync_on.txt", "rb"); vsync_on = f != NULL; if (f) fclose(f);
-        recomp_log("# gx: frame pacing %s\n", vsync_on ? "vblank wait every frame (cr_vsync_on.txt)" : "60 Hz cap only"); }
-    if (kick_off == 2) { FILE *f = fopen("sdmc:/cr_gpukick_off.txt", "rb"); kick_off = f != NULL; if (f) fclose(f);
-        if (kick_off) recomp_log("# gx: mid-frame GPU submit off (cr_gpukick_off.txt)\n");
-        else recomp_log("# gx: mid-frame GPU submit on (every %d command words, at most %d per frame)\n", KICK_WORDS, KICK_MAX);
-        printf("gpukick %s (ZL toggles)\n", kick_off ? "OFF" : "ON"); }   /* bottom screen */
     recomp_gx_kick_on = !kick_off;
     if (kick_req) { kick_req = 0; kick_off ^= 1; recomp_gx_kick_on = !kick_off; recomp_gx_kick_flips++;   /* ZL (runtime/pad.c), applied between frames */
-        recomp_log("# gx r%lu: mid-frame GPU submit %s (ZL)\n", (unsigned long)recomp_retrace_count(), kick_off ? "off" : "on");
-        printf("r%lu gpukick %s\n", (unsigned long)recomp_retrace_count(), kick_off ? "OFF" : "ON"); }
+        recomp_log("# gx r%lu: mid-frame GPU submit %s (ZL)\n", (unsigned long)recomp_retrace_count(), kick_off ? "off" : "on"); }   /* bottom screen: status_draw */
     u64 ts = recomp_ticks();
     if (!vsync_on && C3D_FrameCounter(0) == last_vbl) C3D_FrameSync();
     if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
@@ -303,8 +313,7 @@ static void frame_end(void) {
     fb_dump();
     recomp_prof[PROF_GX_END] += recomp_ticks() - t0;
     frame_open = 0;
-    frames++;
-    recomp_wr_epoch = frames + 1;
+    frames++;   /* recomp_wr_epoch: advanced by sdk_GXCopyDisp on the game thread */
 }
 
 /* ---------------------------------------------------------------- textures */
@@ -514,13 +523,14 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
             return tex_bind_params(t, m, su, sv);
         }
     }
+    u32 ep = epoch_now();
     hash = hash_bytes(m->img, n);
     if (tl) hash ^= hash_bytes(tl->addr, tl->n * 2) * 31 + tl->fmt;
     TexEntry *e = NULL, *victim = NULL, *same = NULL;
     for (int i = 0; i < TEX_CACHE; i++) {
         TexEntry *t = &tcache[i];
         if (t->used && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt) {
-            if (t->hash == hash) { e = t; e->vep = recomp_wr_epoch; e->tlut_n = tln; break; }
+            if (t->hash == hash) { e = t; e->vep = ep; e->tlut_n = tln; break; }
             if (t->last < frames) same = t;   /* changed contents: reuse its memory (the GPU is done with it) */
         }
         if (!t->used) { if (!victim || victim->used) victim = t; }
@@ -530,7 +540,7 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     if (!e && same) {
         e = same;
         tex_upload(e, m, e->tex.width, e->tex.height, pica_fmt(m->fmt), tl);
-        e->hash = hash; e->vep = recomp_wr_epoch; e->tlut_n = tln;
+        e->hash = hash; e->vep = ep; e->tlut_n = tln;
     } else if (!e) {
         if (!victim) { ONCE("texture cache full\n"); tex_miss("cache full", m); return NULL; }
         e = victim;
@@ -547,7 +557,7 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
             st_evict++;
         }
         tex_upload(e, m, W, H, pf, tl);
-        e->img = m->img; e->w = m->w; e->h = m->h; e->fmt = m->fmt; e->hash = hash; e->used = 1; e->vep = recomp_wr_epoch; e->tlut_n = tln;
+        e->img = m->img; e->w = m->w; e->h = m->h; e->fmt = m->fmt; e->hash = hash; e->used = 1; e->vep = ep; e->tlut_n = tln;
         e->pkey = 0;
     }
     e->last = frames;
@@ -979,12 +989,12 @@ static void setup_pixel(void) {
 static const u8 comp_size[5] = {1, 1, 2, 2, 4};
 static const u8 clr_size[6] = {2, 3, 4, 2, 3, 4};
 
-static int attr_size(int fmt, int a) {
-    int d = gx.desc[a];
+static int attr_size_in(const u8 *desc, VtxFmt (*vat)[A_MAX], int fmt, int a) {
+    int d = desc[a];
     if (!d) return 0;
     if (a <= 8) return 1;
     if (d >= 2) return d == 2 ? 1 : 2;
-    const VtxFmt *f = &gx.vat[fmt][a];
+    const VtxFmt *f = &vat[fmt][a];
     switch (a) {
     case A_POS: return comp_size[f->type > 4 ? 4 : f->type] * (f->cnt ? 3 : 2);
     case A_NRM: return comp_size[f->type > 4 ? 4 : f->type] * (f->cnt ? 9 : 3);
@@ -992,7 +1002,10 @@ static int attr_size(int fmt, int a) {
     default: return comp_size[f->type > 4 ? 4 : f->type] * (f->cnt ? 2 : 1);
     }
 }
+static int attr_size(int fmt, int a) { return attr_size_in(gx.desc, gx.vat, fmt, a); }
 static int vtx_size(int fmt) { int n = 0; for (int a = 0; a <= 20; a++) n += attr_size(fmt, a); return n; }
+/* game thread: the same from its copy of the vertex format (FIFO assembly) */
+static int vtx_size_g(int fmt) { int n = 0; for (int a = 0; a <= 20; a++) n += attr_size_in(gs.desc, gs.vat, fmt, a); return n; }
 
 static void read_color(const u8 *p, int type, u8 *c) {
     switch (type) {
@@ -1519,8 +1532,6 @@ static int gen_ix(int prim, int ntri, u32 v0, u16 *ix) {
 /* indices written at ibuf + ib_used: appended to the pending draw or issued */
 static int emit_ix(u16 *ix, int k) {
     u64 ts = recomp_ticks();
-    if (batch_off == 2) { FILE *f = fopen("sdmc:/cr_batch_off.txt", "rb"); batch_off = f != NULL; if (f) fclose(f);
-        recomp_log("# gx: draw batching %s\n", batch_off ? "off (cr_batch_off.txt)" : "on"); }
     int merge = last_end == ix && pend_n + k <= 0xfff0;
     if (merge && pend_n) pend_n += k;
     else { pend_issue(); pend_ix = ix; pend_n = k; }
@@ -1532,7 +1543,7 @@ static int emit_ix(u16 *ix, int k) {
 }
 
 static void draw_inner(int prim, int fmt, const u8 *data, int n);
-static void draw(int prim, int fmt, const u8 *data, int n) { if (!recomp_first_draw) recomp_first_draw = recomp_ticks(); in_draw++; draw_inner(prim, fmt, data, n); in_draw--; }
+static void draw(int prim, int fmt, const u8 *data, int n) { in_draw++; draw_inner(prim, fmt, data, n); in_draw--; }   /* recomp_first_draw: set when the draw is recorded */
 static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     if (prim >= 0xa8) { ONCE("lines/points (0x%x) not drawn\n", prim); return; }
     if (in_dl) st_dl_prims++;
@@ -1613,7 +1624,7 @@ typedef struct {
     const u8 *arr[DL_ARR]; u32 alen[DL_ARR], ah[DL_ARR];
 } DlCache;
 static DlCache dlcache[DL_N];
-static int dl_off = 2;
+static int dl_off;   /* read in recomp_gx_start, like dl_clean_off */
 static u32 dl_logged, dl_logframe = 0xffffffffu;
 
 static int dl_clean_off;   /* sdmc:/cr_dlclean_off.txt = always hash */
@@ -1627,10 +1638,10 @@ static u32 dl_arrays_hash(DlCache *e, int keep) {
  * has an epoch older than e->vep (a write sets the epoch to the current one, also in the epoch of
  * the hash itself, so it is only ever re-hashed too often). A 4-byte store can straddle into the
  * next page, hence one page before each range. Ranges near the stack are always hashed (stores
- * through r1/r11 do not mark pages). */
+ * through r1/r11 do not mark pages; r1 as recorded with the draw). */
 static int range_clean(const u8 *p, u32 n, u32 vep) {
     u32 a = (u32)(p - ram) & RAM_MASK;
-    u32 sp = R[1] & RAM_MASK;
+    u32 sp = cur_r1 & RAM_MASK;
     if (a + n > sp - 0x10000 && a < sp + 0x10000) return 0;
     u32 lo = (a >> WR_PAGE_SHIFT) - (a >= (1u << WR_PAGE_SHIFT)), hi = (a + n - 1) >> WR_PAGE_SHIFT;
     for (u32 k = lo; k <= hi; k++) if (ram_wr[k] >= vep) return 0;
@@ -1657,11 +1668,6 @@ static void dl_log_miss(const u8 *list, u32 n, const char *why, DlCache *e) {
 
 /* 1 = drawn (or skipped) here; 0 = the caller parses the list per primitive */
 static int dl_draw(const u8 *list, u32 len) {
-    if (dl_off == 2) { FILE *f = fopen("sdmc:/cr_dlcache_off.txt", "rb"); dl_off = f != NULL; if (f) fclose(f);
-        recomp_log("# gx: display-list cache %s\n", dl_off ? "off (cr_dlcache_off.txt)" : "on"); }
-    static int clean_chk;
-    if (!clean_chk) { clean_chk = 1; FILE *f = fopen("sdmc:/cr_dlclean_off.txt", "rb"); dl_clean_off = f != NULL; if (f) fclose(f);
-        recomp_log("# gx: display-list write tracking %s\n", dl_clean_off ? "off (cr_dlclean_off.txt)" : "on"); }
     if (dl_off || !vc_arena || len > 0x40000) return 0;
     u32 p0 = 0;
     while (p0 < len && !list[p0]) p0++;
@@ -1701,10 +1707,11 @@ static int dl_draw(const u8 *list, u32 len) {
     int same = e->gen && e->list == list && e->n == len && e->sig == sig;
     const char *why = same ? NULL : "new";
     if (same && e->checked != frames + 1) {
+        u32 ep = epoch_now();
         if (dl_clean(e, list, len)) e->checked = frames + 1;
         else if (hash_mem(list, len, 0x811c9dc5u) != e->lhash) why = "list bytes";
         else if (!e->slow && dl_arrays_hash(e, 0) != e->ahash) why = "arrays";
-        else { e->checked = frames + 1; e->vep = recomp_wr_epoch; }
+        else { e->checked = frames + 1; e->vep = ep; }
     }
     u32 w;
     if (!why) {   /* hit */
@@ -1715,6 +1722,7 @@ static int dl_draw(const u8 *list, u32 len) {
         st_dl_misses++;
         dl_log_miss(list, len, why, same ? e : NULL);
         e->gen = 0;
+        u32 ep = epoch_now();   /* before the list and arrays are read for the entry */
         /* walk: one vertex format, triangle primitives and NOPs only */
         u32 pos = p0, nv = 0, nix = 0, slow = 0;
         while (pos < len) {
@@ -1728,7 +1736,7 @@ static int dl_draw(const u8 *list, u32 len) {
         }
         if (nv > 0x8000) slow = 1;
         e->list = list; e->n = len; e->sig = sig; e->used = frames; e->checked = frames + 1;
-        e->lhash = hash_mem(list, len, 0x811c9dc5u); e->vep = recomp_wr_epoch;
+        e->lhash = hash_mem(list, len, 0x811c9dc5u); e->vep = ep;
         if (slow) { e->slow = 1; e->gen = vc_gen; recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; st_dl_slow++; return 0; }
         if (vc_top + nv > VC_VERTS || vc_ixtop + nix > VC_IX) { vc_full = 1; recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; return 0; }
         u32 off = vc_top;
@@ -1787,17 +1795,9 @@ static int dl_draw(const u8 *list, u32 len) {
  * sdmc:/cr_fbdump.txt = GX frame numbers (copies), one per line: after that
  * frame the render target is written to sdmc:/cr_fb_<frame>.bmp (240x400
  * as stored, i.e. rotated), for deterministic before/after image compares. */
+static u32 want[64], nwant;   /* read in recomp_gx_start */
 static void fb_dump(void) {
-    static int loaded; static u32 want[64], nwant; static u8 *buf;
-    if (!loaded) {
-        loaded = 1;
-        FILE *f = fopen("sdmc:/cr_fbdump.txt", "rb");
-        if (!f) return;
-        unsigned long v;
-        while (nwant < 64 && fscanf(f, "%lu", &v) == 1) want[nwant++] = v;
-        fclose(f);
-        recomp_log("# gx: framebuffer dump at %lu frames\n", (unsigned long)nwant);
-    }
+    static u8 *buf;
     u32 i;
     for (i = 0; i < nwant && want[i] != frames; i++) ;
     if (i == nwant) return;
@@ -1816,10 +1816,233 @@ static void fb_dump(void) {
     fwrite(h, 1, 54, f); fwrite(buf, 1, 240 * 400 * 3, f); fclose(f);
 }
 
-/* ---------------------------------------------------------------- FIFO */
+/* ---------------------------------------------------------------- GX thread
+ * docs/recomp_unknowns.md "GX thread". Every GX call that changes GX state or draws
+ * is a record in gq: its handler (x_*) and the handler's inputs, either r3.. (GQ_REGS:
+ * the handler reads r[3]..) or a copy of what the call reads from guest memory. With
+ * core 2 the GX thread runs the handlers, in order, on its own gx state; otherwise (or
+ * sdmc:/cr_gxthread_off.txt) gq_end runs each record at once on the game thread.
+ * One producer (game thread), one consumer; indices are free-running word counts.
+ * Records are published at draws, frame ends and waits, not per setter. */
+typedef void (*GqFn)(const u32 *);
+#define GQ_WORDS (1u << 18)       /* 1 MB; the largest record (a full FIFO) is 64 K words */
+#define GQ_REGS 0x80000000u       /* header flag: the payload is r3.. */
+#define GQ_SPIN 200000            /* GX thread: ~1 ms of polling for work before it sleeps */
+#define GQ_SPIN_GAME 20000        /* game thread: ~0.1 ms of polling before it sleeps in a wait */
+static u32 gq[GQ_WORDS];
+static volatile u32 gq_w, gq_r;   /* published end; end of the records the GX thread has finished */
+static u32 gq_wl, gq_rc, gq_cur, gq_copy_prev;   /* game thread: end written, gq_r last read, open record size, end of the previous GXCopyDisp */
+static volatile u32 gq_sleeping, gq_waiting, gq_wait_end, gq_quit;
+static LightEvent gq_ev, gq_done_ev;   /* work for a sleeping GX thread; the game thread's wait is over */
+int recomp_gx_thread;
+
+static void gq_run(const u32 *rec) {
+    GqFn fn = (GqFn)(uintptr_t)rec[1];
+    if (rec[0] & GQ_REGS) { u32 r[11]; memcpy(r + 3, rec + 2, ((rec[0] & 0xffffff) - 2) * 4); fn(r); }
+    else fn(rec + 2);
+}
+
+static void gq_publish(void) {
+    if (!recomp_gx_thread || gq_w == gq_wl) return;
+    __dmb();   /* the records, and the guest writes before them, before the index */
+    gq_w = gq_wl;
+    __dmb();
+    if (gq_sleeping) LightEvent_Signal(&gq_ev);
+}
+
+/* game thread: until the GX thread has finished every record before end */
+static void gq_wait(u32 end) {
+    if ((s32)(gq_r - end) >= 0) return;
+    gq_publish();
+    u64 t0 = recomp_ticks();
+    for (u32 i = 0; i < GQ_SPIN_GAME && (s32)(gq_r - end) < 0; i++) ;
+    while ((s32)(gq_r - end) < 0) {
+        gq_wait_end = end; gq_waiting = 1;
+        __dmb();
+        if ((s32)(gq_r - end) < 0) LightEvent_WaitTimeout(&gq_done_ev, 1000000);
+    }
+    gq_waiting = 0;
+    __dmb();   /* the GX thread's work before gq_r, before what the game thread does next */
+    recomp_prof[PROF_GX_WAIT] += recomp_ticks() - t0;
+}
+
+/* a record of n payload words: returns the payload (inline mode: gq is scratch) */
+static u32 *gq_begin(GqFn fn, u32 n, u32 flags) {
+    u32 need = n + 2;
+    if (!recomp_gx_thread) { gq[0] = need | flags; gq[1] = (u32)(uintptr_t)fn; return gq + 2; }
+    u32 pos = gq_wl & (GQ_WORDS - 1), pad = pos + need > GQ_WORDS ? GQ_WORDS - pos : 0;
+    if (gq_wl + pad + need - gq_rc > GQ_WORDS) {   /* full as last seen: look again, wait while it still is */
+        gq_rc = gq_r;
+        if (gq_wl + pad + need - gq_rc > GQ_WORDS) { gq_wait(gq_wl + pad + need - GQ_WORDS); gq_rc = gq_r; }
+        __dmb();   /* the GX thread is done reading what gets overwritten */
+    }
+    if (pad) { gq[pos] = 0; gq_wl += pad; pos = 0; }   /* header 0: the rest of the ring is padding */
+    gq[pos] = need | flags; gq[pos + 1] = (u32)(uintptr_t)fn;
+    gq_cur = need;
+    return gq + pos + 2;
+}
+static void gq_end(void) {
+    if (!recomp_gx_thread) { gq_run(gq); return; }
+    gq_wl += gq_cur;
+}
+static void gq_regs(GqFn fn, u32 n) { u32 *p = gq_begin(fn, n, GQ_REGS); memcpy(p, &R[3], n * 4); gq_end(); }
+
+/* core 2, priority below the helper threads there (they preempt its polling) */
+static void gx_thread(void *arg) {
+    (void)arg;
+    recomp_thread_crash_log();
+    u32 r = 0;
+    while (!gq_quit) {
+        u32 w = gq_w;
+        if (w == r) {
+            for (u32 i = 0; i < GQ_SPIN && gq_w == r && !gq_quit; i++) ;
+            if (gq_w != r) continue;
+            gq_sleeping = 1;
+            __dmb();
+            if (gq_w == r && !gq_quit) LightEvent_WaitTimeout(&gq_ev, 2000000);
+            gq_sleeping = 0;
+            continue;
+        }
+        __dmb();   /* the records up to w are visible */
+        u64 t0 = recomp_ticks();
+        while (r != w) {
+            u32 pos = r & (GQ_WORDS - 1), h = gq[pos];
+            if (!h) r += GQ_WORDS - pos;
+            else { gq_run(gq + pos); r += h & 0xffffff; }
+            __dmb();   /* done with the record before the game thread may reuse its words */
+            gq_r = r;
+            __dmb();
+            if (gq_waiting && (s32)(r - gq_wait_end) >= 0) LightEvent_Signal(&gq_done_ev);
+        }
+        recomp_prof[PROF_GX_BUSY] += recomp_ticks() - t0;
+    }
+}
+
+/* game thread: every record so far handled (GXDrawDone, before aptMainLoop, at exit) */
+void recomp_gx_sync(void) { if (recomp_gx_thread) gq_wait(gq_wl); }
+
+/* A bottom-screen tap (runtime/pad.c) switches between the GX thread and inline. It is
+ * applied at the next retrace, after the sync: every record so far has been handled, so
+ * the other thread carries on with the same gx and citro3d state. */
+static int gq_ok;              /* the GX thread exists (core 2) */
+static volatile int gq_req;    /* a tap since the last retrace */
+static int gq_fliptest;        /* sdmc:/cr_gxthread_fliptest.txt: a switch every 300 retraces (tests the switch) */
+u32 recomp_gx_thread_flips;    /* switches so far */
+void recomp_gx_thread_toggle(void) { gq_req = 1; }
+
+/* bottom screen's status line: both A/B toggles as they are now, redrawn when one changed
+ * (game thread; a ZL toggle shows once the GX thread's next frame_begin applied it) */
+static void status_draw(void) {
+    static int shown = -1;
+    int k = recomp_gx_kick_on, t = recomp_gx_thread, v = k | t << 1 | gq_ok << 2;
+    if (v == shown) return;
+    shown = v;
+    char s[48];
+    snprintf(s, sizeof s, "ZL gpukick %s   %s", k ? "ON" : "OFF", !gq_ok ? "gx thread OFF" : t ? "tap gx thread ON" : "tap gx thread OFF");
+    recomp_status(s);
+}
+
+void recomp_gx_retrace(void) {
+    recomp_gx_sync();
+    if (gq_fliptest && recomp_retrace_count() % 300 == 150) gq_req = 2;
+    if (gq_req) {
+        const char *why = gq_req == 2 ? "cr_gxthread_fliptest.txt" : "bottom-screen tap";
+        gq_req = 0;
+        if (!gq_ok) recomp_log("# gx r%lu: GX thread toggle ignored (no core 2)\n", (unsigned long)recomp_retrace_count());
+        else {
+            recomp_gx_thread ^= 1;
+            recomp_gx_thread_flips++;
+            recomp_log("# gx r%lu: GX thread %s (%s)\n", (unsigned long)recomp_retrace_count(), recomp_gx_thread ? "on" : "off", why);
+        }
+    }
+    status_draw();
+}
+
+void recomp_gx_stop(void) {
+    if (!gq_ok) return;
+    recomp_gx_sync();
+    gq_quit = 1;
+    __dmb();
+    LightEvent_Signal(&gq_ev);
+}
+
+/* libctru's linear heap has no lock, and both threads allocate (ax.c's ndsp buffers on the
+ * game thread, citro3d textures on the GX thread): linked with --wrap (Makefile) */
+void *__real_linearAlloc(size_t size);
+void *__real_linearMemAlign(size_t size, size_t alignment);
+void __real_linearFree(void *mem);
+static RecursiveLock lin_lock;   /* zero = unlocked (libctru reads a 0 LightLock as unlocked) */
+void *__wrap_linearAlloc(size_t size) { RecursiveLock_Lock(&lin_lock); void *p = __real_linearAlloc(size); RecursiveLock_Unlock(&lin_lock); return p; }
+void *__wrap_linearMemAlign(size_t size, size_t alignment) {
+    RecursiveLock_Lock(&lin_lock); void *p = __real_linearMemAlign(size, alignment); RecursiveLock_Unlock(&lin_lock); return p;
+}
+void __wrap_linearFree(void *mem) { RecursiveLock_Lock(&lin_lock); __real_linearFree(mem); RecursiveLock_Unlock(&lin_lock); }
+
+/* sdmc flag files, read once before the game starts (a lazy fopen stalled 4 s at r13 in
+ * hw runs 17b/19b); then the GX thread, when there is a core 2 */
+static int flag_file(const char *name) {
+    char p[48]; snprintf(p, sizeof p, "sdmc:/%s.txt", name);
+    FILE *f = fopen(p, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+void recomp_gx_start(void) {
+    vsync_on = flag_file("cr_vsync_on");
+    kick_off = flag_file("cr_gpukick_off");
+    batch_off = flag_file("cr_batch_off");
+    dl_off = flag_file("cr_dlcache_off");
+    dl_clean_off = flag_file("cr_dlclean_off");
+    FILE *f = fopen("sdmc:/cr_fbdump.txt", "rb");
+    int fbd = f != NULL;
+    if (f) { unsigned long v; while (nwant < 64 && fscanf(f, "%lu", &v) == 1) want[nwant++] = v; fclose(f); }
+    recomp_log("# gx: frame pacing %s\n", vsync_on ? "vblank wait every frame (cr_vsync_on.txt)" : "60 Hz cap only");
+    if (kick_off) recomp_log("# gx: mid-frame GPU submit off (cr_gpukick_off.txt)\n");
+    else recomp_log("# gx: mid-frame GPU submit on (every %d command words, at most %d per frame)\n", KICK_WORDS, KICK_MAX);
+    recomp_gx_kick_on = !kick_off;   /* frame_begin keeps it; set here for the status line */
+    recomp_log("# gx: draw batching %s\n", batch_off ? "off (cr_batch_off.txt)" : "on");
+    recomp_log("# gx: display-list cache %s\n", dl_off ? "off (cr_dlcache_off.txt)" : "on");
+    recomp_log("# gx: display-list write tracking %s\n", dl_clean_off ? "off (cr_dlclean_off.txt)" : "on");
+    if (fbd) recomp_log("# gx: framebuffer dump at %lu frames\n", (unsigned long)nwant);
+    int off = flag_file("cr_gxthread_off");   /* only the starting mode: the thread exists either way */
+    gq_fliptest = flag_file("cr_gxthread_fliptest");
+    if (gq_fliptest) recomp_log("# gx: GX thread switch test: on/off every 300 retraces (cr_gxthread_fliptest.txt)\n");
+    if (recomp_aux_core() == 2) {
+        LightEvent_Init(&gq_ev, RESET_ONESHOT);
+        LightEvent_Init(&gq_done_ev, RESET_ONESHOT);
+        s32 prio = 0x30;
+        svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+        gq_ok = recomp_aux_thread(gx_thread, 0x10000, prio + 2) != NULL;
+    }
+    recomp_gx_thread = gq_ok && !off;
+    recomp_log("# gx: GX thread %s\n", !gq_ok ? "off (no core 2): GX runs on the game thread"
+               : recomp_gx_thread ? "on core 2 (GX state and draws handled off the game thread; a bottom-screen tap toggles it)"
+               : "on core 2, starting off (cr_gxthread_off.txt): GX runs on the game thread until a bottom-screen tap");
+    status_draw();
+}
+
+/* ---------------------------------------------------------------- FIFO
+ * The write-gather pipe is assembled on the game thread (sdk_GXBegin pushes the draw
+ * command, then the game writes the vertices to 0xCC008000 itself). Each run of
+ * complete commands becomes one record (x_fifo: r1, byte count, bytes), which the GX
+ * thread parses and draws (parse_cmds). */
 static u8 fifo[0x40000];
 static u32 fifo_n;
 static u32 fifo_need;   /* bytes of the primitive GXBegin started (header + n * vtx_size), 0 = unknown */
+
+/* size of the command at b (avail bytes there; fewer than the result = not complete yet),
+ * 0 = unknown opcode. vsize: the vertex size from the calling thread's vertex format */
+static u32 cmd_size(const u8 *b, u32 avail, int (*vsize)(int)) {
+    u8 op = b[0];
+    if (op >= 0x80) return avail < 3 ? 3 : 3 + (u32)(b[1] << 8 | b[2]) * vsize(op & 7);
+    switch (op) {
+    case 0x00: case 0x48: return 1;
+    case 0x08: return 6;
+    case 0x10: return avail < 5 ? 5 : 5 + ((b[1] << 8 | b[2]) + 1) * 4;
+    case 0x20: case 0x28: case 0x30: case 0x38: case 0x61: return 5;
+    case 0x40: return 9;
+    default: return 0;
+    }
+}
 
 /* GX command stream: draws are decoded; CP/XF/BP register writes are not
  * emulated (the GX calls above keep the state) and are logged once. Returns
@@ -1830,30 +2053,11 @@ static u32 parse_cmds(const u8 *buf, u32 len) {
     u32 pos = 0;
     while (pos < len) {
         u8 op = buf[pos];
-        u32 need;
-        if (op >= 0x80) {
-            if (len - pos < 3) break;
-            u32 n = buf[pos + 1] << 8 | buf[pos + 2];
-            need = 3 + n * vtx_size(op & 7);
-            if (len - pos < need) break;
-            draw(op & 0xf8, op & 7, buf + pos + 3, n);
-            pos += need;
-            continue;
-        }
-        switch (op) {
-        case 0x00: need = 1; break;
-        case 0x08: need = 6; break;
-        case 0x10: {
-            if (len - pos < 5) { need = 5; break; }
-            need = 5 + ((buf[pos + 1] << 8 | buf[pos + 2]) + 1) * 4; break; }
-        case 0x20: case 0x28: case 0x30: case 0x38: need = 5; break;
-        case 0x40: need = 9; break;
-        case 0x48: need = 1; break;
-        case 0x61: need = 5; break;
-        default: ONCE("unknown GX command %02x, rest of stream dropped\n", op); return len;
-        }
+        u32 need = cmd_size(buf + pos, len - pos, vtx_size);
+        if (!need) { ONCE("unknown GX command %02x, rest of stream dropped\n", op); return len; }
         if (len - pos < need) break;
-        if (op == 0x40) {
+        if (op >= 0x80) draw(op & 0xf8, op & 7, buf + pos + 3, buf[pos + 1] << 8 | buf[pos + 2]);
+        else if (op == 0x40) {
             const u8 *q = buf + pos + 1;
             call_display_list((u32)q[0] << 24 | q[1] << 16 | q[2] << 8 | q[3], (u32)q[4] << 24 | q[5] << 16 | q[6] << 8 | q[7]);
         } else if (op && op != 0x48) ONCE("raw GX command %02x not emulated\n", op);
@@ -1868,7 +2072,6 @@ static void call_display_list(u32 addr, u32 n) {
     const u8 *list = ram + (GUEST(addr) & RAM_MASK);
     if (!depth) {
         st_dl_calls++;
-        if (!recomp_first_draw) recomp_first_draw = recomp_ticks();
         in_draw++;
         int done = dl_draw(list, n);
         in_draw--;
@@ -1880,17 +2083,49 @@ static void call_display_list(u32 addr, u32 n) {
     depth--; in_dl--;
 }
 
-void sdk_GXCallDisplayList(void) { LOG(); call_display_list(R[3], R[4]); }
+static void x_call_dl(const u32 *p) { cur_r1 = p[2]; call_display_list(p[0], p[1]); }
+void sdk_GXCallDisplayList(void) {
+    LOG();
+    if (!recomp_first_draw) recomp_first_draw = recomp_ticks();
+    u32 *p = gq_begin(x_call_dl, 3, 0);
+    p[0] = R[3]; p[1] = R[4]; p[2] = R[1];
+    gq_end();
+    gq_publish();
+}
 
-static void fifo_parse(void) {
-    u32 pos = parse_cmds(fifo, fifo_n);
+/* game thread: bytes of the complete commands at the front of the FIFO, as parse_cmds
+ * will consume them; *drw: a primitive or display-list call among them */
+static u32 fifo_complete(int *drw) {
+    u32 pos = 0;
+    while (pos < fifo_n) {
+        u32 need = cmd_size(fifo + pos, fifo_n - pos, vtx_size_g);
+        if (!need) return fifo_n;   /* parse_cmds logs it and drops the rest */
+        if (fifo_n - pos < need) break;
+        if (fifo[pos] >= 0x80 || fifo[pos] == 0x40) *drw = 1;
+        pos += need;
+    }
+    return pos;
+}
+
+static void x_fifo(const u32 *p) { cur_r1 = p[0]; parse_cmds((const u8 *)(p + 2), p[1]); }
+static void fifo_flush(void) {
+    int drw = 0;
+    u32 pos = fifo_complete(&drw);
+    if (pos) {
+        if (drw && !recomp_first_draw) recomp_first_draw = recomp_ticks();
+        u32 *p = gq_begin(x_fifo, 2 + (pos + 3) / 4, 0);
+        p[0] = R[1]; p[1] = pos;
+        memcpy(p + 2, fifo, pos);
+        gq_end();
+        if (drw) gq_publish();
+    }
     memmove(fifo, fifo + pos, fifo_n - pos);
     fifo_n -= pos;
     fifo_need = 0;
 }
 
 static void fifo_put(u32 v, int size) {
-    if (fifo_n + size > sizeof fifo) { ONCE("FIFO overflow\n"); fifo_n = 0; }
+    if (fifo_n + size > sizeof fifo) { ONCE_G("FIFO overflow\n"); fifo_n = 0; }
     for (int i = size - 1; i >= 0; i--) fifo[fifo_n++] = (u8)(v >> (8 * i));
 }
 
@@ -1898,14 +2133,16 @@ static void fifo_put(u32 v, int size) {
 void recomp_gx_fifo_write(u32 v, int size) {
     fifo_put(v, size);
     if (fifo_need) {
-        if (fifo_n >= fifo_need) fifo_parse();
+        if (fifo_n >= fifo_need) fifo_flush();
     } else if (fifo_n >= 3 && fifo[0] >= 0x80) {
         u32 n = fifo[1] << 8 | fifo[2];
-        if (fifo_n >= 3 + n * vtx_size(fifo[0] & 7)) fifo_parse();
-    } else if (fifo_n && fifo[0] < 0x80) fifo_parse();
+        if (fifo_n >= 3 + n * vtx_size_g(fifo[0] & 7)) fifo_flush();
+    } else if (fifo_n && fifo[0] < 0x80) fifo_flush();
 }
 
-/* ---------------------------------------------------------------- draw-done */
+/* ---------------------------------------------------------------- draw-done
+ * The GPU reads display lists, vertex arrays and textures after the call that names
+ * them, and GXDrawDone is where the game may reuse them: it waits for the GX thread. */
 static u32 draw_done_cb;
 static int draw_done_pending;
 
@@ -1916,95 +2153,145 @@ static void deliver_draw_done(void) {
 }
 
 void sdk_GXSetDrawDoneCallback(void) { LOG(); u32 old = draw_done_cb; draw_done_cb = R[3]; R[3] = old; }
-void sdk_GXWaitDrawDone(void) { LOG(); deliver_draw_done(); }
-void sdk_GXDrawDone(void) { LOG(); draw_done_pending = 1; deliver_draw_done(); }
+void sdk_GXWaitDrawDone(void) { LOG(); recomp_gx_sync(); deliver_draw_done(); }
+void sdk_GXDrawDone(void) { LOG(); draw_done_pending = 1; recomp_gx_sync(); deliver_draw_done(); }
 
-/* ---------------------------------------------------------------- vertex format */
+/* ---------------------------------------------------------------- vertex format
+ * desc/vat are kept on both threads: gs (game, FIFO assembly) and gx */
 void sdk_GXBegin(void) {
     LOG();
     fifo_need = 0;
-    if (fifo_n) { ONCE("GXBegin with %lu bytes of the previous primitive missing\n", (unsigned long)fifo_n); fifo_n = 0; }
+    if (fifo_n) { ONCE_G("GXBegin with %lu bytes of the previous primitive missing\n", (unsigned long)fifo_n); fifo_n = 0; }
     fifo_put((R[3] & 0xf8) | (R[4] & 7), 1);
     fifo_put(R[5] & 0xffff, 2);
-    int vs = vtx_size(R[4] & 7);
+    int vs = vtx_size_g(R[4] & 7);
     if ((R[5] & 0xffff) == 0 || vs == 0) fifo_n = 0;
     else fifo_need = 3 + (R[5] & 0xffff) * vs;
 }
-void sdk_GXSetVtxDesc(void) { LOG(); if (R[3] < A_MAX) gx.desc[R[3]] = R[4] & 3; else ONCE("GXSetVtxDesc attr %lu\n", (unsigned long)R[3]); }
-void sdk_GXClearVtxDesc(void) { LOG(); memset(gx.desc, 0, sizeof gx.desc); gx.desc[A_POS] = 1; }
+static void x_GXSetVtxDesc(const u32 *r) { if (r[3] < A_MAX) gx.desc[r[3]] = r[4] & 3; else ONCE("GXSetVtxDesc attr %lu\n", (unsigned long)r[3]); }
+void sdk_GXSetVtxDesc(void) { LOG(); if (R[3] < A_MAX) gs.desc[R[3]] = R[4] & 3; gq_regs(x_GXSetVtxDesc, 2); }
+static void x_GXClearVtxDesc(const u32 *r) { (void)r; memset(gx.desc, 0, sizeof gx.desc); gx.desc[A_POS] = 1; }
+void sdk_GXClearVtxDesc(void) { LOG(); memset(gs.desc, 0, sizeof gs.desc); gs.desc[A_POS] = 1; gq_regs(x_GXClearVtxDesc, 0); }
+static void x_GXSetVtxAttrFmt(const u32 *r) { if ((r[3] & 7) == r[3] && r[4] < A_MAX) gx.vat[r[3]][r[4]] = (VtxFmt){(u8)r[5], (u8)r[6], (u8)r[7]}; }
 void sdk_GXSetVtxAttrFmt(void) {
     LOG();
-    if ((R[3] & 7) == R[3] && R[4] < A_MAX) gx.vat[R[3]][R[4]] = (VtxFmt){(u8)R[5], (u8)R[6], (u8)R[7]};
+    if ((R[3] & 7) == R[3] && R[4] < A_MAX) gs.vat[R[3]][R[4]] = (VtxFmt){(u8)R[5], (u8)R[6], (u8)R[7]};
+    gq_regs(x_GXSetVtxAttrFmt, 5);
 }
-void sdk_GXSetArray(void) { LOG(); if (R[3] >= A_POS && R[3] <= 20) { gx.array_base[R[3] - A_POS] = R[4]; gx.array_stride[R[3] - A_POS] = R[5] & 0xff; } }
+static void x_GXSetArray(const u32 *r) { if (r[3] >= A_POS && r[3] <= 20) { gx.array_base[r[3] - A_POS] = r[4]; gx.array_stride[r[3] - A_POS] = r[5] & 0xff; } }
+void sdk_GXSetArray(void) { LOG(); gq_regs(x_GXSetArray, 3); }
 void sdk_GXInvalidateVtxCache(void) { LOG(); }
 
-/* ---------------------------------------------------------------- transform */
-static void load_mtx(u32 src, u32 addr, int rows, int cols) {
+/* ---------------------------------------------------------------- transform
+ * matrix records: XF address, rows, columns, then the words read at the call */
+static void x_load_mtx(const u32 *p) {
+    u32 addr = p[0]; int rows = p[1], cols = p[2];
     xf_gen++;
     for (u32 r = addr / 4; r <= (addr + rows * cols - 1) / 4 && r < 30; r++) pos_dirty |= 1u << r;
     for (int r = 0; r < rows; r++) for (int c = 0; c < cols; c++)
-        if (addr + r * cols + c < 0x600) gx.xf[addr + r * cols + c] = u2f(rd32(src + (r * cols + c) * 4));
+        if (addr + r * cols + c < 0x600) gx.xf[addr + r * cols + c] = u2f(p[3 + r * cols + c]);
+}
+static void load_mtx(u32 src, u32 addr, int rows, int cols) {
+    u32 *p = gq_begin(x_load_mtx, 3 + rows * cols, 0);
+    p[0] = addr; p[1] = rows; p[2] = cols;
+    for (int k = 0; k < rows * cols; k++) p[3 + k] = rd32(src + k * 4);
+    gq_end();
 }
 void sdk_GXLoadPosMtxImm(void) { LOG(); load_mtx(R[3], R[4] * 4, 3, 4); }
+static void x_GXLoadNrmMtxImm(const u32 *p) {   /* matrix id, then the 3x3 part */
+    u32 id = p[0];
+    xf_gen++;
+    for (u32 r = id; r < id + 3 && r < 30; r++) nrm_dirty |= 1u << r;
+    if (id * 3 + 9 > 0x200) { ONCE("normal matrix %lu out of range\n", (unsigned long)id); return; }
+    for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) gx.xf[0x400 + id * 3 + r * 3 + c] = u2f(p[1 + r * 3 + c]);
+}
 void sdk_GXLoadNrmMtxImm(void) {   /* source is a 3x4 matrix, the 3x3 part is used */
     LOG();
-    xf_gen++;
-    for (u32 r = R[4]; r < R[4] + 3 && r < 30; r++) nrm_dirty |= 1u << r;
-    if (R[4] * 3 + 9 > 0x200) { ONCE("normal matrix %lu out of range\n", (unsigned long)R[4]); return; }
-    for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) gx.xf[0x400 + R[4] * 3 + r * 3 + c] = u2f(rd32(R[3] + (r * 4 + c) * 4));
+    u32 *p = gq_begin(x_GXLoadNrmMtxImm, 10, 0);
+    p[0] = R[4];
+    if (R[4] * 3 + 9 <= 0x200) for (int r = 0; r < 3; r++) for (int c = 0; c < 3; c++) p[1 + r * 3 + c] = rd32(R[3] + (r * 4 + c) * 4);
+    gq_end();
 }
+static void x_tex_mtx_ignored(const u32 *r) { ONCE("post-transform texture matrix %lu ignored\n", (unsigned long)r[4]); }
 void sdk_GXLoadTexMtxImm(void) {
     LOG();
-    if (R[4] >= 64) { ONCE("post-transform texture matrix %lu ignored\n", (unsigned long)R[4]); return; }
+    if (R[4] >= 64) { gq_regs(x_tex_mtx_ignored, 2); return; }
     load_mtx(R[3], R[4] * 4, R[5] == 1 ? 2 : 3, 4);
 }
-void sdk_GXSetCurrentMtx(void) { LOG(); gx.cur_mtx = R[3]; }
+static void x_GXSetCurrentMtx(const u32 *r) { gx.cur_mtx = r[3]; }
+void sdk_GXSetCurrentMtx(void) { LOG(); gq_regs(x_GXSetCurrentMtx, 1); }
+/* projection and viewport: computed into gs on the game thread (the getters read it),
+ * the records carry the values */
+static void x_proj(const u32 *p) { gx.proj_ortho = p[0]; for (int i = 0; i < 6; i++) gx.proj[i] = u2f(p[1 + i]); }
+static void rec_proj(void) {
+    u32 *p = gq_begin(x_proj, 7, 0);
+    p[0] = gs.proj_ortho;
+    for (int i = 0; i < 6; i++) p[1 + i] = f2u(gs.proj[i]);
+    gq_end();
+}
 void sdk_GXSetProjection(void) {
     LOG();
     u32 m = R[3];
-    gx.proj_ortho = R[4] == 1;
-    gx.proj[0] = u2f(rd32(m + 0x00));
-    gx.proj[1] = u2f(rd32(m + (gx.proj_ortho ? 0x0c : 0x08)));
-    gx.proj[2] = u2f(rd32(m + 0x14));
-    gx.proj[3] = u2f(rd32(m + (gx.proj_ortho ? 0x1c : 0x18)));
-    gx.proj[4] = u2f(rd32(m + 0x28));
-    gx.proj[5] = u2f(rd32(m + 0x2c));
+    gs.proj_ortho = R[4] == 1;
+    gs.proj[0] = u2f(rd32(m + 0x00));
+    gs.proj[1] = u2f(rd32(m + (gs.proj_ortho ? 0x0c : 0x08)));
+    gs.proj[2] = u2f(rd32(m + 0x14));
+    gs.proj[3] = u2f(rd32(m + (gs.proj_ortho ? 0x1c : 0x18)));
+    gs.proj[4] = u2f(rd32(m + 0x28));
+    gs.proj[5] = u2f(rd32(m + 0x2c));
+    rec_proj();
 }
 void sdk_GXSetProjectionv(void) {
     LOG();
     u32 p = R[3];
-    gx.proj_ortho = u2f(rd32(p)) != 0;
-    for (int i = 0; i < 6; i++) gx.proj[i] = u2f(rd32(p + 4 + i * 4));
+    gs.proj_ortho = u2f(rd32(p)) != 0;
+    for (int i = 0; i < 6; i++) gs.proj[i] = u2f(rd32(p + 4 + i * 4));
+    rec_proj();
 }
 void sdk_GXGetProjectionv(void) {
     LOG();
-    wr32(R[3], f2u(gx.proj_ortho ? 1.0f : 0.0f));
-    for (int i = 0; i < 6; i++) wr32(R[3] + 4 + i * 4, f2u(gx.proj[i]));
+    wr32(R[3], f2u(gs.proj_ortho ? 1.0f : 0.0f));
+    for (int i = 0; i < 6; i++) wr32(R[3] + 4 + i * 4, f2u(gs.proj[i]));
 }
-void sdk_GXSetViewport(void) { LOG(); for (int i = 0; i < 6; i++) gx.vp[i] = (float)F[1 + i].ps0; }
-void sdk_GXGetViewportv(void) { LOG(); for (int i = 0; i < 6; i++) wr32(R[3] + i * 4, f2u(gx.vp[i])); }
-void sdk_GXSetScissor(void) { LOG(); gx.sc[0] = R[3]; gx.sc[1] = R[4]; gx.sc[2] = R[5]; gx.sc[3] = R[6]; }
-void sdk_GXSetScissorBoxOffset(void) { LOG(); gx.sc_off[0] = (s32)R[3]; gx.sc_off[1] = (s32)R[4]; }
+static void x_vp(const u32 *p) { for (int i = 0; i < 6; i++) gx.vp[i] = u2f(p[i]); }
+void sdk_GXSetViewport(void) {
+    LOG();
+    u32 *p = gq_begin(x_vp, 6, 0);
+    for (int i = 0; i < 6; i++) { gs.vp[i] = (float)F[1 + i].ps0; p[i] = f2u(gs.vp[i]); }
+    gq_end();
+}
+void sdk_GXGetViewportv(void) { LOG(); for (int i = 0; i < 6; i++) wr32(R[3] + i * 4, f2u(gs.vp[i])); }
+static void x_GXSetScissor(const u32 *r) { gx.sc[0] = r[3]; gx.sc[1] = r[4]; gx.sc[2] = r[5]; gx.sc[3] = r[6]; }
+void sdk_GXSetScissor(void) { LOG(); gq_regs(x_GXSetScissor, 4); }
+static void x_GXSetScissorBoxOffset(const u32 *r) { gx.sc_off[0] = (s32)r[3]; gx.sc_off[1] = (s32)r[4]; }
+void sdk_GXSetScissorBoxOffset(void) { LOG(); gq_regs(x_GXSetScissorBoxOffset, 2); }
 void sdk_GXSetClipMode(void) { LOG(); }
-void sdk_GXSetCullMode(void) { LOG(); gx.cull = R[3]; }
+static void x_GXSetCullMode(const u32 *r) { gx.cull = r[3]; }
+void sdk_GXSetCullMode(void) { LOG(); gq_regs(x_GXSetCullMode, 1); }
 
 /* ---------------------------------------------------------------- texgen / channels / lights */
-void sdk_GXSetNumTexGens(void) { LOG(); gx.n_texgens = R[3] & 15; }
-void sdk_GXSetTexCoordGen2(void) { LOG(); if (R[3] < 8) gx.texgen[R[3]] = (TexGen){(u8)R[4], (u8)R[5], (u8)R[7], R[6]}; }
-void sdk_GXSetNumChans(void) { LOG(); gx.n_chans = R[3] & 3; }
-void sdk_GXSetChanCtrl(void) {
-    LOG();
-    Chan c = {(u8)R[4], (u8)R[5], (u8)R[6], (u8)R[9], (u8)R[8], (u8)R[7]};
-    u32 id = R[3];
+static void x_GXSetNumTexGens(const u32 *r) { gx.n_texgens = r[3] & 15; }
+void sdk_GXSetNumTexGens(void) { LOG(); gq_regs(x_GXSetNumTexGens, 1); }
+static void x_GXSetTexCoordGen2(const u32 *r) { if (r[3] < 8) gx.texgen[r[3]] = (TexGen){(u8)r[4], (u8)r[5], (u8)r[7], r[6]}; }
+void sdk_GXSetTexCoordGen2(void) { LOG(); gq_regs(x_GXSetTexCoordGen2, 5); }
+static void x_GXSetNumChans(const u32 *r) { gx.n_chans = r[3] & 3; }
+void sdk_GXSetNumChans(void) { LOG(); gq_regs(x_GXSetNumChans, 1); }
+static void x_GXSetChanCtrl(const u32 *r) {
+    Chan c = {(u8)r[4], (u8)r[5], (u8)r[6], (u8)r[9], (u8)r[8], (u8)r[7]};
+    u32 id = r[3];
     if (id == 4 || id == 5) { gx.chan[id - 4] = c; gx.chan[id - 2] = c; }
     else if (id < 4) gx.chan[id] = c;
 }
+void sdk_GXSetChanCtrl(void) { LOG(); gq_regs(x_GXSetChanCtrl, 7); }
 static void set_color(u8 *dst, u32 ptr) { for (int i = 0; i < 4; i++) dst[i] = rd8(ptr + i); }
-void sdk_GXSetChanMatColor(void) { LOG(); u32 id = R[3]; u8 c[4]; set_color(c, R[4]);
+/* colour records carry the four bytes read at the call */
+static u32 color_word(u32 ptr) { u8 c[4]; u32 w; set_color(c, ptr); memcpy(&w, c, 4); return w; }
+static void x_GXSetChanMatColor(const u32 *p) { u32 id = p[0]; u8 c[4]; memcpy(c, p + 1, 4);
     if (id == 4 || id == 5) memcpy(gx.mat[id - 4], c, 4); else if (id < 2) memcpy(gx.mat[id], c, 3); else if (id < 4) gx.mat[id - 2][3] = c[3]; }
-void sdk_GXSetChanAmbColor(void) { LOG(); u32 id = R[3]; u8 c[4]; set_color(c, R[4]);
+void sdk_GXSetChanMatColor(void) { LOG(); u32 *p = gq_begin(x_GXSetChanMatColor, 2, 0); p[0] = R[3]; p[1] = color_word(R[4]); gq_end(); }
+static void x_GXSetChanAmbColor(const u32 *p) { u32 id = p[0]; u8 c[4]; memcpy(c, p + 1, 4);
     if (id == 4 || id == 5) memcpy(gx.amb[id - 4], c, 4); else if (id < 2) memcpy(gx.amb[id], c, 3); else if (id < 4) gx.amb[id - 2][3] = c[3]; }
+void sdk_GXSetChanAmbColor(void) { LOG(); u32 *p = gq_begin(x_GXSetChanAmbColor, 2, 0); p[0] = R[3]; p[1] = color_word(R[4]); gq_end(); }
 
 /* GXLightObj, SDK layout (0x40 bytes, big-endian): +0xc color, +0x10 a0 a1 a2
  * k0 k1 k2, +0x28 position, +0x34 direction */
@@ -2041,13 +2328,16 @@ void sdk_GXInitLightDistAttn(void) {
     }
     lset(R[3] + 0x10, 3, k0); lset(R[3] + 0x10, 4, k1); lset(R[3] + 0x10, 5, k2);
 }
+static void x_GXLoadLightObjImm(const u32 *p) { light_gen++; memcpy(&gx.light[p[0]], p + 1, sizeof(Light)); }   /* light index, the Light read at the call */
 void sdk_GXLoadLightObjImm(void) {
     LOG();
     for (int i = 0; i < 8; i++) if (R[4] == (1u << i)) {
-        Light *l = &gx.light[i]; u32 o = R[3];
-        light_gen++;
-        for (int k = 0; k < 3; k++) { l->a[k] = lf(o + 0x10, k); l->k[k] = lf(o + 0x1c, k); l->pos[k] = lf(o + 0x28, k); l->dir[k] = -lf(o + 0x34, k); }
-        for (int k = 0; k < 4; k++) l->color[k] = rd8(o + 0xc + k);
+        Light l; u32 o = R[3];
+        for (int k = 0; k < 3; k++) { l.a[k] = lf(o + 0x10, k); l.k[k] = lf(o + 0x1c, k); l.pos[k] = lf(o + 0x28, k); l.dir[k] = -lf(o + 0x34, k); }
+        for (int k = 0; k < 4; k++) l.color[k] = rd8(o + 0xc + k);
+        u32 *p = gq_begin(x_GXLoadLightObjImm, 1 + (sizeof l + 3) / 4, 0);
+        p[0] = i; memcpy(p + 1, &l, sizeof l);
+        gq_end();
         return;
     }
 }
@@ -2085,12 +2375,27 @@ static void tlutobj_init(u32 o, u32 lut, u32 fmt, u32 n) {
 void sdk_GXInitTexObj(void) { LOG(); texobj_init(R[3], R[4], R[5], R[6], R[7], R[8], R[9], R[10] & 0xff, 0, 0); }
 void sdk_GXInitTexObjCI(void) { LOG(); texobj_init(R[3], R[4], R[5], R[6], R[7], R[8], R[9], R[10] & 0xff, 1, rd32(R[1] + 8)); }
 void sdk_GXInitTexObjLOD(void) { LOG(); texobj_lod(R[3], R[4], R[5]); }
-void sdk_GXLoadTexObj(void) { LOG(); if (R[4] < 8) gx.map[R[4]] = texobj_read(R[3]); }
+static void x_GXLoadTexObj(const u32 *p) { memcpy(&gx.map[p[0]], p + 1, sizeof(TexMap)); }   /* texmap id, the TexMap read at the call */
+void sdk_GXLoadTexObj(void) {
+    LOG();
+    if (R[4] >= 8) return;
+    TexMap m = texobj_read(R[3]);
+    u32 *p = gq_begin(x_GXLoadTexObj, 1 + (sizeof m + 3) / 4, 0);
+    p[0] = R[4]; memcpy(p + 1, &m, sizeof m);
+    gq_end();
+}
 void sdk_GXInitTlutObj(void) { LOG(); tlutobj_init(R[3], R[4], R[5], R[6] & 0xffff); }
+static void x_GXLoadTlut(const u32 *p) {   /* tlut name, the Tlut read at the call */
+    if (p[0] >= 20) { ONCE("tlut name %lu\n", (unsigned long)p[0]); return; }
+    memcpy(&gx.tlut[p[0]], p + 1, sizeof(Tlut));
+}
 void sdk_GXLoadTlut(void) {
     LOG();
-    if (R[4] >= 20) { ONCE("tlut name %lu\n", (unsigned long)R[4]); return; }
-    gx.tlut[R[4]] = (Tlut){0x80000000u | (rd32(R[3] + 4) & 0xffffff) << 5, (u8)((rd32(R[3]) >> 10) & 3), rd16(R[3] + 8)};
+    Tlut t = {0, 0, 0};
+    if (R[4] < 20) t = (Tlut){0x80000000u | (rd32(R[3] + 4) & 0xffffff) << 5, (u8)((rd32(R[3]) >> 10) & 3), rd16(R[3] + 8)};
+    u32 *p = gq_begin(x_GXLoadTlut, 1 + (sizeof t + 3) / 4, 0);
+    p[0] = R[4]; memcpy(p + 1, &t, sizeof t);
+    gq_end();
 }
 static u32 tex_region_cb, tlut_region_cb;
 void sdk_GXSetTexRegionCallback(void) { LOG(); u32 o = tex_region_cb; tex_region_cb = R[3]; R[3] = o; }
@@ -2118,53 +2423,86 @@ void sdk_TPLGetGXTexObjFromPaletteCI(void) {
 }
 
 /* ---------------------------------------------------------------- TEV */
-static TevSide *side(int alpha) { return R[3] < 16 ? (alpha ? &gx.tev[R[3]].a : &gx.tev[R[3]].c) : NULL; }
-void sdk_GXSetNumTevStages(void) { LOG(); gx.n_stages = R[3] & 31; }
-void sdk_GXSetTevOrder(void) { LOG(); if (R[3] < 16) { TevStage *t = &gx.tev[R[3]]; t->coord = R[4]; t->map = R[5] == 0xff ? 0xff : R[5] & 7; t->chan = R[6]; } }
-void sdk_GXSetTevColorIn(void) { LOG(); TevSide *s = side(0); if (s) { s->a = R[4]; s->b = R[5]; s->c = R[6]; s->d = R[7]; } }
-void sdk_GXSetTevAlphaIn(void) { LOG(); TevSide *s = side(1); if (s) { s->a = R[4]; s->b = R[5]; s->c = R[6]; s->d = R[7]; } }
-void sdk_GXSetTevColorOp(void) { LOG(); TevSide *s = side(0); if (s) { s->op = R[4]; s->bias = R[5]; s->scale = R[6]; s->clamp = R[7]; s->out = R[8]; } }
-void sdk_GXSetTevAlphaOp(void) { LOG(); TevSide *s = side(1); if (s) { s->op = R[4]; s->bias = R[5]; s->scale = R[6]; s->clamp = R[7]; s->out = R[8]; } }
-void sdk_GXSetTevOp(void) {
-    LOG();
-    if (R[3] >= 16) return;
-    TevStage *t = &gx.tev[R[3]];
-    int c = R[3] ? 0 : 10, a = R[3] ? 0 : 5;   /* CPREV/APREV after stage 0, RASC/RASA at stage 0 */
+static TevSide *side(const u32 *r, int alpha) { return r[3] < 16 ? (alpha ? &gx.tev[r[3]].a : &gx.tev[r[3]].c) : NULL; }
+static void x_GXSetNumTevStages(const u32 *r) { gx.n_stages = r[3] & 31; }
+void sdk_GXSetNumTevStages(void) { LOG(); gq_regs(x_GXSetNumTevStages, 1); }
+static void x_GXSetTevOrder(const u32 *r) { if (r[3] < 16) { TevStage *t = &gx.tev[r[3]]; t->coord = r[4]; t->map = r[5] == 0xff ? 0xff : r[5] & 7; t->chan = r[6]; } }
+void sdk_GXSetTevOrder(void) { LOG(); gq_regs(x_GXSetTevOrder, 4); }
+static void x_GXSetTevColorIn(const u32 *r) { TevSide *s = side(r, 0); if (s) { s->a = r[4]; s->b = r[5]; s->c = r[6]; s->d = r[7]; } }
+void sdk_GXSetTevColorIn(void) { LOG(); gq_regs(x_GXSetTevColorIn, 5); }
+static void x_GXSetTevAlphaIn(const u32 *r) { TevSide *s = side(r, 1); if (s) { s->a = r[4]; s->b = r[5]; s->c = r[6]; s->d = r[7]; } }
+void sdk_GXSetTevAlphaIn(void) { LOG(); gq_regs(x_GXSetTevAlphaIn, 5); }
+static void x_GXSetTevColorOp(const u32 *r) { TevSide *s = side(r, 0); if (s) { s->op = r[4]; s->bias = r[5]; s->scale = r[6]; s->clamp = r[7]; s->out = r[8]; } }
+void sdk_GXSetTevColorOp(void) { LOG(); gq_regs(x_GXSetTevColorOp, 6); }
+static void x_GXSetTevAlphaOp(const u32 *r) { TevSide *s = side(r, 1); if (s) { s->op = r[4]; s->bias = r[5]; s->scale = r[6]; s->clamp = r[7]; s->out = r[8]; } }
+void sdk_GXSetTevAlphaOp(void) { LOG(); gq_regs(x_GXSetTevAlphaOp, 6); }
+static void x_GXSetTevOp(const u32 *r) {
+    if (r[3] >= 16) return;
+    TevStage *t = &gx.tev[r[3]];
+    int c = r[3] ? 0 : 10, a = r[3] ? 0 : 5;   /* CPREV/APREV after stage 0, RASC/RASA at stage 0 */
     static const u8 cin[5][4] = {{15, 8, 99, 15}, {99, 8, 9, 15}, {99, 12, 8, 15}, {15, 15, 15, 8}, {15, 15, 15, 99}};
     static const u8 ain[5][4] = {{7, 4, 99, 7}, {7, 7, 7, 99}, {7, 4, 99, 7}, {7, 7, 7, 4}, {7, 7, 7, 99}};
-    int m = R[4] < 5 ? R[4] : 0;
+    int m = r[4] < 5 ? r[4] : 0;
     u8 *cp = &t->c.a, *ap = &t->a.a;
     for (int i = 0; i < 4; i++) { cp[i] = cin[m][i] == 99 ? c : cin[m][i]; ap[i] = ain[m][i] == 99 ? a : ain[m][i]; }
     t->c.op = t->c.bias = t->c.scale = t->c.out = 0; t->c.clamp = 1;
     t->a.op = t->a.bias = t->a.scale = t->a.out = 0; t->a.clamp = 1;
 }
-void sdk_GXSetTevColor(void) { LOG(); if (R[3] < 4) { set_color(gx.tev_reg[R[3]], R[4]); for (int i = 0; i < 4; i++) gx.tev_s10[R[3]][i] = gx.tev_reg[R[3]][i]; } }
-void sdk_GXSetTevColorS10(void) { LOG(); if (R[3] < 4) for (int i = 0; i < 4; i++) { s16 v = rd16(R[4] + i * 2); gx.tev_s10[R[3]][i] = v; gx.tev_reg[R[3]][i] = v < 0 ? 0 : v > 255 ? 255 : v; } }
-void sdk_GXSetTevKColor(void) { LOG(); if (R[3] < 4) set_color(gx.kcolor[R[3]], R[4]); }
-void sdk_GXSetTevKColorSel(void) { LOG(); if (R[3] < 16) gx.tev[R[3]].ksel_c = R[4]; }
-void sdk_GXSetTevKAlphaSel(void) { LOG(); if (R[3] < 16) gx.tev[R[3]].ksel_a = R[4]; }
-void sdk_GXSetTevSwapMode(void) { LOG(); if (R[3] < 16) { gx.tev[R[3]].ras_swap = R[4] & 3; gx.tev[R[3]].tex_swap = R[5] & 3; if (R[4] & 3) ONCE("TEV raster swap %lu ignored\n", (unsigned long)(R[4] & 3)); } }
-void sdk_GXSetAlphaCompare(void) { LOG(); gx.alpha_cmp[0] = R[3]; gx.alpha_cmp[1] = R[4]; gx.alpha_cmp[2] = R[5]; gx.alpha_cmp[3] = R[6]; gx.alpha_cmp[4] = R[7]; }
+void sdk_GXSetTevOp(void) { LOG(); gq_regs(x_GXSetTevOp, 2); }
+static void x_GXSetTevColor(const u32 *p) { u32 id = p[0]; memcpy(gx.tev_reg[id], p + 1, 4); for (int i = 0; i < 4; i++) gx.tev_s10[id][i] = gx.tev_reg[id][i]; }
+void sdk_GXSetTevColor(void) { LOG(); if (R[3] < 4) { u32 *p = gq_begin(x_GXSetTevColor, 2, 0); p[0] = R[3]; p[1] = color_word(R[4]); gq_end(); } }
+static void x_GXSetTevColorS10(const u32 *p) {   /* register, then the four s16 read at the call */
+    u32 id = p[0];
+    for (int i = 0; i < 4; i++) { s16 v = (s16)p[1 + i]; gx.tev_s10[id][i] = v; gx.tev_reg[id][i] = v < 0 ? 0 : v > 255 ? 255 : v; }
+}
+void sdk_GXSetTevColorS10(void) {
+    LOG();
+    if (R[3] >= 4) return;
+    u32 *p = gq_begin(x_GXSetTevColorS10, 5, 0);
+    p[0] = R[3];
+    for (int i = 0; i < 4; i++) p[1 + i] = rd16(R[4] + i * 2);
+    gq_end();
+}
+static void x_GXSetTevKColor(const u32 *p) { memcpy(gx.kcolor[p[0]], p + 1, 4); }
+void sdk_GXSetTevKColor(void) { LOG(); if (R[3] < 4) { u32 *p = gq_begin(x_GXSetTevKColor, 2, 0); p[0] = R[3]; p[1] = color_word(R[4]); gq_end(); } }
+static void x_GXSetTevKColorSel(const u32 *r) { if (r[3] < 16) gx.tev[r[3]].ksel_c = r[4]; }
+void sdk_GXSetTevKColorSel(void) { LOG(); gq_regs(x_GXSetTevKColorSel, 2); }
+static void x_GXSetTevKAlphaSel(const u32 *r) { if (r[3] < 16) gx.tev[r[3]].ksel_a = r[4]; }
+void sdk_GXSetTevKAlphaSel(void) { LOG(); gq_regs(x_GXSetTevKAlphaSel, 2); }
+static void x_GXSetTevSwapMode(const u32 *r) { if (r[3] < 16) { gx.tev[r[3]].ras_swap = r[4] & 3; gx.tev[r[3]].tex_swap = r[5] & 3; if (r[4] & 3) ONCE("TEV raster swap %lu ignored\n", (unsigned long)(r[4] & 3)); } }
+void sdk_GXSetTevSwapMode(void) { LOG(); gq_regs(x_GXSetTevSwapMode, 3); }
+static void x_GXSetAlphaCompare(const u32 *r) { gx.alpha_cmp[0] = r[3]; gx.alpha_cmp[1] = r[4]; gx.alpha_cmp[2] = r[5]; gx.alpha_cmp[3] = r[6]; gx.alpha_cmp[4] = r[7]; }
+void sdk_GXSetAlphaCompare(void) { LOG(); gq_regs(x_GXSetAlphaCompare, 5); }
 
 /* ---------------------------------------------------------------- pixel engine */
-void sdk_GXSetBlendMode(void) { LOG(); gx.blend_type = R[3]; gx.blend_src = R[4]; gx.blend_dst = R[5]; gx.logic_op = R[6]; }
-void sdk_GXSetZMode(void) { LOG(); gx.z_enable = R[3]; gx.z_func = R[4]; gx.z_update = R[5]; }
-void sdk_GXSetColorUpdate(void) { LOG(); gx.color_update = R[3]; }
-void sdk_GXSetAlphaUpdate(void) { LOG(); gx.alpha_update = R[3]; }
+static void x_GXSetBlendMode(const u32 *r) { gx.blend_type = r[3]; gx.blend_src = r[4]; gx.blend_dst = r[5]; gx.logic_op = r[6]; }
+void sdk_GXSetBlendMode(void) { LOG(); gq_regs(x_GXSetBlendMode, 4); }
+static void x_GXSetZMode(const u32 *r) { gx.z_enable = r[3]; gx.z_func = r[4]; gx.z_update = r[5]; }
+void sdk_GXSetZMode(void) { LOG(); gq_regs(x_GXSetZMode, 3); }
+static void x_GXSetColorUpdate(const u32 *r) { gx.color_update = r[3]; }
+void sdk_GXSetColorUpdate(void) { LOG(); gq_regs(x_GXSetColorUpdate, 1); }
+static void x_GXSetAlphaUpdate(const u32 *r) { gx.alpha_update = r[3]; }
+void sdk_GXSetAlphaUpdate(void) { LOG(); gq_regs(x_GXSetAlphaUpdate, 1); }
 
 /* ---------------------------------------------------------------- copy */
-void sdk_GXSetDispCopySrc(void) { LOG(); if (R[5] && R[6]) { gx.efb_w = R[5]; gx.efb_h = R[6]; } }
-void sdk_GXSetCopyClear(void) { LOG(); set_color(gx.clear_color, R[3]); gx.clear_z = R[4] & 0xffffff; }
-void sdk_GXCopyTex(void) {
-    LOG();
-    u32 a = GUEST(R[3]);
+static void x_GXSetDispCopySrc(const u32 *r) { if (r[5] && r[6]) { gx.efb_w = r[5]; gx.efb_h = r[6]; } }
+void sdk_GXSetDispCopySrc(void) { LOG(); gq_regs(x_GXSetDispCopySrc, 4); }
+static void x_GXSetCopyClear(const u32 *p) { memcpy(gx.clear_color, p, 4); gx.clear_z = p[1]; }   /* colour, z */
+void sdk_GXSetCopyClear(void) { LOG(); u32 *p = gq_begin(x_GXSetCopyClear, 2, 0); p[0] = color_word(R[3]); p[1] = R[4] & 0xffffff; gq_end(); }
+static void x_GXCopyTex(const u32 *r) {
+    u32 a = GUEST(r[3]);
     for (int i = 0; i < 8; i++) if (copy_dst[i] == a) return;
     for (int i = 0; i < 8; i++) if (!copy_dst[i]) { copy_dst[i] = a; return; }
     ONCE("more than 8 EFB copy destinations\n");
 }
+void sdk_GXCopyTex(void) { LOG(); gq_regs(x_GXCopyTex, 1); }
 
+static void x_GXCopyDisp(const u32 *r) { frame_end(); if (r[4]) clear_pending = 1; }
 void sdk_GXCopyDisp(void) {
     LOG();
-    frame_end();
-    if (R[4]) clear_pending = 1;
+    gq_regs(x_GXCopyDisp, 2);   /* r4: clear */
+    game_frames++;
+    __dmb();   /* the frame's guest writes before the epoch that ends it (epoch_now) */
+    recomp_wr_epoch = game_frames + 1;
+    if (recomp_gx_thread) { gq_publish(); gq_wait(gq_copy_prev); gq_copy_prev = gq_wl; }   /* at most one frame queued */
 }

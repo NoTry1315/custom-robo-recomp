@@ -96,6 +96,7 @@ void sdk_PADRead(void) {
     hidScanInput();
     u32 held = hidKeysHeld();
     if (hidKeysDown() & KEY_ZL) recomp_gx_kick_toggle();   /* not a game button: A/B mid-frame GPU submit */
+    if (hidKeysDown() & KEY_TOUCH) recomp_gx_thread_toggle();   /* not a game input either: A/B GX thread */
     u16 b = 0;
     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++) if (held & map[i].key) b |= map[i].pad;
     b |= script_buttons();

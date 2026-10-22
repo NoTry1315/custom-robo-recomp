@@ -259,11 +259,14 @@ void recomp_ax_service(void);           /* AX frame callbacks due since the last
 extern u32 recomp_ai_dma_cb, recomp_ai_dma_addr, recomp_ai_dma_len;   /* AI DMA (runtime/ai.c) */
 /* frame timing (runtime/log.c): ticks spent per bucket, logged by VI */
 enum { PROF_GX_VTX, PROF_GX_TEX, PROF_GX_END, PROF_AUDIO, PROF_GX_STATE,
-       PROF_VX_UNIF, PROF_VX_DEC, PROF_VX_DL, PROF_LOG, PROF_PREDRAW, PROF_GX_SYNC, PROF_GPU, PROF_GPU_SPAN, PROF_DVD, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others); PROF_GX_SYNC: C3D_FrameBegin (vblank cap + GPU queue wait); PROF_GPU: GPU queue time from C3D_FrameEnd to queue done (C3D_GetDrawingTime; with mid-frame submits only the tail); PROF_GPU_SPAN: first mid-frame submit (else C3D_FrameEnd) to queue done; PROF_DVD: game thread waiting for the DVD reader thread (inside the others) */
+       PROF_VX_UNIF, PROF_VX_DEC, PROF_VX_DL, PROF_LOG, PROF_PREDRAW, PROF_GX_SYNC, PROF_GPU, PROF_GPU_SPAN, PROF_DVD,
+       PROF_GX_WAIT, PROF_GX_BUSY, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others); PROF_GX_SYNC: C3D_FrameBegin (vblank cap + GPU queue wait); PROF_GPU: GPU queue time from C3D_FrameEnd to queue done (C3D_GetDrawingTime; with mid-frame submits only the tail); PROF_GPU_SPAN: first mid-frame submit (else C3D_FrameEnd) to queue done; PROF_DVD: game thread waiting for the DVD reader thread (inside the others); with the GX thread (recomp_gx_thread) the PROF_GX_* and PROF_VX_* buckets are GX-thread time, PROF_GX_WAIT is the game thread waiting for it, PROF_GX_BUSY the GX thread handling records */
 extern u64 recomp_prof[PROF_N];
 extern volatile u32 recomp_logw_since;  /* low word of the tick the log writer's fwrite+fflush began, 0 = idle */
 extern volatile u32 recomp_logw_n;      /* log writes finished */
 struct Thread_tag *recomp_aux_thread(void (*f)(void *), size_t stack, int prio);   /* thread off the game's core (log.c) */
+int  recomp_aux_core(void);             /* the core recomp_aux_thread uses: 2 (New 3DS), 1 or 0 */
+void recomp_thread_crash_log(void);     /* crashes on the calling thread end the log too (log.c) */
 extern u64 recomp_first_draw;   /* tick of the frame's first GX draw (0 = none yet); PROF_PREDRAW: frame time before it */
 extern u32 recomp_run_frames;
 u64 recomp_ticks(void);
@@ -275,6 +278,14 @@ u8 recomp_aram_read8(u32 a);            /* ARAM byte (runtime/ar.c) */
 void recomp_wait_point(void);           /* pending "interrupts": DVD, then ARQ */
 u64  recomp_timebase(void);             /* Gekko timebase, 40.5 MHz */
 void recomp_gx_init(void);             /* citro3d, render target, shader */
+void recomp_gx_start(void);            /* flag files, then the GX thread on core 2 (after recomp_log_open) */
+void recomp_gx_sync(void);             /* game thread: wait until the GX thread handled every GX call so far */
+void recomp_gx_retrace(void);          /* VIWaitForRetrace: sync, then apply a requested GX thread on/off */
+void recomp_gx_thread_toggle(void);    /* bottom-screen tap: GX thread on/off at the next retrace */
+void recomp_gx_stop(void);             /* at exit: sync, then end the GX thread */
+extern int recomp_gx_thread;           /* GX calls are handled on the GX thread now (else inline on the game thread) */
+extern u32 recomp_gx_thread_flips;     /* GX thread switches so far (for the # time lines) */
+void recomp_status(const char *s);     /* bottom screen's fixed last row (main.c; game thread) */
 void recomp_gx_kick_toggle(void);      /* ZL: mid-frame GPU submit on/off from the next frame */
 extern int recomp_gx_kick_on;          /* mid-frame GPU submit mode now (for the # time lines) */
 extern u32 recomp_gx_kick_flips;       /* ZL toggles so far */

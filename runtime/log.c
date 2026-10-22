@@ -65,6 +65,7 @@ static Thread aux_thread(ThreadFunc f, size_t stack, int prio) {
     return threadCreate(f, NULL, stack, prio, aux_core, true);
 }
 Thread recomp_aux_thread(ThreadFunc f, size_t stack, int prio) { return aux_thread(f, stack, prio); }
+int recomp_aux_core(void) { return aux_core; }   /* probed by the first aux_thread (recomp_log_open) */
 
 void recomp_prof_sampler_start(void) {
     s32 prio = 0x30;
@@ -89,52 +90,72 @@ static void sampler_dump(u32 retrace) {
 
 static u64 log_worst;   /* longest single recomp_log write since the last frame */
 
+/* the GX thread adds to its buckets while this runs, and a u64 is two stores: read until stable */
+static u64 prof_get(int i) { volatile u64 *p = &recomp_prof[i]; u64 a, b; do { a = *p; b = *p; } while (a != b); return a; }
+
 void recomp_prof_frame(u32 retrace) {
     static u64 last, start, worst;
     static u64 sum[PROF_N];
     u64 now = svcGetSystemTick();
     static u64 fsum[PROF_N];   /* per-frame snapshot, for the stall line */
+    u64 cur[PROF_N];
     if (last) {
         u64 dt = now - last;
         recomp_prof[PROF_PREDRAW] += recomp_first_draw > last ? recomp_first_draw - last : (recomp_first_draw ? 0 : dt);
+    }
+    for (int i = 0; i < PROF_N; i++) cur[i] = prof_get(i);
+    if (last) {
+        u64 dt = now - last;
         if (dt > worst) worst = dt;
         if (dt > SYSCLOCK_ARM11 / 2) {   /* one frame over 0.5 s: where it went */
             double m = 1000.0 / SYSCLOCK_ARM11;
             u64 d[PROF_N];
-            for (int i = 0; i < PROF_N; i++) d[i] = recomp_prof[i] - fsum[i];
+            for (int i = 0; i < PROF_N; i++) d[i] = cur[i] - fsum[i];
             u64 lw = log_worst;
-            recomp_log("# stall r%lu: frame %.0f ms: gx vertex %.0f, gx tex %.0f, gx state %.0f, gx end/wait %.0f, gx sync %.0f, audio %.0f, log writes %.0f (longest %.0f), dvd wait %.0f, rest (game) %.0f\n",
-                (unsigned long)retrace, dt * m, d[PROF_GX_VTX] * m, d[PROF_GX_TEX] * m, d[PROF_GX_STATE] * m, d[PROF_GX_END] * m, d[PROF_GX_SYNC] * m, d[PROF_AUDIO] * m,
-                d[PROF_LOG] * m, lw * m, d[PROF_DVD] * m, (double)(dt - d[PROF_GX_VTX] - d[PROF_GX_TEX] - d[PROF_GX_STATE] - d[PROF_GX_END] - d[PROF_GX_SYNC] - d[PROF_AUDIO]) * m);
+            if (recomp_gx_thread)   /* the gx buckets ran on the GX thread */
+                recomp_log("# stall r%lu: frame %.0f ms: gx wait %.0f, audio %.0f, log writes %.0f (longest %.0f), dvd wait %.0f, rest (game) %.0f; gx thread busy %.0f (sync %.0f)\n",
+                    (unsigned long)retrace, dt * m, d[PROF_GX_WAIT] * m, d[PROF_AUDIO] * m, d[PROF_LOG] * m, lw * m, d[PROF_DVD] * m,
+                    (double)(dt - d[PROF_GX_WAIT] - d[PROF_AUDIO]) * m, d[PROF_GX_BUSY] * m, d[PROF_GX_SYNC] * m);
+            else
+                recomp_log("# stall r%lu: frame %.0f ms: gx vertex %.0f, gx tex %.0f, gx state %.0f, gx end/wait %.0f, gx sync %.0f, audio %.0f, log writes %.0f (longest %.0f), dvd wait %.0f, rest (game) %.0f\n",
+                    (unsigned long)retrace, dt * m, d[PROF_GX_VTX] * m, d[PROF_GX_TEX] * m, d[PROF_GX_STATE] * m, d[PROF_GX_END] * m, d[PROF_GX_SYNC] * m, d[PROF_AUDIO] * m,
+                    d[PROF_LOG] * m, lw * m, d[PROF_DVD] * m, (double)(dt - d[PROF_GX_VTX] - d[PROF_GX_TEX] - d[PROF_GX_STATE] - d[PROF_GX_END] - d[PROF_GX_SYNC] - d[PROF_AUDIO]) * m);
         }
     } else start = now;
     last = now;
     recomp_first_draw = 0;
-    for (int i = 0; i < PROF_N; i++) fsum[i] = recomp_prof[i];
+    for (int i = 0; i < PROF_N; i++) fsum[i] = cur[i];
     log_worst = 0;
     if (retrace % 60 || retrace == 0) return;
     double ms = 1000.0 / SYSCLOCK_ARM11, wall = (now - start) * ms;
-    double vtx = (recomp_prof[PROF_GX_VTX] - sum[PROF_GX_VTX]) * ms / 60, tex = (recomp_prof[PROF_GX_TEX] - sum[PROF_GX_TEX]) * ms / 60;
-    double end = (recomp_prof[PROF_GX_END] - sum[PROF_GX_END]) * ms / 60, aud = (recomp_prof[PROF_AUDIO] - sum[PROF_AUDIO]) * ms / 60;
-    double st = (recomp_prof[PROF_GX_STATE] - sum[PROF_GX_STATE]) * ms / 60, sync = (recomp_prof[PROF_GX_SYNC] - sum[PROF_GX_SYNC]) * ms / 60;
+    double vtx = (cur[PROF_GX_VTX] - sum[PROF_GX_VTX]) * ms / 60, tex = (cur[PROF_GX_TEX] - sum[PROF_GX_TEX]) * ms / 60;
+    double end = (cur[PROF_GX_END] - sum[PROF_GX_END]) * ms / 60, aud = (cur[PROF_AUDIO] - sum[PROF_AUDIO]) * ms / 60;
+    double st = (cur[PROF_GX_STATE] - sum[PROF_GX_STATE]) * ms / 60, sync = (cur[PROF_GX_SYNC] - sum[PROF_GX_SYNC]) * ms / 60;
     double frame = wall / 60;
-    recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, gx sync %.1f, audio %.1f (log writes %.1f, dvd wait %.1f, inside the others)\n",
-               (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - sync - aud, vtx, tex, st, end, sync, aud,
-               (recomp_prof[PROF_LOG] - sum[PROF_LOG]) * ms / 60, (recomp_prof[PROF_DVD] - sum[PROF_DVD]) * ms / 60);
-    double pre = (recomp_prof[PROF_PREDRAW] - sum[PROF_PREDRAW]) * ms / 60, gpu = (recomp_prof[PROF_GPU] - sum[PROF_GPU]) * ms / 60;
-    double span = (recomp_prof[PROF_GPU_SPAN] - sum[PROF_GPU_SPAN]) * ms / 60;
-    static u32 flips;   /* a window with a ZL toggle in it mixes both modes */
+    if (recomp_gx_thread) {
+        double wait = (cur[PROF_GX_WAIT] - sum[PROF_GX_WAIT]) * ms / 60, busy = (cur[PROF_GX_BUSY] - sum[PROF_GX_BUSY]) * ms / 60;
+        recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx wait %.1f, audio %.1f (log writes %.1f, dvd wait %.1f, inside the others); gx thread busy %.1f: vertex %.1f, tex %.1f, state %.1f, end/wait %.1f, sync %.1f\n",
+                   (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - wait - aud, wait, aud,
+                   (cur[PROF_LOG] - sum[PROF_LOG]) * ms / 60, (cur[PROF_DVD] - sum[PROF_DVD]) * ms / 60, busy, vtx, tex, st, end, sync);
+    } else
+        recomp_log("# time r%lu: %.1f fps, frame %.1f ms (worst %.1f): game %.1f, gx vertex %.1f, gx tex %.1f, gx state %.1f, gx end/wait %.1f, gx sync %.1f, audio %.1f (log writes %.1f, dvd wait %.1f, inside the others)\n",
+                   (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - sync - aud, vtx, tex, st, end, sync, aud,
+                   (cur[PROF_LOG] - sum[PROF_LOG]) * ms / 60, (cur[PROF_DVD] - sum[PROF_DVD]) * ms / 60);
+    double pre = (cur[PROF_PREDRAW] - sum[PROF_PREDRAW]) * ms / 60, gpu = (cur[PROF_GPU] - sum[PROF_GPU]) * ms / 60;
+    double span = (cur[PROF_GPU_SPAN] - sum[PROF_GPU_SPAN]) * ms / 60;
+    static u32 flips, gflips;   /* a window with a ZL toggle (or a bottom-screen tap) in it mixes both modes */
     const char *kick = recomp_gx_kick_flips != flips ? "mixed" : recomp_gx_kick_on ? "on" : "off";
-    flips = recomp_gx_kick_flips;
-    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s\n",
-               (unsigned long)retrace, pre, frame - pre, gpu, span, kick);
+    const char *gxt = recomp_gx_thread_flips != gflips ? "mixed" : recomp_gx_thread ? "on" : "off";
+    flips = recomp_gx_kick_flips; gflips = recomp_gx_thread_flips;
+    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s, gx thread %s\n",
+               (unsigned long)retrace, pre, frame - pre, gpu, span, kick, gxt);
     if (retrace % 300 == 0) {
-        double un = (recomp_prof[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (recomp_prof[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
-        double dl = (recomp_prof[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;
+        double un = (cur[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (cur[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
+        double dl = (cur[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;
         recomp_log("# time r%lu gx vertex: uniforms %.1f, decode %.1f, rest %.1f; display lists %.1f, immediate %.1f\n",
                    (unsigned long)retrace, un, dec, vtx - un - dec, dl, vtx - dl);
     }
-    for (int i = 0; i < PROF_N; i++) sum[i] = recomp_prof[i];
+    for (int i = 0; i < PROF_N; i++) sum[i] = cur[i];
     start = now; worst = 0;
     if (retrace % 300 == 0) sampler_dump(retrace);
 }
@@ -352,13 +373,15 @@ static void on_exception(ERRF_ExceptionInfo *e, CpuRegisters *r) {
              (unsigned long)e->far, (unsigned long)r->sp);
     crash(buf, r->pc, r->lr);
 }
+/* libctru keeps the handler per thread (TLS): the game thread, and the GX thread */
+void recomp_thread_crash_log(void) { threadOnException(on_exception, RUN_HANDLER_ON_FAULTING_STACK, WRITE_DATA_TO_HANDLER_STACK); }
 
 void recomp_log_open(void) {
     LightLock_Init(&lock);
     LightLock_Init(&wlock);
     LightEvent_Init(&log_ev, RESET_ONESHOT);
     log_fp = fopen(LOG_PATH, "w");
-    threadOnException(on_exception, RUN_HANDLER_ON_FAULTING_STACK, WRITE_DATA_TO_HANDLER_STACK);
+    recomp_thread_crash_log();
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     aux_thread(watchdog, 0x2000, prio - 1);

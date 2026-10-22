@@ -44,6 +44,9 @@ void sdk_VIWaitForRetrace(void) {
         (unsigned long)rd32(0x80321d88), (unsigned long)rd32(0x80321d98), (unsigned long)rd32(0x80321dc0), (unsigned long)rd32(0x80321dc8),
         (unsigned long)rd32(0x80321db4), rd8(0x8044f3d0), (unsigned long)rd32(0x8044f3d4));   /* scene struct 0x80321d88, logo index, loader flags (see recomp_unknowns.md) */
     if (retrace >= recomp_run_frames) recomp_done("run length reached");
-    /* HOME / power / sleep: APT suspends us inside aptMainLoop, false = close requested */
+    /* HOME / power / sleep: APT suspends us inside aptMainLoop, false = close requested.
+     * citro3d's APT hooks run in there: the GX thread must be idle (it normally is,
+     * GXDrawDone waited for it). A bottom-screen tap's GX thread on/off is applied here too. */
+    recomp_gx_retrace();
     if (!aptMainLoop()) recomp_done("APT exit");
 }

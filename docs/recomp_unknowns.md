@@ -620,6 +620,85 @@ Profile (Citra battle replay r3600, `make FNPROF=1`): game-side top 0x801a4558 1
   signed registers are now part of the TEV change check).
 - Not timed on hardware: 640x480 JPEG decode at 30 fps on the ARM11 is the likely cost.
 
+## GX thread (2026-10-21)
+
+Why: battle and campaign are CPU-bound and the GX host work is the one concentrated cost (hw run 23
+battle: 7.9 of 28.6 ms in gx vertex/tex/state; the sampler puts 28-31% of samples on the return from
+GXCallDisplayList), while core 2 only runs the helper threads (log writer, sampler, watchdog, DVD
+reader). Design:
+
+- Record and replay (runtime/gx.c "GX thread"). Each GX call becomes a record in a 1 MB ring (`gq`,
+  single producer = game thread, single consumer = GX thread on core 2): the handler's address plus
+  its inputs. The GX thread runs the same handler bodies, in the same order, on its own `gx` state;
+  everything after them (setup_draw_state, uniforms, vertex/display-list/texture caches, citro3d) is
+  unchanged and runs only there. Records: register arguments (r3..r10) for plain setters; for the
+  calls that read guest memory at call time, a copy of what they read (GXLoad*MtxImm matrices,
+  GXSetProjection(v) and GXSetViewport results, GXSetTevColor/S10/KColor, GXSetChanMat/AmbColor and
+  GXSetCopyClear colours, GXLoadLightObjImm, GXLoadTexObj (the decoded TexMap), GXLoadTlut);
+  GXCallDisplayList as (list, size, r1); write-gather pipe bytes as one record per run of complete
+  commands (the FIFO is assembled on the game thread, which keeps the vertex-format state, desc/vat,
+  to know where a primitive ends); GXCopyDisp as (clear flag).
+- Stays on the game thread: everything that writes guest memory or returns a value (GXInit*,
+  TPLGet*, GXGetProjectionv/GXGetViewportv from a shadow of projection/viewport, the region and
+  draw-done callbacks), LOG() counts, the FIFO assembly.
+- What the GX thread still reads later from guest memory: display-list bytes, vertex arrays,
+  textures and TLUT data. The GameCube GPU also reads these asynchronously from the FIFO, so the game
+  already keeps them intact until it syncs; the sync point is GXDrawDone/GXWaitDrawDone (called
+  every frame, right after GXCopyDisp), which now waits until the GX thread has processed every
+  record before it (then runs the draw-done callback as before). VIWaitForRetrace also waits before
+  aptMainLoop, so citro3d's APT hooks never run while the GX thread uses citro3d. GXCopyDisp waits
+  while more than one frame is queued (only matters if a scene never calls GXDrawDone).
+- Pacing is unchanged: the 60 Hz cap and the GPU queue wait stay in frame_begin, now on the GX thread;
+  the game thread meets them through the GXDrawDone wait.
+- Write-tracking epochs (`recomp_wr_epoch`) are advanced by the game thread at GXCopyDisp (after a
+  barrier), and every cache entry takes its epoch before it hashes (was after; same value when single
+  threaded). A write stamped below an entry's epoch therefore happened before its hash.
+  range_clean uses the r1 recorded with the draw instead of reading R[1].
+- Wake-ups: records are published (barrier + index store) at draws, frame ends and waits, not per
+  setter. The GX thread spins ~1 ms for more work before sleeping on a LightEvent, and the game
+  thread only signals it when it announced sleeping (Dekker-style flags with barriers; both waits
+  also time out, as a guard). The GX thread runs at the game's priority + 2, so the helper threads on
+  core 2 (all higher) preempt its spin.
+- libctru's linear allocator has no lock and both threads now allocate (ax.c ndsp buffers on the game
+  thread, textures on the GX thread): linearAlloc/linearMemAlign/linearFree are wrapped (`--wrap`)
+  with a LightLock.
+- Only with core 2 (New 3DS); otherwise records run inline on the game thread at once (the old
+  behaviour, same code). With core 2 the thread always exists and a bottom-screen tap (runtime/pad.c,
+  KEY_TOUCH; ZR stays the Z button) switches between it and inline: applied in VIWaitForRetrace right
+  after the sync, so every record so far has been handled and the other thread carries on with the
+  same gx and citro3d state. sdmc:/cr_gxthread_off.txt = start inline. Each switch is logged
+  (`# gx r<n>: GX thread on|off (bottom-screen tap)`, or the flag's name) and the `# time .. split:` line ends with
+  `gx thread on|off|mixed` (mixed: a switch inside that 60-retrace window, drop it from averages).
+  sdmc:/cr_gxthread_fliptest.txt = a switch every 300 retraces (at r150, 450, ..), to test the switch.
+- Bottom screen: rows 0-28 scroll as before; row 29 is a fixed status line (main.c recomp_status,
+  a second PrintConsole window) with both A/B toggles as they are now, e.g. `ZL gpukick ON   tap gx
+  thread ON`, redrawn by the game thread when one changes. The ZL toggle's bottom-screen printf (it
+  ran in frame_begin, now on the GX thread) is gone, so only the game thread writes to the console.
+- Flag files are now all read once at start (recomp_gx_start), not at first use (a lazy fopen
+  stalled 4 s at r13 in hw runs 17b/19b).
+- Timing: in GX-thread mode the gx vertex/tex/state/end/sync buckets are GX-thread time (parallel);
+  the `# time` line becomes `game X, gx wait W, audio A (...); gx thread busy B: vertex .., tex ..,
+  state .., end/wait .., sync ..` with game = frame - gx wait - audio. `gx wait` = game thread
+  blocked on the GX thread (draw-done sync, frame limit, ring full).
+- Expected (not measured): battle 28.6 -> ~21 ms (the GX work overlaps the game code; the game still
+  pays LOG, the setter calls and recording).
+- Citra (logs/2026-10-21_gxthread; replays of rec-to-battle, hw runs 20, 21 and 23, cr_fbdump.txt;
+  this build with the GX thread, the same with cr_gxthread_off.txt, and main@a9cb4f7): SDK call (r3-r6,
+  lr), pad, scene and summary-count lines identical in all three (summary rows compared as a set:
+  qsort orders equal counts differently per binary; the leftover r4 of one VIGetRetraceCount is
+  wall-clock, as before) and every framebuffer dump byte-identical. Only other log difference: the
+  frame-0 `# gx batch` line no longer says "(batching off)" (the old lazy flag read was still 2,
+  i.e. true, at frame 0). Citra runs both threads in parallel: scene 5 menus 42-44 fps with the flag
+  vs 60 (cap) without it (Citra time is instruction counts, not hardware). Coverage of those runs:
+  boot, logo, title (display-list tunnel), title menu, Vs. menus only: the Citra memory card folder
+  (sdmc:/custom-robo/save) was broken by the test script's save restore (a file instead of the
+  folder), so the title waited on the card and no replay reached battle or campaign.
+- Citra, no memory card (cr_card_off.txt, as the 2026-10-18 recordings were made; logs `*-nocard-*`):
+  rec-to-battle reaches battle (scene 4.0 r1920, 4.2 r2400) and pause-ok the campaign (8.3 from
+  r1470). GX thread on, cr_gxthread_off.txt, cr_gxthread_fliptest.txt (8 switches per run) and
+  main@a9cb4f7: SDK/pad/scene/summary lines identical and framebuffer dumps r1500/1980/2100
+  byte-identical, battle and campaign. Not yet on hardware.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 

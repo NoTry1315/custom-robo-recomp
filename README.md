@@ -80,7 +80,8 @@ sdmc:/custom-robo/files/...     <- the whole data/extracted/files/ tree
 Start it from the Homebrew Launcher. Saves go to `sdmc:/custom-robo/save/`
 (memory card in slot A). Each run writes `sdmc:/cr_autotest.log`, which is
 overwritten at the next start; rename it to keep it. The bottom screen shows
-the build and any flag files present.
+the build and any flag files present; its last line always shows the two A/B
+toggles as they are now (`ZL gpukick ON   tap gx thread ON`).
 
 ## Controls
 
@@ -92,6 +93,7 @@ the build and any flag files present.
 | ZR | Z |
 | Hold SELECT | input goes to controller 2 (Vs. mode) |
 | ZL | toggles mid-frame GPU submit (A/B testing) |
+| Tap the bottom screen | toggles the GX thread (A/B testing; New 3DS only) |
 
 ## Test flags
 
@@ -100,6 +102,8 @@ can be compared with a feature on and off:
 
 | File | Effect |
 |---|---|
+| `cr_gxthread_off.txt` | start with the GX thread off: GX work on the game thread (a tap toggles it) |
+| `cr_gxthread_fliptest.txt` | switch the GX thread on/off every 300 retraces (tests the switch) |
 | `cr_gpukick_off.txt` | start with mid-frame GPU submit off (ZL toggles it) |
 | `cr_batch_off.txt` | no draw batching |
 | `cr_dlcache_off.txt` | no display-list cache |
@@ -125,7 +129,9 @@ Citra autotests: `tools/citra/autotest.ps1`.
 - `runtime/gx.c` maps GX onto citro3d: TEV stages to PICA texenv, transform,
   lighting and texgen in a PICA vertex shader, textures decoded and cached,
   vertex and display-list caches, draw batching, and mid-frame GPU submits so
-  the GPU works while the CPU builds the frame.
+  the GPU works while the CPU builds the frame. On a New 3DS this all runs on a
+  GX thread on core 2: the game thread only records each GX call and its inputs
+  into a queue, and waits for the GX thread at `GXDrawDone`.
 - DVD reads come from the extracted files on the SD card (on a reader thread);
   AX audio is mixed on the CPU and played through ndsp; the memory card is a
   folder of files.
