@@ -739,6 +739,72 @@ reader). Design:
 - Citra replay of rec-to-battle (no card): SDK/pad/retrace lines and summary counts identical to the
   base build (only OSTicksToCalendarTime's wall-clock r4 differs, as before). Screenshot checked.
 
+## Codegen per guest instruction (2026-10-21)
+
+Battle is CPU-bound on the game thread with a flat profile, so these change what every translated
+function compiles to (recomp.py and ppc.h only; game semantics unchanged):
+
+- ppc.h memory helpers (`rd*/wr*`, `_ram`, bit casts) are `always_inline` (`RI`): in gen/'s large
+  functions GCC had stopped inlining them (37.5k out-of-line calls in 886 functions, e.g. rd16/wr16/wr8
+  on f_80090710's flag bytes). Alone this grew gen/ from 1.52 M to 2.01 M instructions; the items below
+  bring it back to 1.58 M.
+- psq_l/psq_st with I = 0 (MWCC's f14-f31 saves/restores, PSMTX-style code; 4.7k sites) emit
+  `psq_ld0/psq_st0`: float type without loading GQR0 or switching on its type; r1-relative ones skip
+  IS_HW and WR_MARK like other stack accesses (they went through wr32 before). Assumes GQR0 = 0, as
+  the native MTX functions already did. Guards: recomp.py records any translated mtspr GQR0 (there is
+  none) and then defines RECOMP_GQR0_WRITTEN in funcs.h, which turns psq_ld0/psq_st0 back into the
+  general psq_ld/psq_st; `check_gqr_writes()` fails the run if runtime/*.c writes cpu.gqr[0] other than 0
+  or uses a computed GQR index outside GQR_INDEX_OK (thp.c sets GQR2-5). I != 0 sites keep psq_ld/psq_st.
+- fctiw/fctiwz (558 sites, all fctiwz): `fctiw_bits` uses ARM `vcvt.s32.f64` (toward zero) /
+  `vcvtr.s32.f64` (FPSCR mode, nearest like the old rint) instead of libm trunc/rint. VCVT saturates to
+  0x7FFFFFFF/0x80000000 like the old clamps and gives 0 for NaN, which stays special-cased to
+  0x80000000; the -0 upper-word quirk is unchanged. Non-ARM builds keep the C version.
+- `so` is reloaded as `cpu.xer_so & 1u` (it is only ever 0 or 1: set_xer, mcrxr): GCC then knows
+  `cmp_s(..) | so` cannot set LT/GT/EQ, and branches on those bits test the compare only (12.2k
+  `tst #2/4/8` instructions -> 0.8k, -100k instructions).
+- r1- and r11-relative accesses with a constant offset (r11 = r1 + N in the inlined _savegpr/_savefpr)
+  are emitted as `rd32_sp(r1, k)` etc. (`stack_access()`): `ram + (r1 & RAM_MASK) + k`, so the mask is
+  computed once per r1 value and k becomes the load/store offset. `rd32_ram(r1 + k)` masked every
+  address, and GCC often precomputed those addresses and spilled them to the C stack. Update forms
+  (stwu r1, psq_stu) and indexed ones keep `*_ram`. Assumes r1 & RAM_MASK is more than 32 KB from both
+  ends of the mirror (else `ram + off` and the old wrapped mask differ); recomp_call_guest (cpu.c) logs
+  `# r1 ... within 64 KB of the RAM mirror's end` once if r1 is ever there. The stack is at 0x8046xxxx.
+- r2/r13 (SDA bases): `fold_base_regs()` checks that in all translated functions (Func write masks) the
+  only writes are __start's lis/ori pair, giving the value cpu_init also sets, and then replaces their
+  other reads by the constant (r13: 18221 reads, r2: 653). r13/r2-relative loads and stores get constant
+  addresses: no IS_HW check, no base register (-180k instructions). If the check fails it prints
+  `note: rN not folded` and nothing changes.
+- fneg/fabs/fnabs and ps_neg/abs/nabs use `-d` / `fabs()` (`fneg_d` etc.): VNEG/VABS change only the
+  sign bit (ARM: not arithmetic, no NaN processing, not flushed in RunFast mode), so they are exact for
+  all inputs; the `d2u ^ sign` form went through core registers and a C-stack round trip.
+- Stores to a compile-time constant WGPIPE address (0xCC008000, 705 sites in 22 functions) call
+  `recomp_gx_fifo_write` directly (`HW_WRITE`), as hw_write would.
+- Tried and dropped: `__attribute__((cold))` on hw_read/hw_write/recomp_poll_events (no hot/cold split
+  on this target, +47k instructions); masking a store's offset once for both the store and its WR_MARK
+  page through an empty asm (-17k static instructions, no measurable Citra change). For scale, removing
+  WR_MARK altogether (experiment only, wrong results) gave battle game 22.2 -> 21.1 ms.
+- Citra replays (`tools/citra/replay.ps1`, compare_logs.py exit 0 for every step: same SDK/pad/scene/
+  summary lines, byte-identical framebuffer dumps) vs 40f52fc, game ms (time_avg.py; battle scene 4.2
+  from r2460, campaign scene 8.3), f_ instructions (objdump) and .text, cumulative:
+
+  | step | battle game | campaign game | f_ instructions | .text MB |
+  |---|---|---|---|---|
+  | base 40f52fc | 28.3 | 14.4 | 1,522,525 | 6.73 |
+  | always_inline | 26.6 | 13.5 | 2,008,567 | 8.64 |
+  | + psq GQR0 | 25.0 | 12.8 | 1,929,998 | 8.29 |
+  | + fctiw vcvt | 24.9 | 12.8 | 1,921,845 | 8.25 |
+  | + so & 1 | 24.3 | 12.5 | 1,822,008 | 7.85 |
+  | + stack base+offset | 23.2 | 12.1 | 1,758,530 | 7.61 |
+  | + r2/r13 constants | 22.5 | 11.9 | 1,580,026 | 6.90 |
+  | + fneg/fabs, WGPIPE direct | 22.2 | 11.8 | 1,577,050 | 6.89 |
+
+  Battle frame 30.7 -> 24.7 ms (GX thread busy 18.5 -> 18.7, it varies a little per build with the
+  game/GX thread interplay); campaign frame 17.3 -> 17.2 ms (paced, now waiting more on GX/GPU).
+  Static mix base -> final: C-stack ldr/str 12.2% -> 10.3%, vldr/vstr 1.7% -> 2.2%; out-of-line calls
+  to rd*/wr*/psq_*/fctiw_bits/trunc 43.5k -> 720 (psq with GQR5/6: quant, psq_ld). The inlined IS_HW
+  slow paths (36k hw_read + 18.8k hw_write calls, never taken in these replays) sit at function ends.
+- Not yet on hardware: Citra time counts instructions, not I-cache misses; .text is 2% larger than base.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
