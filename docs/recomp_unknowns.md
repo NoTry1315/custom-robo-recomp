@@ -1217,7 +1217,9 @@ Not done (by the counts above):
 - Title/menus unchanged at ~60 fps.
 - Not covered: the main merge with audio pacing (8edc577) has not been run on hardware.
 
-## Vertex shader variants (2026-10-22)
+## Vertex shader variants (2026-10-22, reverted)
+
+**Reverted:** on New 3DS hardware (run 26) the variants hang the GPU at the first draw that uses them (boot froze at frame 12; switching to them in campaign froze too). Citra did not show it. Cause not found; the single shader is the only path again. Notes kept for a later retry.
 
 - One PICA program ran every path (`runtime/vshader.v.pica`: lighting behind `ifu blit`, three
   projective texgens always). Now 14 variants (`tools/gen_vsh.py` -> `runtime/vsh/*.v.pica`, generated,

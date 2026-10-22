@@ -31,8 +31,6 @@ static int ax_get(void) { return recomp_ax_rt < 0 ? -1 : recomp_ax_rt; }
 static int cull_get(void) { return !recomp_gx_cull_off; }
 static int mip_get(void) { return !recomp_tex_mip_off; }
 static int fmt_get(void) { return !recomp_tex_fmt_off; }
-static int vsh_get(void) { return recomp_vsh_single; }
-static void vsh_toggle(void) { recomp_vsh_single_req = !recomp_vsh_single; }
 
 static struct btn {
     const char *name, *hint;      /* label, second line before the state */
@@ -50,7 +48,7 @@ static struct btn {
     { "cull",          "",    cull_get, recomp_gx_cull_toggle, 0, 0, 0, 0, -2 },   /* cr_cull_off */
     { "mipmaps",       "",    mip_get,  recomp_tex_mip_toggle, 0, 0, 0, 0, -2 },   /* cr_mip_off */
     { "tex formats",   "",    fmt_get,  recomp_tex_fmt_toggle, 0, 0, 0, 0, -2 },   /* cr_texfmt_off */
-    { "vsh single",    "",    vsh_get,  vsh_toggle,            0, 0, 0, 0, -2 },   /* cr_vsh_single */
+    { "vsh single",    "",    0, 0, 0, 0, 0, 0, -2 },   /* cr_vsh_single */
 };
 #define NBTN (int)(sizeof btn / sizeof btn[0])
 

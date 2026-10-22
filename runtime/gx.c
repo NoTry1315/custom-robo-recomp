@@ -108,20 +108,7 @@ typedef struct { float pos[4]; u8 mat[4]; float nrm[3], tc[3][3]; } PVtx;   /* v
 
 static C3D_RenderTarget *target;
 static DVLB_s *vsh_dvlb;
-/* Vertex shader programs: DVLE 0 = the single shader (runtime/vshader.v.pica, every path,
- * branches on blit), 1 + VSH_N variants (tools/gen_vsh.py, runtime/vsh/): 1 + lit * 7 + t, t = 0 no
- * texture, 1..3 affine units, 4..6 projective units. All in one SHBIN, so a switch resends the
- * operand descriptors and entry point but not the code. sdmc:/cr_vsh_single.txt = DVLE 0 for
- * every draw. A switch flushes the pending draw (batching never merges across programs). */
-#define VSH_N 14
-static shaderProgram_s vsh_prog[1 + VSH_N];
-#define vsh vsh_prog[0]
-static int vsh_cur;            /* bound program */
-static const char *vsh_bad; static int vsh_badv;   /* register check that failed in recomp_gx_init */
-int recomp_vsh_single;         /* mode in use; start value from cr_vsh_single.txt (recomp_gx_start) */
-volatile int recomp_vsh_single_req = -1;   /* any thread may set 0/1: applied at the next frame_begin, logged */
-volatile u32 recomp_vsh_flips;
-static u32 st_vsh_draws[1 + VSH_N], st_vsh_idx[1 + VSH_N];   /* per frame, for the # gx vsh line */
+static shaderProgram_s vsh;
 static PVtx *vbuf[2];
 static u16 *ibuf[2];
 static u32 vb_used, ib_used, vb_half;
@@ -178,8 +165,8 @@ void recomp_gx_init(void) {
         GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) |
         GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
     vsh_dvlb = DVLB_ParseFile((u32 *)vshader_shbin, vshader_shbin_size);
-    if (vsh_dvlb->numDVLE != 1 + VSH_N) { recomp_log("# gx: vshader.shbin has %d programs, expected %d\n", (int)vsh_dvlb->numDVLE, 1 + VSH_N); abort(); }
-    for (int i = 0; i <= VSH_N; i++) { shaderProgramInit(&vsh_prog[i]); shaderProgramSetVsh(&vsh_prog[i], &vsh_dvlb->DVLE[i]); }
+    shaderProgramInit(&vsh);
+    shaderProgramSetVsh(&vsh, &vsh_dvlb->DVLE[0]);
     C3D_BindProgram(&vsh);
     C3D_AttrInfo *ai = C3D_GetAttrInfo();
     AttrInfo_Init(ai);
@@ -211,30 +198,6 @@ void recomp_gx_init(void) {
     u_amb = shaderInstanceGetUniformLocation(si, "amb"); u_lcfg = shaderInstanceGetUniformLocation(si, "lcfg");
     u_lights = shaderInstanceGetUniformLocation(si, "lights"); u_blit = shaderInstanceGetUniformLocation(si, "blit");
     u_iloop = shaderInstanceGetUniformLocation(si, "iloop");
-    /* the variants read the single shader's registers by number (tools/gen_vsh.py): uniforms from c0
-     * in declaration order, the light loop count i0 (location 0x60: libctru returns register - 0x10) and its constant k at c95 (picasso puts constants at the top), which a variant does not
-     * load itself: keep it in citro3d's uniforms (float24 -> float -> float24 is exact) */
-    /* a mismatch: logged in recomp_gx_start (no log yet), single shader only */
-    static const char *const unames[] = {"clipm", "posm", "nrmm", "texm", "amb", "lcfg", "lights"};
-    static const int uoff[] = {0, 4, 34, 64, 73, 74, 75};
-    for (unsigned j = 0; j < sizeof unames / sizeof *unames; j++)
-        if (shaderInstanceGetUniformLocation(si, unames[j]) != uoff[j]) { vsh_bad = unames[j]; vsh_badv = shaderInstanceGetUniformLocation(si, unames[j]); }
-    if (u_iloop != 0x60) { vsh_bad = "iloop"; vsh_badv = u_iloop; }
-    const DVLE_s *d0 = &vsh_dvlb->DVLE[0];
-    int kset = 0;
-    for (u32 i = 0; i < d0->constTableSize; i++) {
-        const DVLE_constEntry_s *c = &d0->constTableData[i];
-        if (c->type != DVLE_CONST_FLOAT24 || c->id != 95) continue;
-        float f[4];
-        for (int j = 0; j < 4; j++) {
-            u32 r = c->data[j] & 0xffffff, b32 = (r >> 23) << 31;
-            if (r & 0x7fffff) b32 |= ((((r >> 16) & 0x7f) - 63 + 127) << 23) | ((r & 0xffff) << 7);
-            memcpy(&f[j], &b32, 4);
-        }
-        C3D_FVUnifSet(GPU_VERTEX_SHADER, 95, f[0], f[1], f[2], f[3]);
-        kset = 1;
-    }
-    if (!kset) { vsh_bad = "k"; vsh_badv = -1; }
     memset(ushadow, 0xff, sizeof ushadow);
     gx.efb_w = 640; gx.efb_h = 480;
     gx.color_update = gx.alpha_update = 1;
@@ -336,10 +299,6 @@ static void frame_begin(void) {
         recomp_log("# gx r%lu: %s %s\n", (unsigned long)recomp_retrace_count(), mip ? "texture mipmaps" : "lossless 16-bit texture formats",
                    (mip ? recomp_tex_mip_off : recomp_tex_fmt_off) ? "off" : "on");
     }
-    if (recomp_vsh_single_req >= 0 && recomp_vsh_single_req != recomp_vsh_single && !vsh_bad) {
-        recomp_vsh_single = recomp_vsh_single_req; recomp_vsh_flips++;   /* next draw selects its program again */
-        recomp_log("# gx r%lu: vsh single %s\n", (unsigned long)recomp_retrace_count(), recomp_vsh_single ? "on" : "off");
-    }
     u64 ts = recomp_ticks();
     if (!vsync_on && C3D_FrameCounter(0) == last_vbl) C3D_FrameSync();
     if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
@@ -399,15 +358,6 @@ static void frame_end(void) {
         recomp_log("# gx dl frame %lu: calls %lu prims %lu (%lu per call) cache hits %lu misses %lu slow %lu, plan memo hits %lu misses %lu\n", (unsigned long)frames,
                    (unsigned long)st_dl_calls, (unsigned long)st_dl_prims, st_dl_calls ? (unsigned long)(st_dl_prims / st_dl_calls) : 0ul,
                    (unsigned long)st_dl_hits, (unsigned long)st_dl_misses, (unsigned long)st_dl_slow, (unsigned long)pm_hits, (unsigned long)pm_misses);
-    if (frames % 300 == 0) {   /* draws / indices per vertex shader program (this frame) */
-        static const char *const vn[1 + VSH_N] = {"single", "l0t0", "l0t1", "l0t2", "l0t3", "l0t1p", "l0t2p", "l0t3p",
-                                                  "l1t0", "l1t1", "l1t2", "l1t3", "l1t1p", "l1t2p", "l1t3p"};
-        char b[400]; int o = 0;
-        for (int i = 0; i <= VSH_N; i++) if (st_vsh_draws[i] && o < (int)sizeof b - 40)
-            o += snprintf(b + o, sizeof b - o, " %s %lu/%lu", vn[i], (unsigned long)st_vsh_draws[i], (unsigned long)st_vsh_idx[i]);
-        recomp_log("# gx vsh frame %lu: draws/indices per program:%s\n", (unsigned long)frames, o ? b : " none");
-    }
-    memset(st_vsh_draws, 0, sizeof st_vsh_draws); memset(st_vsh_idx, 0, sizeof st_vsh_idx);
     /* running totals for the bottom-screen stats (log.c reads them on the game thread); linear free under lin_lock */
     recomp_gx_stat[1] += st_draws; recomp_gx_stat[2] += st_tris; __dmb(); recomp_gx_stat[0]++;
     if (recomp_gx_stat[0] % 60 == 0) { RecursiveLock_Lock(&lin_lock); recomp_gx_stat[3] = linearSpaceFree(); RecursiveLock_Unlock(&lin_lock); }
@@ -1784,9 +1734,9 @@ static void set_mtx(int lit) {
 }
 
 /* texgen for PICA unit u: rows R0, R1, R2 with (s, t) = (R0.x / R2.x, R1.x / R2.x) */
-static int set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3], const u8 *v0, const APlan *pl, int np) {   /* returns bit u: unit u's q row is not (0, 0, 0, 1) */
+static void set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3], const u8 *v0, const APlan *pl, int np) {
     struct { float tscale[3][2]; int tcoord[3]; u32 n, xf[3][3]; TexGen g[8]; } key;
-    static u8 last[sizeof key]; static int valid, last_proj; static s8 last_src[3];
+    static u8 last[sizeof key]; static int valid; static s8 last_src[3];
     int per_vtx = 0;
     for (int u = 0; u < 3; u++) if (tcoord[u] >= 0 && tcoord[u] < 8 && gx.desc[1 + tcoord[u]]) per_vtx = 1;
     memset(&key, 0, sizeof key);
@@ -1800,7 +1750,7 @@ static int set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3],
     }
     for (int i = 0; i < 8; i++) { key.g[i].func = gx.texgen[i].func; key.g[i].src = gx.texgen[i].src; key.g[i].normalize = gx.texgen[i].normalize; key.g[i].mtx = gx.texgen[i].mtx; }
     if (per_vtx) valid = 0;   /* reads the first vertex */
-    else if (same_inputs(last, &valid, &key, sizeof key)) { memcpy(tsrc, last_src, 3); return last_proj; }
+    else if (same_inputs(last, &valid, &key, sizeof key)) { memcpy(tsrc, last_src, 3); return; }
     float m[9][4];
     memset(m, 0, sizeof m);
     for (int u = 0; u < 3; u++) {
@@ -1834,35 +1784,15 @@ static int set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3],
     }
     unif_set(u_tex, m, 9);
     memcpy(last_src, tsrc, 3);
-    last_proj = 0;
-    for (int u = 0; u < 3; u++) if (m[u * 3 + 2][0] != 0 || m[u * 3 + 2][1] != 0 || m[u * 3 + 2][2] != 0 || m[u * 3 + 2][3] != 1) last_proj |= 1 << u;
-    return last_proj;
 }
 
-static int blit_on = -1, blit_n = -1, blit_want_on, blit_want_n;   /* sent / last asked; -1 = resend (program switch) */
 static void set_blit(int on, int n) {   /* light loop on/off and its count */
-    blit_want_on = on; if (on) blit_want_n = n;
-    if (on == blit_on && (!on || n == blit_n)) return;
+    static int last_on = -1, last_n = -1;
+    if (on == last_on && (!on || n == last_n)) return;
     pend_flush();
     C3D_BoolUnifSet(GPU_VERTEX_SHADER, u_blit, on);
     if (on) C3D_IVUnifSet(GPU_VERTEX_SHADER, u_iloop, n - 1, 0, 5, 0);
-    blit_on = on; if (on) blit_n = n;
-}
-
-/* program for a draw: lit, nunits texture units, proj = bit u when unit u divides by q */
-static int vsh_variant(int lit, int nunits, int proj) {
-    if (recomp_vsh_single) return 0;
-    proj &= (1 << nunits) - 1;
-    return 1 + lit * 7 + (!nunits ? 0 : proj ? 3 + nunits : nunits);
-}
-static void vsh_select(int p) {
-    if (p == vsh_cur) return;
-    pend_flush();
-    C3D_BindProgram(&vsh_prog[p]);   /* citro3d may reload the instance's bool/int uniforms: resend ours */
-    vsh_cur = p;
-    recomp_prof[PROF_VSH_SWITCH]++;
-    blit_on = blit_n = -1;
-    set_blit(blit_want_on, blit_want_n);
+    last_on = on; if (on) last_n = n;
 }
 
 static int set_lighting_inner(const Chan *c0, const Chan *c2, int e0, int e2);
@@ -2012,8 +1942,7 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     set_clip();
     int lit = set_lighting();
     set_mtx(lit);
-    int prog = vsh_variant(lit, nunits, set_texgen(tscale, tcoord, tsrc, data, pl, np));
-    vsh_select(prog);
+    set_texgen(tscale, tcoord, tsrc, data, pl, np);
     t_mark2(PROF_GX_VTX, PROF_VX_UNIF);
     np = trim_plan(pl, np, tsrc);
     PVtx tm;
@@ -2046,7 +1975,6 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     ntri = k / 3;
     st_draws++; st_tris += ntri; if (nunits) st_tex++;
     if (emit_ix(ix, k, own)) st_merged++;
-    st_vsh_draws[prog]++; st_vsh_idx[prog] += k;
     vb_used += vadd;
     t_mark(PROF_GX_VTX);
     if (in_dl) recomp_prof[PROF_VX_DL] += t_last - tv;
@@ -2126,8 +2054,7 @@ static int dl_draw(const u8 *list, u32 len) {
     set_clip();
     int lit = set_lighting();
     set_mtx(lit);
-    int prog = vsh_variant(lit, nunits, set_texgen(tscale, tcoord, tsrc, NULL, NULL, 0));   /* no per-vertex texture matrix here: the plan is not read */
-    vsh_select(prog);
+    set_texgen(tscale, tcoord, tsrc, NULL, NULL, 0);   /* no per-vertex texture matrix here: the plan is not read */
     t_mark2(PROF_GX_VTX, PROF_VX_UNIF);
     APlan pl[21];
     PVtx tm;
@@ -2229,7 +2156,6 @@ static int dl_draw(const u8 *list, u32 len) {
     u32 prims = e->prims, tris = e->tris;
     st_dl_prims += prims; st_draws += prims; st_tris += tris; if (nunits) st_tex += prims;
     st_merged += prims - 1 + emit_ix(vc_ixa + e->ixoff, e->ixn, 1);
-    st_vsh_draws[prog] += prims; st_vsh_idx[prog] += e->ixn;
     t_mark(PROF_GX_VTX);
     recomp_prof[PROF_VX_DL] += t_last - tp;
     return 1;
@@ -2430,9 +2356,6 @@ void recomp_gx_start(void) {
     recomp_tex_mip_off = flag_file("cr_mip_off");
     recomp_tex_fmt_off = flag_file("cr_texfmt_off");
     tex_fliptest = flag_file("cr_tex_fliptest");
-    recomp_vsh_single = flag_file("cr_vsh_single");
-    if (vsh_bad) { recomp_log("# gx: vertex shader variants off: %s at register %d, not where tools/gen_vsh.py expects it\n", vsh_bad, vsh_badv); recomp_vsh_single = 1; }
-    recomp_vsh_single_req = recomp_vsh_single;
     if (flag_file("cr_vcache_small")) {   /* test: rings at 5/8 so that replays evict (ring_alloc) */
         vring.size = VC_VERTS / 8 * 5; iring.size = VC_IXN / 8 * 5;
         recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu vertices, %lu indices\n", (unsigned long)vring.size, (unsigned long)iring.size);
@@ -2450,7 +2373,6 @@ void recomp_gx_start(void) {
     recomp_log("# gx: cull mode %s\n", cull_off ? "ignored (cr_cull_off.txt)" : "honoured");
     recomp_log("# gx: texture mipmaps %s, lossless 16-bit formats %s\n", recomp_tex_mip_off ? "off (cr_mip_off.txt)" : "on",
                recomp_tex_fmt_off ? "off (cr_texfmt_off.txt)" : "on");
-    recomp_log("# gx: vertex shader %s\n", recomp_vsh_single ? "single program (cr_vsh_single.txt)" : "variants per draw (lit, texture units, projective)");
     if (fbd) recomp_log("# gx: framebuffer dump at %lu frames\n", (unsigned long)nwant);
     int off = flag_file("cr_gxthread_off");   /* only the starting mode: the thread exists either way */
     gq_fliptest = flag_file("cr_gxthread_fliptest");

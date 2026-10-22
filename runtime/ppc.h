@@ -322,7 +322,7 @@ extern u32 recomp_ai_dma_cb, recomp_ai_dma_addr, recomp_ai_dma_len;   /* AI DMA 
 /* frame timing (runtime/log.c): ticks spent per bucket, logged by VI */
 enum { PROF_GX_VTX, PROF_GX_TEX, PROF_GX_END, PROF_AUDIO, PROF_GX_STATE,
        PROF_VX_UNIF, PROF_VX_DEC, PROF_VX_DL, PROF_LOG, PROF_PREDRAW, PROF_GX_SYNC, PROF_GPU, PROF_GPU_SPAN, PROF_DVD,
-       PROF_GX_WAIT, PROF_GX_BUSY, PROF_GPU_DRAWS, PROF_GPU_IDX, PROF_VSH_SWITCH, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others); PROF_GX_SYNC: C3D_FrameBegin (vblank cap + GPU queue wait); PROF_GPU: GPU queue time from C3D_FrameEnd to queue done (C3D_GetDrawingTime; with mid-frame submits only the tail); PROF_GPU_SPAN: first mid-frame submit (else C3D_FrameEnd) to queue done; PROF_DVD: game thread waiting for the DVD reader thread (inside the others); with the GX thread (recomp_gx_thread) the PROF_GX_* and PROF_VX_* buckets are GX-thread time, PROF_GX_WAIT is the game thread waiting for it, PROF_GX_BUSY the GX thread handling records; PROF_GPU_DRAWS/IDX: counts, not ticks (C3D_DrawElements calls, indices); PROF_VSH_SWITCH: count of vertex shader program switches */
+       PROF_GX_WAIT, PROF_GX_BUSY, PROF_GPU_DRAWS, PROF_GPU_IDX, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others); PROF_GX_SYNC: C3D_FrameBegin (vblank cap + GPU queue wait); PROF_GPU: GPU queue time from C3D_FrameEnd to queue done (C3D_GetDrawingTime; with mid-frame submits only the tail); PROF_GPU_SPAN: first mid-frame submit (else C3D_FrameEnd) to queue done; PROF_DVD: game thread waiting for the DVD reader thread (inside the others); with the GX thread (recomp_gx_thread) the PROF_GX_* and PROF_VX_* buckets are GX-thread time, PROF_GX_WAIT is the game thread waiting for it, PROF_GX_BUSY the GX thread handling records; PROF_GPU_DRAWS/IDX: counts, not ticks (C3D_DrawElements calls, indices) */
 extern u64 recomp_prof[PROF_N];
 extern volatile u32 recomp_logw_since;  /* low word of the tick the log writer's fwrite+fflush began, 0 = idle */
 extern volatile u32 recomp_logw_n;      /* log writes finished */
@@ -362,9 +362,6 @@ void recomp_gx_kick_toggle(void);      /* ZL: mid-frame GPU submit on/off from t
 extern int recomp_gx_cull_off;         /* sdmc:/cr_cull_off.txt: GXSetCullMode ignored */
 void recomp_gx_cull_toggle(void);      /* flips recomp_gx_cull_off at the next frame start */
 extern u32 recomp_gx_cull_flips;
-extern int recomp_vsh_single;         /* one vertex shader for every draw (runtime/gx.c vsh_select); start: sdmc:/cr_vsh_single.txt */
-extern volatile int recomp_vsh_single_req;   /* set 0/1 to switch at the next GX frame (logged "# gx r<n>: vsh single on|off") */
-extern volatile u32 recomp_vsh_flips;
 extern int recomp_gx_kick_on;          /* mid-frame GPU submit mode now (for the # time lines) */
 extern u32 recomp_gx_kick_flips;       /* ZL toggles so far */
 extern int recomp_tex_mip_off, recomp_tex_fmt_off;   /* gx.c: sdmc:/cr_mip_off.txt, cr_texfmt_off.txt (for the # time lines) */
