@@ -772,6 +772,33 @@ reader). Design:
 - Citra replay of rec-to-battle (no card): SDK/pad/retrace lines and summary counts identical to the
   base build (only OSTicksToCalendarTime's wall-clock r4 differs, as before). Screenshot checked.
 
+## Bottom-screen menu (2026-10-22)
+
+- Replaces the scrolling console + "tap a half" toggles (`runtime/menu.c`; the "Bottom-screen stats"
+  section above is the old layout). 40x30 cells of 8x8 px:
+  row 0 build id; rows 1-2 sdmc flag files present at boot (cr_ dropped); rows 4-12 stats, one metric
+  per row (fps+speed, frame ms+worst, game, gx wait+thread busy or gx inline+sync, vtx/tex/state parts,
+  gpu+draws/tris, audio+dvd wait, scene/sub/retrace, io counts + linear free), from log.c every
+  60-retrace `# time` window; rows 15-17 printf messages (libctru draws a console window one row above
+  its y, so the window is set at y 15 to land on 14-16); rows 18-29 a 2x4 grid of buttons, 19x2 cells
+  each: name, then ON (black on green) / OFF (white on red) / -- (unavailable or not bound).
+- Touch: PADRead hands a new touch (KEY_TOUCH down only) to `recomp_menu_touch`; it acts only inside
+  a button's cells, never in the gaps. ZL still toggles gpukick.
+- Adding a button: one line in `btn[]` (menu.c). Either get/toggle functions (the toggle is a request
+  the owner applies at a safe point: GX thread at recomp_gx_retrace, audio in recomp_ax_service,
+  gpukick in frame_begin; their own `# gx`/`# AX` log lines and # time "mixed" fields as before), or a
+  flag variable: the owner calls `recomp_menu_bind("cull", &cull_off, NULL)` once its flag file was
+  read (e.g. in recomp_gx_start). The menu flips the int at recomp_menu_retrace, which recomp_gx_retrace
+  calls after the GX-thread sync (no GX record in flight), logs `# menu r<n>: <name> on|off (touch)`,
+  then calls the optional `changed` callback (e.g. to drop a texture cache). `inv` = 1 in the table for
+  `_off` flags (button ON while the int is 0). Placeholders already in btn[]: cull (cr_cull_off),
+  mipmaps (cr_mip_off), tex formats (cr_texfmt_off), vsh single (cr_vsh_single); main.c's flags[] lists
+  those four flag files too. tools/time_avg.py drops a window with a `# menu` line in it.
+- Cost (Citra -Fast, rec-to-battle): `# status` 0.8-1.25 ms per stats update (worst 1.31), once a
+  second = ~0.02 ms per frame; buttons redraw only on a state change (a compare per button per
+  retrace). Replay vs main 9719c55: SDK/pad/scene lines, # time line count and fb dumps
+  (r2100/2700/3300) identical. Not yet on hardware.
+
 ## Codegen per guest instruction (2026-10-21)
 
 Battle is CPU-bound on the game thread with a flat profile, so these change what every translated

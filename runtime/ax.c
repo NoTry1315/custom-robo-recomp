@@ -421,7 +421,7 @@ void recomp_ax_pacing_init(void) {
     else if (flag("sdmc:/cr_audio_rt_on.txt")) { recomp_ax_rt = 1; why = "cr_audio_rt_on"; }
     else { recomp_ax_rt = !recomp_autotest_run(); why = recomp_ax_rt ? "interactive" : "autotest"; }
     recomp_log("# AX: pacing %s (%s)\n", recomp_ax_rt ? "real-time" : "per retrace", why);
-    printf("audio %s (%s, tap left half toggles)\n", recomp_ax_rt ? "real-time" : "per retrace", why);   /* bottom screen */
+    printf("audio %s (%s)\n", recomp_ax_rt ? "real-time" : "per retrace", why);   /* bottom screen */
 }
 
 void recomp_ax_pacing_toggle(void) { rt_req = 1; }
