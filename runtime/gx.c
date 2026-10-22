@@ -2222,8 +2222,8 @@ void recomp_gx_start(void) {
     }
     recomp_gx_thread = gq_ok && !off;
     recomp_log("# gx: GX thread %s\n", !gq_ok ? "off (no core 2): GX runs on the game thread"
-               : recomp_gx_thread ? "on core 2 (GX state and draws handled off the game thread; a bottom-screen tap toggles it)"
-               : "on core 2, starting off (cr_gxthread_off.txt): GX runs on the game thread until a bottom-screen tap");
+               : recomp_gx_thread ? "on core 2 (GX state and draws handled off the game thread; a tap on the right half of the bottom screen toggles it)"
+               : "on core 2, starting off (cr_gxthread_off.txt): GX runs on the game thread until a tap on the right half of the bottom screen");
     status_draw();
 }
 

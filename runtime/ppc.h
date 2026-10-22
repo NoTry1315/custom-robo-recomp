@@ -312,6 +312,11 @@ void recomp_poll_events(void);          /* delivers due events if MSR[EE] */
 #define RECOMP_POLL() do { if (__builtin_expect(recomp_event_pending, 0)) recomp_poll_events(); } while (0)
 u32  recomp_retrace_count(void);         /* frames so far (VI retraces) */
 void recomp_ax_service(void);           /* AX frame callbacks due since the last retrace */
+int  recomp_autotest_run(void);         /* cr_pad_script.txt or cr_pad_replay.txt exists (runtime/vi.c) */
+void recomp_ax_pacing_init(void);       /* audio pacing mode from flags, printed at boot (runtime/ax.c) */
+void recomp_ax_pacing_toggle(void);     /* touch screen: real-time <-> per-retrace audio from the next retrace */
+extern int recomp_ax_rt;                /* audio pacing now: 1 real-time, 0 per retrace (for the # time lines) */
+extern u32 recomp_ax_flips, recomp_ax_underruns, recomp_ax_skipped;   /* toggles, ndsp ran dry, rt frames skipped (cumulative) */
 #define AX_AI_CALLBACK 0x80145a00u        /* __AXOutAiCallback: AX's AI DMA callback */
 extern u32 recomp_ai_dma_cb, recomp_ai_dma_addr, recomp_ai_dma_len;   /* AI DMA (runtime/ai.c) */
 /* frame timing (runtime/log.c): ticks spent per bucket, logged by VI */

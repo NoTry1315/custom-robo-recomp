@@ -11,8 +11,10 @@
  * sample-rate fraction, envelope and mixer volumes.
  *
  * The AX frame callback (AXRegisterCallback 0x80145fb8) is the sound
- * driver's tick: 200 per second = 10 per 3 retraces at 60 Hz, from the
- * VIWaitForRetrace wait point. As in the SDK's AX interrupt, each frame first
+ * driver's tick: 200 per second, run at the VIWaitForRetrace wait point.
+ * Interactive play paces it by host time (as the DSP interrupt does on the
+ * GameCube), autotests by 10 per 3 retraces (deterministic replays); see
+ * recomp_ax_service. As in the SDK's AX interrupt, each frame first
  * consumes the voices' sync flags and renders them (__AXSyncPBs, DSP), then
  * calls the callback; what it changes is heard from the next frame. synth.c
  * asserts this order (AX_SYNC_USER_VE clear in its tick). */
@@ -176,7 +178,7 @@ void sdk_AXRegisterAuxBCallback(void) { LOG(); }
 /* ---- mixer ---- */
 
 static s32 mixL[FRAME], mixR[FRAME];
-static struct { u32 frames, peak, active_max, ended, looped, queued, dropped; u64 sumsq; } st;
+static struct { u32 frames, peak, active_max, ended, looped, queued, dropped, underruns, skipped, trimmed; u64 sumsq; } st;
 
 static inline s16 clamp16(s32 x) { return x < -32768 ? -32768 : x > 32767 ? 32767 : x; }
 
@@ -270,13 +272,13 @@ static void mix_voice(u32 v) {
 
 /* ---- output: ndsp + a WAV dump of the first WAV_SECONDS for checking ---- */
 
-#define NBUF 8
-#define BUF_FRAMES 4               /* 20 ms per ndsp buffer */
+#define NBUF 32
+#define BUF_FRAMES 4               /* 20 ms per ndsp buffer; 640 ms ring: real-time pacing mixes a whole game frame at once, ring >= 2 * MAX_DUE (lead + burst) */
 #define WAV_SECONDS 60
 static int ndsp_ok = -1;
 static ndspWaveBuf wbuf[NBUF];
 static s16 *wdata;
-static int wfill, wcur;
+static int wfill, wcur, wqueued;
 static FILE *wav;
 static u32 wav_samples;
 
@@ -337,7 +339,7 @@ static void out_frame(void) {
     memcpy((s16 *)b->data_vaddr + wfill * FRAME * 2, pcm, sizeof pcm);
     if (++wfill == BUF_FRAMES) {
         DSP_FlushDataCache(b->data_vaddr, BUF_FRAMES * FRAME * 4);
-        ndspChnWaveBufAdd(0, b); st.queued++;
+        ndspChnWaveBufAdd(0, b); st.queued++; wqueued = 1;
         wfill = 0;
         wcur = (wcur + 1) % NBUF;
     }
@@ -355,12 +357,13 @@ static void ax_frame(void) {
         mix_voice(v);
     }
     if (active > st.active_max) st.active_max = active;
-    if (++st.frames % 1000 == 0) {          /* every 5 s of audio = 300 retraces */
-        recomp_log("# AX: frame %lu voices started %lu max active %lu ended %lu loops %lu peak %lu ndsp bufs %lu dropped frames %lu rms %lu\n",
+    if (++st.frames % 1000 == 0) {          /* every 5 s of audio */
+        recomp_log("# AX: frame %lu voices started %lu max active %lu ended %lu loops %lu peak %lu ndsp bufs %lu dropped frames %lu rms %lu; pacing %s, underruns %lu, skipped %lu, trimmed %lu\n",
                    (unsigned long)st.frames, (unsigned long)voices_started, (unsigned long)st.active_max,
                    (unsigned long)st.ended, (unsigned long)st.looped, (unsigned long)st.peak, (unsigned long)st.queued, (unsigned long)st.dropped,
-                   (unsigned long)__builtin_sqrt((double)st.sumsq / (FRAME * 1000)));
-        st.active_max = st.peak = st.ended = st.looped = st.queued = st.dropped = 0; st.sumsq = 0;
+                   (unsigned long)__builtin_sqrt((double)st.sumsq / (FRAME * 1000)), recomp_ax_rt ? "rt" : "retrace",
+                   (unsigned long)st.underruns, (unsigned long)st.skipped, (unsigned long)st.trimmed);
+        st.active_max = st.peak = st.ended = st.looped = st.queued = st.dropped = st.underruns = st.skipped = st.trimmed = 0; st.sumsq = 0;
     }
 }
 
@@ -388,13 +391,88 @@ static void ai_frame(void) {
     }
 }
 
+/* ---- pacing ----
+ * Retrace pacing (autotests, sdmc:/cr_audio_rt_off.txt): 10 AX frames per 3 retraces, so
+ * a replay runs the same callbacks at the same retraces. Below 60 fps that is less audio
+ * than ndsp plays (34.9 fps battle: 58%), so the sound stutters.
+ * Real-time pacing (interactive play; sdmc:/cr_audio_rt_on.txt forces it in autotests):
+ * the AX frames due are the host time since the last retrace, 200 per second, mixed at
+ * once at the wait point. The ndsp queue must then cover the longest gap between retraces:
+ * it starts PREBUF frames ahead, each underrun (ndsp ran dry) adds PREBUF more, and a lead
+ * that stayed above SLACK for ~1 s is trimmed one frame per retrace (one frame fewer mixed:
+ * the sound driver's clock slips 5 ms, nothing is cut). At most MAX_DUE frames per retrace:
+ * the rest of a longer stall (HOME menu, SD stall) is skipped. */
+#define PREBUF 8                   /* 40 ms */
+#define SLACK 8                    /* lead kept above the worst gap (the playing buffer counts whole: up to 4 too many) */
+#define MAX_DUE 48                 /* 240 ms per retrace (movie on hardware: ~111 ms frames) */
+int recomp_ax_rt = -1;
+u32 recomp_ax_flips, recomp_ax_underruns, recomp_ax_skipped;
+static int rt_req;
+static u64 rt_last, rt_acc;        /* rt_acc: ticks * 200, one AX frame = SYSCLOCK_ARM11 */
+static u32 rt_acc3;                /* retrace pacing: 10 per retrace, 3 per frame */
+static u32 lead_min = ~0u, lead_t, trim;
+
+static int flag(const char *p) { FILE *f = fopen(p, "rb"); if (f) fclose(f); return f != NULL; }
+
+void recomp_ax_pacing_init(void) {
+    if (recomp_ax_rt >= 0) return;
+    const char *why;
+    if (flag("sdmc:/cr_audio_rt_off.txt")) { recomp_ax_rt = 0; why = "cr_audio_rt_off"; }
+    else if (flag("sdmc:/cr_audio_rt_on.txt")) { recomp_ax_rt = 1; why = "cr_audio_rt_on"; }
+    else { recomp_ax_rt = !recomp_autotest_run(); why = recomp_ax_rt ? "interactive" : "autotest"; }
+    recomp_log("# AX: pacing %s (%s)\n", recomp_ax_rt ? "real-time" : "per retrace", why);
+    printf("audio %s (%s, tap left half toggles)\n", recomp_ax_rt ? "real-time" : "per retrace", why);   /* bottom screen */
+}
+
+void recomp_ax_pacing_toggle(void) { rt_req = 1; }
+
+/* AX frames queued in ndsp or mixed into the unqueued buffer (the playing one counts whole) */
+static u32 ndsp_lead(void) {
+    u32 n = wfill;
+    for (int i = 0; i < NBUF; i++) if (wbuf[i].status == NDSP_WBUF_QUEUED || wbuf[i].status == NDSP_WBUF_PLAYING) n += BUF_FRAMES;
+    return n;
+}
+
+static void rt_start(u64 now) { rt_last = now; rt_acc = (u64)PREBUF * SYSCLOCK_ARM11; lead_min = ~0u; lead_t = 0; trim = 0; }
+
 void recomp_ax_service(void) {
-    static u32 frames, done;
     u64 t0 = recomp_ticks();
     if (ndsp_ok < 0) out_init();
-    frames++;
-    u32 due = frames * 10 / 3;
-    for (; done < due; done++) {
+    if (recomp_ax_rt < 0) recomp_ax_pacing_init();
+    if (rt_req) {                        /* touch screen (runtime/pad.c), applied between retraces */
+        rt_req = 0; recomp_ax_rt ^= 1; recomp_ax_flips++;
+        if (recomp_ax_rt) rt_start(t0); else rt_acc3 = 0;
+        recomp_log("# AX r%lu: pacing %s (touch)\n", (unsigned long)recomp_retrace_count(), recomp_ax_rt ? "real-time" : "per retrace");
+        printf("r%lu audio %s\n", (unsigned long)recomp_retrace_count(), recomp_ax_rt ? "real-time" : "per retrace");
+    }
+    u32 lead = ndsp_ok == 1 ? ndsp_lead() : ~0u;
+    int dry = wqueued && lead == 0;
+    if (dry) { st.underruns++; recomp_ax_underruns++; }
+    u32 due;
+    if (recomp_ax_rt) {
+        if (!rt_last) rt_start(t0);
+        rt_acc += (t0 - rt_last) * 200; rt_last = t0;
+        if (dry) rt_acc += (u64)PREBUF * SYSCLOCK_ARM11;
+        u64 n = rt_acc / SYSCLOCK_ARM11;
+        rt_acc -= n * SYSCLOCK_ARM11;
+        if (n > MAX_DUE) { st.skipped += n - MAX_DUE; recomp_ax_skipped += n - MAX_DUE; n = MAX_DUE; }
+        /* latency trim: the lowest lead seen before mixing over ~1 s */
+        if (lead != ~0u && !dry) {
+            if (lead < lead_min) lead_min = lead;
+            if ((lead_t += (u32)n) >= 200) {
+                trim = lead_min > SLACK ? lead_min - SLACK : 0;
+                lead_min = ~0u; lead_t = 0;
+            }
+        }
+        if (trim && n) { n--; trim--; st.trimmed++; }
+        due = (u32)n;
+    } else {
+        rt_acc3 += 10;
+        due = rt_acc3 / 3;
+        rt_acc3 -= due * 3;
+        rt_last = 0;
+    }
+    for (u32 k = 0; k < due; k++) {
         ax_frame();
         if (recomp_ai_dma_cb && recomp_ai_dma_cb != AX_AI_CALLBACK) ai_frame();
         out_frame();
