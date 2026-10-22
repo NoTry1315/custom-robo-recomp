@@ -11,6 +11,9 @@
 u32 recomp_run_frames = RUN_FRAMES;   /* a pad script line "<n> 0 0" changes it (runtime/pad.c) */
 
 static u32 retrace, pre_cb, post_cb;
+/* gen/functable.c defines it when recomp.py ran with RECOMP_SITEPROF=1: "# site r k n" lines,
+ * calls per call site / function entry / return since the last dump (recomp_unknowns.md) */
+void recomp_site_dump(u32 retrace) __attribute__((weak));
 
 /* sdmc:/cr_pad_script.txt or cr_pad_replay.txt = an autotest run (autotest.ps1
  * always writes one), which must end by itself: keep RUN_FRAMES or the script's
@@ -43,6 +46,7 @@ void sdk_VIWaitForRetrace(void) {
     if (retrace % 30 == 0) recomp_log("# retrace %lu scene %lx sub %lx flags %lx fade %lx cnt %lx logo %x ld %lx\n", (unsigned long)retrace,
         (unsigned long)rd32(0x80321d88), (unsigned long)rd32(0x80321d98), (unsigned long)rd32(0x80321dc0), (unsigned long)rd32(0x80321dc8),
         (unsigned long)rd32(0x80321db4), rd8(0x8044f3d0), (unsigned long)rd32(0x8044f3d4));   /* scene struct 0x80321d88, logo index, loader flags (see recomp_unknowns.md) */
+    if (recomp_site_dump && retrace % 300 == 0) recomp_site_dump(retrace);   /* RECOMP_SITEPROF=1 gen/ only */
     if (retrace >= recomp_run_frames) recomp_done("run length reached");
     /* HOME / power / sleep: APT suspends us inside aptMainLoop, false = close requested.
      * citro3d's APT hooks run in there: the GX thread must be idle (it normally is,

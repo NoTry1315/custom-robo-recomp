@@ -73,14 +73,25 @@ void recomp_prof_sampler_start(void) {
     aux_thread(sampler, 0x1000, prio - 1);
 }
 
+#ifdef RECOMP_FNPROF
+#define PROF_TOP 60
+static void sdk_counts_dump(u32 retrace);
+#else
+#define PROF_TOP 25
+#endif
 static void sampler_dump(u32 retrace) {
     u32 total = sample_total;
     if (!total) return;
     recomp_log("# prof r%lu: %lu samples, top call sites (lr: share)\n", (unsigned long)retrace, (unsigned long)total);
-    for (int t = 0; t < 25; t++) {
+    for (int t = 0; t < PROF_TOP; t++) {
         int best = -1;
         for (int i = 0; i < SAMPLE_SLOTS; i++) if (samples[i].n && (best < 0 || samples[i].n > samples[best].n)) best = i;
         if (best < 0) break;
+#ifdef RECOMP_FNPROF
+        u32 v = samples[best].lr;   /* below the guest range: an SDK or native name (recomp_sdk_log, mtx.c, libc.c) */
+        if (v && v < 0x80000000u) recomp_log("# prof  %s %5.1f%%\n", (const char *)(uintptr_t)v, samples[best].n * 100.0 / total);
+        else
+#endif
         recomp_log("# prof  %08lx %5.1f%%\n", (unsigned long)samples[best].lr, samples[best].n * 100.0 / total);
         samples[best].n = 0;
     }
@@ -206,6 +217,9 @@ void recomp_prof_frame(u32 retrace) {
     for (int i = 0; i < PROF_N; i++) sum[i] = cur[i];
     start = now; worst = 0;
     if (retrace % 300 == 0) sampler_dump(retrace);
+#ifdef RECOMP_FNPROF
+    if (retrace % 300 == 0) sdk_counts_dump(retrace);
+#endif
 }
 
 #define LOG_PATH "sdmc:/cr_autotest.log"
@@ -228,6 +242,22 @@ static u32 *count_of(const char *name) {
         if (counts[h].name == name) return &counts[h].n;
     }
 }
+
+#ifdef RECOMP_FNPROF
+/* make FNPROF=1: SDK calls per frame over the last 300 retraces, next to the # prof lines */
+static void sdk_counts_dump(u32 retrace) {
+    static u32 prev[2048], d[2048];
+    for (int i = 0; i < 2048; i++) { d[i] = counts[i].n - prev[i]; prev[i] = counts[i].n; }
+    recomp_log("# sdk r%lu: calls per frame over 300 retraces (top 40)\n", (unsigned long)retrace);
+    for (int t = 0; t < 40; t++) {
+        int best = -1;
+        for (int i = 0; i < 2048; i++) if (d[i] && (best < 0 || d[i] > d[best])) best = i;
+        if (best < 0) break;
+        recomp_log("# sdk  %7.1f %s\n", d[best] / 300.0, counts[best].name);
+        d[best] = 0;
+    }
+}
+#endif
 
 /* Log lines go to a memory ring; a lower-priority writer thread puts them on
  * the SD card. A single fwrite+fflush blocked the game for up to 4 s on
@@ -305,6 +335,7 @@ void recomp_log(const char *fmt, ...) {
 }
 
 void recomp_sdk_log(const char *name) {
+    FNPROF((u32)(uintptr_t)name);   /* make FNPROF=1: SDK time under the SDK name */
     u32 *n = count_of(name);
     ring[ring_pos++ & 31] = name;
     if (++*n <= PER_NAME)
@@ -313,6 +344,10 @@ void recomp_sdk_log(const char *name) {
 }
 
 void recomp_sdk_call(const char *name) { recomp_sdk_log(name); }
+#ifdef RECOMP_FNPROF
+/* make FNPROF=1: natives (mtx.c, libc.c) are counted for the # sdk lines and the summary, not logged */
+void recomp_fnprof_native(const char *name) { FNPROF((u32)(uintptr_t)name); ++*count_of(name); }
+#endif
 
 void recomp_bad(u32 pc, const char *why) {
     u32 *n = count_of(why);

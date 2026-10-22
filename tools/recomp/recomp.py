@@ -9,7 +9,7 @@ gen/sdk_stubs.c, overridden by runtime/). MetroTRK is skipped.
 Every translated function is `void f_XXXXXXXX(void)` over the global CPU
 state in runtime/ppc.h. Anything the translator cannot decide is collected
 and written to docs/recomp_unknowns.md (generated section)."""
-import re, struct, sys
+import copy, os, re, struct, sys
 from collections import defaultdict
 from pathlib import Path
 from ppc import *
@@ -31,7 +31,8 @@ STUB_MODULES = {'base', 'OS', 'DB', 'DVD', 'VI', 'PAD', 'AI', 'AR', 'ARQ', 'AX',
                 'EXI', 'SI', 'THP'}
 SKIP_MODULES = {'MetroTRK'}
 # C library functions outside STUB_MODULES replaced natively in runtime/libc.c
-NATIVE = {0x8000540c: 'memset', 0x800054f4: 'memcpy', 0x80169168: 'sqrt'}
+# (0x80023394 is game code, not in sdk_functions.md: a byte-wise zero fill with 88 callers)
+NATIVE = {0x8000540c: 'memset', 0x800054f4: 'memcpy', 0x80169168: 'sqrt', 0x80023394: 'mem_zero'}
 # MTX functions replaced in runtime/mtx.c: calls go to sdk_<name>, the body is still
 # translated (f_) and the weak stub calls it (sdmc:/cr_mtx_off.txt and the bench use it)
 MTX_NATIVE = {0x801394c4, 0x801394f0, 0x80139524, 0x801395f0, 0x80139640, 0x80139738, 0x80139a40,
@@ -95,6 +96,8 @@ class Program:
         self.unk = defaultdict(list)  # category -> [(addr, note)]
         self.jt = {}                  # bctr addr -> [targets]
         self.sda2 = self._sda2()
+        self.gqr0_written = []        # translated mtspr GQR0 sites (psq_op, funcs.h)
+        self.inline = {}              # leaf entry -> C emitted at each bl to it (inline_leaves)
 
     def _sda2(self):
         """(r2, lo, hi): r2 is set once in translated code (lis/ori in __start; skipped
@@ -223,10 +226,13 @@ class Program:
     # -- function starts
     def find_starts(self):
         st = {self.dol.entry} | {a for a in self.docnames if self.dol.in_text(a)} | EXTRA_STARTS
+        bl = set()
         for a, w in self.all_text_words():
             d = decode(w)
             if d in ('b', 'bc') and w & 1:
                 st.add(branch_target(a, w))
+                bl.add(branch_target(a, w))
+        ptr = {self.dol.entry} | EXTRA_STARTS | (st - bl)   # entered other than by a bl/b: self.taken
         # pointers to code in data sections (vtables, callbacks, ctors)
         jtd = getattr(self, 'jt_data', set())
         for base, blob in self.dol.data:
@@ -236,7 +242,7 @@ class Program:
                     continue
                 w = self.dol.word(v)
                 if w and decode(w):
-                    st.add(v)
+                    st.add(v); ptr.add(v)
         # lis/addi (or ori) pairs that build a code address in translated code
         lis = {}
         for a, w in self.all_text_words():
@@ -246,7 +252,7 @@ class Program:
             elif d in ('addi', 'ori') and rA(w) in lis and a - lis[rA(w)][0] < 64:
                 v = (lis[rA(w)][1] + (simm(w) if d == 'addi' else uimm(w))) & 0xFFFFFFFF
                 if not v & 3 and self.kind(v) and decode(self.dol.word(v) or 0):
-                    st.add(v)
+                    st.add(v); ptr.add(v)
         # prologue after an unconditional terminator (functions reached only through
         # pointers this scan cannot see, e.g. tables built at run time)
         prev = None
@@ -254,13 +260,26 @@ class Program:
             if prev in (0x4E800020, 0x4E800420) or (prev is not None and prev >> 26 == 18 and not prev & 1):
                 if (w >> 16) == 0x9421 or w == 0x7C0802A6:  # stwu r1,-x(r1) / mflr r0
                     st.add(a)
+                    if a not in bl:   # nearly every function matches; only those without a bl count
+                        ptr.add(a)
             prev = w
         self.starts = {a for a in st if self.kind(a) is not None}
+        # taken: starts that may be entered other than by a translated bl or b, i.e. through
+        # call_indirect (translated bctrl/blrl, recomp_call_guest): data pointers, lis/addi constants,
+        # prologue-scan starts that no bl reaches, EXTRA_STARTS, the DOL entry, doc names no bl
+        # reaches. rtcalled: called directly from runtime/*.c (mtx.c's MTX bodies and bench) or through
+        # the MTX weak stubs, except __start (main.c reads nothing after it returns). call_indirect
+        # logs a call to a start not in taken (functable.c): out() (return stores) relies on knowing
+        # every caller.
+        rt = {int(x, 16) for f in (ROOT / 'runtime').glob('*.c')
+              for x in re.findall(r'\bf_([0-9a-f]{8})\s*\(', f.read_text(encoding='utf-8'))}
+        self.taken = self.starts & ptr
+        self.rtcalled = self.starts & (rt | MTX_NATIVE) - {self.dol.entry}
 
     def sdk_name(self, a):
         if a in self.stubs:
             return self.stubs[a]
-        n = self.docnames.get(a)
+        n = self.docnames.get(a) or NATIVE.get(a)
         n = 'sdk_' + re.sub(r'\W', '_', n) if n else f'sdk_{self.module(a)}_unlisted_{a:08x}'
         if n in self.stubs.values():
             n += f'_{a:08x}'
@@ -334,6 +353,13 @@ X_LOAD = {'lwzx': 'lwz', 'lbzx': 'lbz', 'lhzx': 'lhz', 'lhax': 'lha', 'lwzux': '
 X_STORE = {'stwx': 'stw', 'stbx': 'stb', 'sthx': 'sth', 'stwux': 'stw', 'stbux': 'stb', 'sthux': 'sth'}
 CROPS = {'crand': '{a} & {b}', 'cror': '{a} | {b}', 'crxor': '{a} ^ {b}', 'crnand': '~({a} & {b})',
          'crnor': '~({a} | {b})', 'creqv': '~({a} ^ {b})', 'crandc': '{a} & ~{b}', 'crorc': '{a} | ~{b}'}
+
+
+def psq_op(d, D, W, I):
+    """psq_l*/psq_st* body; I = 0 -> psq_ld0/psq_st0 (GQR0 = 0, ppc.h; r1-relative: stack_access)."""
+    if I == 0:
+        return f'F[{D}] = psq_ld0(ea, {W});' if d.startswith('psq_l') else f'psq_st0(F[{D}], ea, {W});'
+    return f'F[{D}] = psq_ld(ea, {W}, {I});' if d.startswith('psq_l') else f'psq_st(F[{D}], ea, {W}, {I});'
 
 
 def emit_op(p, a, w, d):
@@ -470,11 +496,11 @@ def emit_op(p, a, w, d):
         dd = dd - 0x1000 if dd & 0x800 else dd
         W, I = (w >> 15) & 1, (w >> 12) & 7
         ea = (f'R[{A}] + {dd}' if A or d.endswith('u') else h(dd) + 'u')
-        op = f'F[{D}] = psq_ld(ea, {W}, {I});' if 'l' in d[4:] else f'psq_st(F[{D}], ea, {W}, {I});'
+        op = psq_op(d, D, W, I)
         o(f'{{ u32 ea = {ea}; {op}' + (f' R[{A}] = ea;' if d.endswith('u') else '') + ' }')
     elif d in ('psq_lx', 'psq_stx', 'psq_lux', 'psq_stux'):
         W, I = (w >> 10) & 1, (w >> 7) & 7
-        op = f'F[{D}] = psq_ld(ea, {W}, {I});' if d.startswith('psq_l') else f'psq_st(F[{D}], ea, {W}, {I});'
+        op = psq_op(d, D, W, I)
         upd = 'ux' in d
         o(f'{{ u32 ea = {ea_x(w)}; {op}' + (f' R[{A}] = ea;' if upd else '') + ' }')
     # ---- floating point (Dolphin semantics: single ops round via fsgl, c via f25)
@@ -509,9 +535,8 @@ def emit_op(p, a, w, d):
     elif d in ('fcmpu', 'fcmpo'):
         o(f'cr{crfD(w)} = fcmp_v(F[{A}].ps0, F[{B}].ps0);')
     elif d in ('fmr', 'fneg', 'fabs', 'fnabs'):
-        e = {'fmr': f'F[{B}].ps0', 'fneg': f'u2d(d2u(F[{B}].ps0) ^ 0x8000000000000000ull)',
-             'fabs': f'u2d(d2u(F[{B}].ps0) & ~0x8000000000000000ull)',
-             'fnabs': f'u2d(d2u(F[{B}].ps0) | 0x8000000000000000ull)'}[d]
+        e = {'fmr': f'F[{B}].ps0', 'fneg': f'fneg_d(F[{B}].ps0)', 'fabs': f'fabs_d(F[{B}].ps0)',
+             'fnabs': f'fnabs_d(F[{B}].ps0)'}[d]
         o(f'F[{D}].ps0 = {e};')
         if rec: fpu_note()
     elif d == 'frsp':
@@ -562,9 +587,8 @@ def emit_op(p, a, w, d):
         elif d == 'ps_mr':
             two = (b0, b1)
         elif d in ('ps_neg', 'ps_abs', 'ps_nabs'):
-            fx = {'ps_neg': '^ 0x8000000000000000ull', 'ps_abs': '& ~0x8000000000000000ull',
-                  'ps_nabs': '| 0x8000000000000000ull'}[d]
-            two = (f'u2d(d2u({b0}) {fx})', f'u2d(d2u({b1}) {fx})')
+            fx = {'ps_neg': 'fneg_d', 'ps_abs': 'fabs_d', 'ps_nabs': 'fnabs_d'}[d]
+            two = (f'{fx}({b0})', f'{fx}({b1})')
         elif d == 'ps_sel':
             two = (f'fsel({a0}, {c0}, {b0})', f'fsel({a1}, {c1}, {b1})')
         elif d in ('ps_res', 'ps_rsqrte'):
@@ -595,6 +619,8 @@ def emit_op(p, a, w, d):
     elif d in ('mfspr', 'mtspr'):
         n = p._spr(w)
         fld = {8: 'cpu.lr', 9: 'cpu.ctr'}.get(n) or (f'cpu.gqr[{n - 912}]' if 912 <= n < 920 else None)
+        if d == 'mtspr' and n == 912:
+            p.gqr0_written.append(a)
         if d == 'mfspr':
             o(f'R[{D}] = {fld};' if fld else (f'@CA_OUT@ R[{D}] = get_xer();' if n == 1 else f'R[{D}] = ppc_mfspr({n});'))
         else:
@@ -635,9 +661,32 @@ def emit_op(p, a, w, d):
                     'lfd': f'F[{D}].ps0 = u2d(0x{v:x}ull);'}[d]]
             p.sda2_folds = getattr(p, 'sda2_folds', 0) + 1
     if A == 1 and (d in LOADS or d in STORES or d[:-1] in LOADS or d[:-1] in STORES or
-                   d in ('lmw', 'stmw') or d[:3] in ('lfs', 'lfd', 'stf')):
-        out = [re.sub(r'\b(rd|wr)(8|16|32|64)\(', r'\1\2_ram(', x) for x in out]
+                   d in ('lmw', 'stmw') or d[:3] in ('lfs', 'lfd', 'stf', 'psq')):
+        out = [stack_access(x) for x in out]
     return out
+
+
+SP_EA = re.compile(r'\{ u32 ea = (R\[1?1\])(?: ([+-]) (-?\d+))?; (.*) \}$')   # psq: R[1] + -24
+SP_USE = re.compile(r'\b(?:(rd|wr)(8|16|32|64)|psq_(ld|st)0)\((F\[\d+\], )?ea(?: \+ (\d+))?(?=[,)])')
+
+
+def stack_access(x):
+    """r1/r11-relative (stack) access -> *_sp(base, k) (ppc.h: base masked once, k as the load/store
+    offset); update forms, which need ea, and indexed ones -> *_ram (no IS_HW check, no WR_MARK)."""
+    x = re.sub(r'\b(rd|wr)(8|16|32|64)\((R\[1?1\])(?: ([+-]) (\d+))?(?=[,)])',
+               lambda m: f'{m[1]}{m[2]}_sp({m[3]}, {(m[4] or "") + (m[5] or "0")}'.replace('+', ''), x)
+    m = SP_EA.match(x)
+    if m and ' = ea;' not in m[4]:
+        k = (-1 if m[2] == '-' else 1) * int(m[3] or 0)
+        def use(u):
+            off = k + int(u[5] or 0)
+            name = f'{u[1]}{u[2]}_sp(' if u[1] else f'psq_{u[3]}0_sp({u[4] or ""}'
+            return f'{name}{m[1]}, {off}'
+        body = SP_USE.sub(use, m[4])
+        if not re.search(r'\bea\b', body):
+            return '{ ' + body + ' }'
+    x = re.sub(r'\b(rd|wr)(8|16|32|64)\(', r'\1\2_ram(', x)
+    return re.sub(r'\bpsq_(ld|st)0\(', r'psq_\g<1>0_ram(', x)
 
 
 def cond_expr(w):
@@ -672,8 +721,72 @@ def inline_body(p, t):
         if d == 'bclr':
             return out
         assert d in ('stw', 'lwz', 'stfd', 'lfd') and rA(w) == 11, f'save/restore helper {t:08x}: {d}'
-        out += [re.sub(r'\b(rd|wr)(32|64)\(', r'\1\2_ram(', x) for x in emit_op(p, t, w, d)]
+        out += [stack_access(x) for x in emit_op(p, t, w, d)]
         t += 4
+
+
+def lr_read_after(body, a0):
+    """Can cpu.lr be read after the instruction at a0 before it is written? Reads: mflr, blrl,
+    returns and tail calls (the caller or target may mflr), recomp_bad/recomp_skipped/ppc_* (log lr)."""
+    seen, todo = set(), [a0 + 4]
+    while todo:
+        a = todo.pop()
+        if a in seen or a not in body:
+            continue
+        seen.add(a)
+        x = ' '.join(body[a])
+        if re.search(r'= cpu\.lr\b|\(cpu\.lr\)|return;|recomp_bad|recomp_skipped|ppc_', x):
+            return True
+        if re.search(r'(?<!@LR@)cpu\.lr = ', x):
+            continue
+        todo += [int(t, 16) for t in re.findall(r'goto L_([0-9a-f]{8})', x)] + [a + 4]
+    return False
+
+
+def inline_leaves(p, fns):
+    """Straight-line leaves (one blr, no other events, no cpu. access, no ctr/ca write; at most 16
+    instructions, or 64 with at most 4 call sites) whose entry reads only CALLU registers: a `bl`
+    to one is emitted inline (translate_function) on the caller's locals, without a call. What the
+    callee read from cpu at entry is the caller's local then (stored if dirty / reloaded if live, by
+    the in-set rules); its RETU writes become the caller's dirty locals, stored by the caller's own
+    events where something reads them (same EABI assumption as for calls: a volatile register the
+    next callee may change is dead unless read); its other writes (f0, cr0, r1 ..) go to block-local
+    copies, which the caller never saw before either. cpu.lr is set only if read before the next
+    write (lr_read_after). -> {entry: C lines}"""
+    calls = defaultdict(int)
+    for fn in fns:
+        for k, c, _ in fn.events:
+            if k == 'call':
+                calls[c] += 1
+    out = {}
+    for fn in fns:
+        n, last = len(fn.order) - 1, fn.order[-1]
+        if (fn.entry in MTX_NATIVE or fn.order[0] != fn.entry or last - fn.entry != 4 * n or fn.labels or fn.gotos or
+                [k for k, _, _ in fn.events] != ['ret'] or fn.ev[last] != [0] or
+                not (n <= 16 or n <= 64 and calls[f'f_{fn.entry:08x}'] <= 4) or
+                'cpu.' in fn.text or fn.W & (CTR | CA | SO)):
+            continue
+        live = liveness(fn, lambda c: (0, 0), {})[fn.entry]
+        if live & ~CALLU:
+            continue
+        priv = fn.W & ~RETU
+        decl = []
+        for k in range(75):
+            if priv >> k & 1:
+                reg, ty = (f'R[{k}]', 'u32') if k < 32 else (f'F[{k - 32}]', 'PS') if k < 64 else (f'cr{k - 64}', 'u32')
+                pv = f'pv_r{k}' if k < 32 else f'pv_fp{k - 32}' if k < 64 else f'pv_cr{k - 64}'
+                decl.append(f'{ty} {pv}' + (f' = {reg};' if live >> k & 1 else ';'))
+
+        def rename(x):
+            for k in range(75):
+                if priv >> k & 1:
+                    x = (re.sub(rf'\bR\[{k}\]', f'pv_r{k}', x) if k < 32 else
+                         re.sub(rf'\bF\[{k - 32}\]', f'pv_fp{k - 32}', x) if k < 64 else
+                         re.sub(rf'(?<![\w.])cr{k - 64}\b', f'pv_cr{k - 64}', x))
+            return x
+        out[fn.entry] = ([f'{{ /* inlined f_{fn.entry:08x} */ ' + ' '.join(decl)] +
+                         [rename(x) for a in fn.order[:-1] for x in fn.body[a]] + ['}'])
+    return out
 
 
 def translate_function(p, entry):
@@ -722,6 +835,11 @@ def translate_function(p, entry):
                 if w & 1 and inline_helper(t):
                     L.append(f'cpu.lr = 0x{nxt:08x}u;')
                     L.extend(inline_body(p, t))
+                    a = nxt
+                    continue
+                if w & 1 and t in p.inline and t != entry:
+                    L.append(f'@LR@cpu.lr = 0x{nxt:08x}u;')   # kept only if lr is read before written
+                    L.extend(p.inline[t])
                     a = nxt
                     continue
                 if w & 1:
@@ -776,6 +894,9 @@ def translate_function(p, entry):
                 p.unk['mtlr from a non-stack value (blr treated as return)'].append((a, ''))
             L.extend(emit_op(p, a, w, d))
             a = nxt
+    for a, L in body.items():
+        if L and L[0].startswith('@LR@'):
+            L[0] = L[0][4:] if lr_read_after(body, a) else '/* inlined leaf: lr not read */'
     p.covered.update(body)
     # emit in address order; non-terminal blocks not followed by their successor get a goto
     order = sorted(body)
@@ -795,9 +916,10 @@ def translate_function(p, entry):
 # an event with its own store (spill) and load (reload) set:
 #  - call to G: store the dirty (written since the last store) registers of CALLU that G
 #    may read (in(G)) or may change while they are still live; reload the RELU registers G
-#    may change (clob(G)). in/clob are a fixpoint over the call graph (summarize()).
+#    may change (clob(G)). in/clob are a fixpoint over the call graph (Summaries).
 #  - tail branch: store every dirty register (the target may be shared code of this
-#    function, e.g. a common epilogue that reads r31). return: the dirty RETU ones.
+#    function, e.g. a common epilogue that reads r31). return: the dirty RETU ones that a
+#    caller may read afterwards (out(F), solve_out).
 #  - poll: only r1 (callbacks run on a stack below it; recomp_call_guest saves and
 #    restores all of cpu, so no reload). recomp_bad, sc, trap, rfi, mtmsr: everything.
 # The universes are the old fixed sets, so a store is only ever skipped, never added:
@@ -820,21 +942,27 @@ EVENT_RE = re.compile(
     r'|(?P<sys>(?:recomp_bad|recomp_skipped|recomp_poll_events|ppc_mtmsr|ppc_sc|ppc_trap|ppc_rfi)'
     r'\([^;\n{]*\);)(?P<sret> return;)?'
     r'|(?<![\w@])(?P<ret>return;)')
-# SDK natives (runtime/, sdk_stubs.c) read any CALLU register (LOG() prints r3-r6) and
-# write only r3, r4 and f1 (guest callbacks run through recomp_call_guest, which restores
-# all of cpu). check_native_writes() enforces this on runtime/*.c. Exceptions:
+# SDK natives (runtime/, sdk_stubs.c) read the CALLU registers runtime/*.c reads (native_reads():
+# r1, r3-r6 for LOG(), what the code names; NATIVE_IN = all of CALLU, used before the scan) and
+# write only r3, r4 and f1. Guest callbacks they run through recomp_call_guest get r1/r3/r4 set and
+# are assumed to read no other register at entry (as for callbacks delivered at polls, which store
+# only r1); recomp_call_guest restores all of cpu afterwards. check_native_writes() enforces the
+# writes on runtime/*.c. Exceptions:
 NATIVE_IN, NATIVE_CLOB = CALLU, GB(3, 4) | FB(1)
 NATIVE_REGS = {'sdk_memcpy': (GB(3, 4, 5), 0), 'sdk_memset': (GB(3, 4, 5), 0),
-               'sdk_sqrt': (FB(1), FB(1))}
+               'sdk_sqrt': (FB(1), FB(1)), 'sdk_mem_zero': (GB(3, 4), GB(0))}
 # runtime/ files allowed other register writes: boot (cpu_init), recomp_call_guest (saves
 # and restores cpu), the MTX bench (saves and restores cpu) and PSMTXConcat's r6 (MTX_REGS)
 NATIVE_WRITE_OK = {'cpu.c', 'mtx.c'}
+# single registers a file may write besides NATIVE_CLOB (each also in that native's NATIVE_REGS):
+# mem_zero leaves r0 = 0 like the guest loop
+NATIVE_WRITE_EXTRA = {('libc.c', 'R', '0')}
 # MTX natives (runtime/mtx.c): the translated body's summary plus what the native reads/writes
 MTX_REGS = (GB(3, 4, 5) | FB(1, 2, 3), GB(3, 6) | FB(1))
 
 
 def check_native_writes():
-    """runtime/*.c may write guest registers r3, r4 and f1 only (NATIVE_CLOB)."""
+    """runtime/*.c may write guest registers r3, r4 and f1 only (NATIVE_CLOB; NATIVE_WRITE_EXTRA)."""
     bad = []
     for f in sorted((ROOT / 'runtime').glob('*.c')):
         if f.name in NATIVE_WRITE_OK:
@@ -842,11 +970,107 @@ def check_native_writes():
         for n, line in enumerate(f.read_text(encoding='utf-8').splitlines(), 1):
             for m in re.finditer(r'\b(R|F)\[(\w+)\](?:\.ps[01])?\s*[-+*/|&^]?=(?!=)'
                                  r'|\bcpu\.(gpr|fpr|cr|ctr|xer_\w+)\b\s*[-+|&^]?=(?!=)', line):
-                if m.group(1) and (m.group(1), m.group(2)) in (('R', '3'), ('R', '4'), ('F', '1')):
+                if m.group(1) and ((m.group(1), m.group(2)) in (('R', '3'), ('R', '4'), ('F', '1')) or
+                                   (f.name, m.group(1), m.group(2)) in NATIVE_WRITE_EXTRA):
                     continue
                 bad.append(f'{f.name}:{n}: {line.strip()}')
     if bad:
         sys.exit('guest register written by a native outside NATIVE_CLOB (recomp.py):\n' + '\n'.join(bad))
+
+
+# computed guest register indices read in runtime/*.c -> the registers they can reach
+INDEX_READS = {('os.c', 'gpr'): GB(*range(3, 11)),   # OSReport-style varargs: R[gpr], gpr <= 10
+               ('os.c', 'fpr'): FB(*range(1, 9)),    # F[fpr], fpr <= 8
+               ('gx.c', '1 + i'): FB(*range(1, 9))}  # F[1 + i]: viewport, light position/dir/attn
+
+
+def native_reads():
+    """The CALLU registers runtime/*.c reads (R[k], F[k], cpu.gpr/fpr/cr), plus r1 (recomp_call_guest's
+    callback stack) and r3-r6 (LOG() prints them): the in-set of SDK natives (was all of CALLU).
+    A computed index not in INDEX_READS fails the run."""
+    m, bad = GB(1, 3, 4, 5, 6), []
+    for f in sorted((ROOT / 'runtime').glob('*.c')):
+        for n, line in enumerate(f.read_text(encoding='utf-8').splitlines(), 1):
+            for x in re.finditer(r'\b(R|F|cpu\.gpr|cpu\.fpr)\[([^\]]+)\](?:\.ps[01])?(\s*([-+*/|&^]?)=(?!=))?', line):
+                if x.group(3) and not x.group(4):
+                    continue   # plain write
+                idx, g = x.group(2).strip(), x.group(1) in ('R', 'cpu.gpr')
+                if idx.isdigit():
+                    m |= GB(int(idx)) if g else FB(int(idx))
+                elif (f.name, idx) in INDEX_READS:
+                    m |= INDEX_READS[(f.name, idx)]
+                else:
+                    bad.append(f'{f.name}:{n}: {line.strip()}')
+            if re.search(r'\bcpu\.cr\b(?!\s*[-+|&^]?=(?!=))', line):
+                m |= CB(*range(8))
+    if bad:
+        sys.exit('guest register read with a computed index not in INDEX_READS (recomp.py):\n' + '\n'.join(bad))
+    return m & CALLU
+
+
+def fold_base_regs(fns, quiet=False):
+    """r2 and r13 (SDA bases) are written only by one lis/ori pair (__start; Func write masks of all
+    translated code) to the value cpu_init also sets: their other reads become that constant, so
+    r2/r13-relative accesses get constant addresses (GCC drops the IS_HW check and the base register)."""
+    init = dict(re.findall(r'R\[(\d+)\] = (0x[0-9a-fA-F]+)u;', (ROOT / 'runtime' / 'cpu.c').read_text(encoding='utf-8')))
+    for n in (2, 13):
+        wr = {a: tuple(fn.lines[a]) for fn in fns for a in fn.order if fn.write[a] & GB(n)}
+        hi = [int(m[1], 16) for x in wr.values() for m in [re.fullmatch(rf'r{n} = 0x([0-9a-f]+)u;', ' '.join(x))] if m]
+        lo = [int(m[1], 16) for x in wr.values() for m in [re.fullmatch(rf'r{n} = r{n} \| 0x([0-9a-f]+)u;', ' '.join(x))] if m]
+        if len(wr) != 2 or len(hi) != 1 or len(lo) != 1 or int(init.get(str(n), '0'), 16) != hi[0] | lo[0]:
+            if not quiet:
+                print(f'note: r{n} not folded (written at ' + ', '.join(f'{a:08x}' for a in sorted(wr)) + ')')
+            continue
+        v, k = hi[0] | lo[0], 0
+        for i, fn in enumerate(fns):
+            if not any(fn.use[a] & GB(n) for a in fn.order if a not in wr):
+                continue
+            body = {a: x if a in wr else [re.sub(rf'\bR\[{n}\]', f'0x{v:08x}u', y) for y in x] for a, x in fn.body.items()}
+            k += sum(len(re.findall(rf'\bR\[{n}\]', y)) for a, x in fn.body.items() if a not in wr for y in x)
+            fns[i] = Func(fn.entry, fn.order, body, fn.labels, fn.gotos)
+        if not quiet:
+            print(f'r{n} = 0x{v:08x}: {k} reads folded to the constant')
+    return fns
+
+
+def fold_so(fns, quiet=False):
+    """XER[SO] is always 0: cpu_init clears it, emit_op never sets it from arithmetic (OE forms are
+    listed as unknowns, none in main.dol), runtime/ never writes cpu.xer_* (check_native_writes;
+    cpu.c/mtx.c only copy cpu back) and the only translated writer would be mtxer (set_xer). Without
+    one, compares drop `| so`, so `so` is no longer loaded at entry or reloaded after calls."""
+    if any('set_xer(' in x for fn in fns for v in fn.body.values() for x in v):
+        if not quiet:
+            print('note: so not folded (translated mtxer)')
+        return fns
+    k = 0
+    for i, fn in enumerate(fns):
+        if not fn.used & SO:
+            continue
+        body = {}
+        for a, v in fn.body.items():
+            body[a] = [re.sub(r' \| so;', ';', x) for x in v]
+            k += sum(x.count(' | so;') for x in v)
+        fns[i] = Func(fn.entry, fn.order, body, fn.labels, fn.gotos)
+    if not quiet:
+        print(f'so = 0: {k} compares without | so')
+    return fns
+
+
+def check_gqr_writes():
+    """psq_ld0/psq_st0 (ppc.h) assume GQR0 = 0: runtime/*.c may only write 0 to cpu.gqr[0], and a
+    computed index only where listed (GQR_INDEX_OK: thp.c sets GQR2-5)."""
+    bad = []
+    for f in sorted((ROOT / 'runtime').glob('*.c')):
+        for n, line in enumerate(f.read_text(encoding='utf-8').splitlines(), 1):
+            for m in re.finditer(r'\bgqr\[([^\]]*)\]\s*[-+*/|&^]?=(?!=)\s*([^;]*)', line):
+                i, v = m.group(1).strip(), m.group(2).strip()
+                if i == '0' and v != '0' or not i.isdigit() and (f.name, i) not in GQR_INDEX_OK:
+                    bad.append(f'{f.name}:{n}: {line.strip()}')
+    if bad:
+        sys.exit('GQR0 may be written non-zero by runtime/ (psq_ld0/psq_st0 assume 0, recomp.py):\n' + '\n'.join(bad))
+
+
+GQR_INDEX_OK = {('thp.c', 'i')}
 
 
 def popc(m):
@@ -864,9 +1088,13 @@ def bit(name):
 
 
 def usedef(text):
-    """C of one instruction (locals) -> (uses, kills, writes). Uses count as before the
-    writes; a write to one half of a paired single also reads the register."""
-    kill = write = 0
+    """C of one instruction (locals) -> (uses, kills, writes), statement by statement: a
+    statement's reads count as before its own writes, but not after an earlier statement
+    of the instruction wrote the whole register (record forms: `r0 = ..; cr0 = cmp_s(r0..)`
+    does not read the old r0). A write to one half of a paired single also reads the register
+    unless the other half is written too. Instruction C is straight-line apart from branch
+    lines, which write no register."""
+    kill = write = use = 0
     halves = defaultdict(set)
 
     def d(m):
@@ -875,22 +1103,23 @@ def usedef(text):
         write |= b
         if m.group(2):
             halves[b].add(m.group(2))
+            if len(halves[b]) == 2:
+                kill |= b
         else:
             kill |= b
         return '@'
-    t = DEF_RE.sub(d, text)
-    if '&ca' in t:
-        t = t.replace('&ca', '@')
-        kill |= CA; write |= CA
-    if re.search(r'(?<![\w.])ctr--', t):
-        kill |= CTR; write |= CTR
-    use = 0
-    for m in NAME_RE.finditer(t):
-        use |= bit(m.group(1))
+    for s in text.split(';'):
+        before = kill
+        t = DEF_RE.sub(d, s)
+        if '&ca' in t:
+            t = t.replace('&ca', '@')
+            kill |= CA; write |= CA
+        if re.search(r'(?<![\w.])ctr--', t):
+            kill |= CTR; write |= CTR
+        for m in NAME_RE.finditer(t):
+            use |= bit(m.group(1)) & ~before
     for b, hs in halves.items():
-        if len(hs) == 2:
-            kill |= b
-        else:
+        if len(hs) == 1 and not kill & b:
             use |= b
     return use, kill, write
 
@@ -901,6 +1130,7 @@ class Func:
 
     def __init__(self, entry, order, body, labels, gotos):
         self.entry, self.order, self.labels, self.gotos = entry, order, labels, gotos
+        self.body = body
         self.lines, self.events = {}, []
         self.use, self.kill, self.write, self.ev, self.succ = {}, {}, {}, {}, {}
         term = lambda x: x.endswith('return;') or x.startswith(('goto ', 'if (__builtin_expect(recomp_event_pending', 'switch'))
@@ -965,12 +1195,21 @@ def localize_line(x):
 
 class Summaries:
     """in(F): CALLU registers whose `cpu` value at entry F may read; clob(F): registers
-    whose `cpu` value F may change. Least fixpoint over the call graph."""
+    whose `cpu` value F may change. Least fixpoint over the call graph. out(F): RETU registers
+    F stores at its returns (solve_out)."""
 
     def __init__(self, p, funcs):
         self.p, self.funcs = p, {f.entry: f for f in funcs}
         self.s = {e: (0, 0) for e in self.funcs}
+        self.out = {e: RETU for e in self.funcs}
+        self.native_in, self.ind_in = NATIVE_IN, 0
         self.name_addr = {n: a for a, n in p.stubs.items()}
+        self.callers = defaultdict(set)
+        for f in self.funcs.values():
+            for c in f.callees():
+                d = 'call_indirect' if c == 'call_indirect' else self.dep(c)
+                if d is not None:
+                    self.callers[d].add(f.entry)
 
     def get(self, callee):
         if callee.startswith('f_'):
@@ -979,9 +1218,9 @@ class Summaries:
         if a in MTX_NATIVE and a in self.s:
             i, c = self.s[a]
             return i | MTX_REGS[0], c | MTX_REGS[1]
-        if callee == 'call_indirect':
-            return CALLU, RELU
-        return NATIVE_REGS.get(callee, (NATIVE_IN, NATIVE_CLOB))
+        if callee == 'call_indirect':   # its targets: p.taken (functable.c logs any other) and natives
+            return self.native_in | self.ind_in, RELU
+        return NATIVE_REGS.get(callee, (self.native_in, NATIVE_CLOB))
 
     def dep(self, callee):
         """translated function whose summary get(callee) reads"""
@@ -990,22 +1229,21 @@ class Summaries:
         a = self.name_addr.get(callee)
         return a if a in MTX_NATIVE else None
 
-    def solve(self):
-        callers = defaultdict(set)
-        for f in self.funcs.values():
-            for c in f.callees():
-                d = self.dep(c)
-                if d is not None:
-                    callers[d].add(f.entry)
-        work = sorted(self.funcs)
+    def solve(self, work=None):
+        """work: functions to (re)analyze, default all; their callers follow as summaries change"""
+        work = sorted(self.funcs if work is None else work)
         inq = set(work)
         while work:
             e = work.pop()
             inq.discard(e)
-            new = analyze(self.funcs[e], self.get)[:2]
+            new = analyze(self.funcs[e], self.get, self.out[e])[:2]
             if new != self.s[e]:
                 self.s[e] = new
-                for c in callers[e]:
+                up = self.callers[e]
+                if e in self.p.taken and new[0] & ~self.ind_in:
+                    self.ind_in |= new[0]
+                    up = up | self.callers['call_indirect']
+                for c in up:
                     if c not in inq:
                         work.append(c)
                         inq.add(c)
@@ -1035,7 +1273,7 @@ def liveness(fn, get, extra):
     return live
 
 
-def dirty_sites(fn, get, live):
+def dirty_sites(fn, get, live, out):
     """Dirty locals (forward, may: written since the last store or reload) -> store and
     reload mask per event."""
     order, ev, events = fn.order, fn.ev, fn.events
@@ -1058,17 +1296,15 @@ def dirty_sites(fn, get, live):
             if k == 'call':
                 ci, cc = get(c)
                 sp = d & W & CALLU & (ci | (cc & live_out[a]))
+                # ctr, ca, cr0, cr5-7 too (until 2026-10-22 they were reloaded after every call;
+                # the campaign DL rebuild blamed on that was the build-dependent DL cache conflict)
                 rl = RELU & cc & used & live_out[a]
-                # ctr, ca, cr0, cr5-7 are reloaded after every call as before (callers' copies
-                # could then be stale): keeping them across calls changed GX display lists in
-                # the campaign replay (4 lists rebuilt each frame from r1500), cause not found
-                rl |= RELU & ~CALLU & used & ~FB(*range(32))
                 after = (d & ~sp & ~cc) | (cc & W & ~RELU)
                 d = after | d if cond else after
             elif k == 'poll':
                 sp, rl = d & W & GB(1), 0
             else:
-                sp = d & W & (RETU if k == 'ret' else ALLREGS)
+                sp = d & W & (RETU & out if k == 'ret' else ALLREGS)
                 rl = used if k == 'sys' else 0
                 if not cond:
                     d = 0
@@ -1082,8 +1318,9 @@ def dirty_sites(fn, get, live):
     return sites
 
 
-def analyze(fn, get):
-    """-> (in, clob, {event: (store mask, reload mask)}) for fn under callee summaries get().
+def analyze(fn, get, out=RETU):
+    """-> (in, clob, {event: (store mask, reload mask)}) for fn under callee summaries get(),
+    storing out (Summaries.out) of the dirty RETU registers at its returns.
     A RELU register the callee may change is reloaded only if a later read or store needs
     it; otherwise its value stays in cpu and the stale local counts as clean (never stored).
     Stores therefore count as reads for the reload decision (iterated until stable); the
@@ -1093,7 +1330,7 @@ def analyze(fn, get):
     extra = {}
     while True:
         live = liveness(fn, get, extra) if extra else live_in
-        sites = dirty_sites(fn, get, live)
+        sites = dirty_sites(fn, get, live, out)
         new = defaultdict(int)
         for a in order:
             for i in ev[a]:
@@ -1108,10 +1345,100 @@ def analyze(fn, get):
         k, c, _ = events[i]
         if k in ('call', 'tail'):
             clob |= get(c)[1]
+    fn.entry_live, fn.live = live[order[0]], live
     return live_in[order[0]] & CALLU, clob, sites
 
 
-def emit(fn, sites):
+def reach_ret(fn):
+    """per instruction: registers that some path from its start keeps unwritten (no full write)
+    up to a return, tail or sysret event, where the value then in cpu leaves the function"""
+    rr = {a: 0 for a in fn.order}
+    changed = True
+    while changed:
+        changed = False
+        for a in reversed(fn.order):
+            if any(fn.events[i][0] in ('ret', 'tail', 'sysret') for i in fn.ev[a]):
+                v = ALLREGS
+            else:
+                v = 0
+                for t in fn.succ[a]:
+                    v |= rr[t]
+                v &= ~fn.kill[a]
+            if v != rr[a]:
+                rr[a], changed = v, True
+    return rr
+
+
+def solve_out(p, fns, sm):
+    """out(F): the RETU registers whose cpu value right after F returns may be read before it is
+    overwritten; F's returns store only those (were all of RETU). Least fixpoint, grown from
+    out = RETU for p.rtcalled (runtime/ reads the results) and 0 else: a direct call s in C adds
+    (live after s | what reaches C's return unwritten & out(C)) & RETU, where live counts C's reads,
+    later callees' in-sets (SDK in-sets keep the logged r3-r6) and later stores; a tail call adds
+    out(C); every call_indirect site adds the same to all of p.taken (recomp_call_guest restores
+    cpu after its call: nothing read). Polls: callbacks read only r1/r3/r4 (as before)."""
+    init = {fn.entry: RETU if fn.entry in p.rtcalled else 0 for fn in fns}
+    taken = p.taken & set(init)
+    sm.out = dict(init)
+    sm.solve()
+    rounds = 0
+    while True:
+        rounds += 1
+        need, ind = dict(init), 0
+        for fn in fns:
+            analyze(fn, sm.get, sm.out[fn.entry])
+            live, rr, oc = fn.live, reach_ret(fn), sm.out[fn.entry]
+            for a in fn.order:
+                lo = ro = 0
+                for t in fn.succ[a]:
+                    lo |= live[t]
+                    ro |= rr[t]
+                for i in fn.ev[a]:
+                    k, c, _ = fn.events[i]
+                    if k not in ('call', 'tail') or not c.startswith(('f_', 'call_indirect')):
+                        continue
+                    m = ((lo | (ro & oc)) if k == 'call' else oc) & RETU
+                    if c == 'call_indirect':
+                        ind |= m
+                    elif int(c[2:], 16) in need:
+                        need[int(c[2:], 16)] |= m
+        for e in taken:
+            need[e] |= ind
+        grew = [e for e in need if need[e] & ~sm.out[e]]
+        if not grew:
+            break
+        for e in grew:
+            sm.out[e] |= need[e]
+        sm.solve(grew)
+    n = sum(popc(sm.out[fn.entry]) for fn in fns)
+    names = [f'r{k}' for k in range(32)] + [f'f{k}' for k in range(32)] + [f'cr{k}' for k in range(8)] + ['ctr', 'ca', 'so']
+    print(f'out(): {rounds} rounds, {len(taken)} indirect targets get ' + ','.join(names[b] for b in range(75) if ind >> b & 1) +
+          f'; {n} return registers (all of RETU: {popc(RETU) * len(fns)})')
+
+
+def check_call_reads(fns):
+    """EABI check for the registers a caller keeps in locals although a callee may write them in its
+    own locals without storing them (not RETU): ctr, ca and cr0 must never be read after a call
+    before being written (the caller would see its own value, hardware the callee's). cr5-7 are read
+    after calls only through mfcr (5 functions, 2026-10-22), whose result feeds a cr0 single-bit
+    extract (srwi/rlwinm .., 31, 31): counted, not an error."""
+    bad, cr57 = [], 0
+    for fn in fns:
+        live = liveness(fn, lambda c: (0, 0), {})
+        for a in fn.order:
+            if not any(fn.events[i][0] == 'call' for i in fn.ev[a]):
+                continue
+            m = 0
+            for t in fn.succ[a]:
+                m |= live[t]
+            if m & (CTR | CA | CB(0)):
+                bad.append(f'{a:08x}')
+            cr57 += bool(m & CB(5, 6, 7))
+    print(f'calls followed by a read of cr5-7 (mfcr): {cr57}' +
+          (f'; NOTE ctr/ca/cr0 read after a call (EABI broken, see check_call_reads): {", ".join(bad)}' if bad else ''))
+
+
+def emit(fn, sites, prof=None):
     """Func + store/reload masks per event -> C."""
     entry = fn.entry
 
@@ -1131,7 +1458,8 @@ def emit(fn, sites):
         out = ([f'r{k} = R[{k}];' for k in fn.gu if m >> k & 1] +
                [f'fp{k} = F[{k}];' for k in fn.fu if m >> (32 + k) & 1] +
                [f'cr{i} = (cpu.cr >> {28 - 4 * i}) & 15;' for i in fn.cu if m >> (64 + i) & 1])
-        out += [f'{n} = cpu.{v};' for n, v in (('ctr', 'ctr'), ('ca', 'xer_ca'), ('so', 'xer_so'))
+        # xer_so is 0 or 1 (set_xer, mcrxr); `& 1u` tells GCC, so `cmp | so` branches test the compare only
+        out += [f'{n} = cpu.{v};' for n, v in (('ctr', 'ctr'), ('ca', 'xer_ca'), ('so', 'xer_so & 1u'))
                 if n in fn.xu and m & bit(n)]
         return ' '.join(out + [f'FNPROF(0x{entry:08x}u);'])
 
@@ -1143,6 +1471,9 @@ def emit(fn, sites):
     decl += [f'u32 {n};' for n in fn.xu]
     out.append('    ' + ' '.join(decl))
     out.append('    ' + reload(ALLREGS))
+    if prof is not None:
+        out[-1] += f' SITEC({len(prof)});'
+        prof.append(('entry', entry, '', fn.entry_live & fn.used, 0, len(fn.order)))
     for a in fn.order:
         if a in fn.labels:
             out.append(f'L_{a:08x}:;')
@@ -1151,7 +1482,14 @@ def emit(fn, sites):
             out.append(f'    goto L_{a + 4:08x};')
     out.append('}')
     src = '\n'.join(out)
-    return re.sub(r'@([SL])(\d+)@', lambda m: (spill(sites[int(m.group(2))][0]) if m.group(1) == 'S'
+
+    def site(i):
+        k, c, _ = fn.events[i]
+        if prof is None or k not in ('call', 'tail', 'ret'):
+            return spill(sites[i][0])
+        prof.append((k, entry, c or '', sites[i][0], sites[i][1], 0))
+        return f'SITEC({len(prof) - 1}); ' + spill(sites[i][0])
+    return re.sub(r'@([SL])(\d+)@', lambda m: (site(int(m.group(2))) if m.group(1) == 'S'
                                                 else reload(sites[int(m.group(2))][1])), src)
 
 
@@ -1167,21 +1505,43 @@ def main():
         if p.kind(a) == 'stub':
             p.sdk_name(a)
     out.mkdir(parents=True, exist_ok=True)
+    # first pass finds the leaves to inline; the second translates with them inlined
+    keep = (copy.deepcopy(p.unk), list(p.gqr0_written), getattr(p, 'sda2_folds', 0))
+    p.inline = inline_leaves(p, fold_so(fold_base_regs([translate_function(p, a) for a in tr], quiet=True), quiet=True))
+    p.unk, p.gqr0_written, p.sda2_folds = keep
+    p.covered = set()
     fns = [translate_function(p, a) for a in tr]
+    fns = fold_base_regs(fns)
+    fns = fold_so(fns)
+    n = sum(len(re.findall(r'/\* inlined f_', x)) for fn in fns for v in fn.body.values() for x in v)
+    print(f'{n} calls to {len(p.inline)} leaf functions inlined')
     for fn in fns:
         if fn.order[0] != fn.entry: print(f"note: f_{fn.entry:08x} starts at {fn.order[0]:08x}")
     check_native_writes()
+    check_gqr_writes()
     sm = Summaries(p, fns)
-    sm.solve()
+    sm.native_in = native_reads()
+    solve_out(p, fns, sm)
+    check_call_reads(fns)
     funcs, n = [], [0] * 5
+    prof = [] if os.environ.get('RECOMP_SITEPROF') == '1' else None
     for fn in fns:
-        sites = analyze(fn, sm.get)[2]
-        funcs.append(emit(fn, sites))
+        sites = analyze(fn, sm.get, sm.out[fn.entry])[2]
+        funcs.append(emit(fn, sites, prof))
         for i, (sp, rl) in sites.items():
             if fn.events[i][0] == 'call':
                 n = [x + y for x, y in zip(n, (1, popc(sp), popc(rl), popc(fn.W & CALLU), popc(RELU & fn.used)))]
     print(f'{n[0]} call sites: {n[1]} register stores (fixed sets: {n[3]}), {n[2]} reloads ({n[4]})')
-    hdr = ['/* generated by tools/recomp/recomp.py -- do not edit */', '#pragma once', '#include "ppc.h"']
+    hdr = ['/* generated by tools/recomp/recomp.py -- do not edit */', '#pragma once']
+    if p.gqr0_written:   # psq_ld0/psq_st0 (ppc.h) fall back to the general GQR path
+        print('note: mtspr GQR0 at ' + ', '.join(f'{a:08x}' for a in p.gqr0_written) + ': RECOMP_GQR0_WRITTEN')
+        hdr.append('#define RECOMP_GQR0_WRITTEN 1')
+    hdr.append('#include "ppc.h"')
+    if prof is not None:
+        hdr += [f'extern u32 recomp_site_cnt[{len(prof)}];', '#define SITEC(k) (recomp_site_cnt[k]++)']
+        rows = ['k\tkind\tfn\tcallee\tstore\treload\tninsn']
+        rows += [f'{k}\t{r[0]}\t{r[1]:08x}\t{r[2]}\t{r[3]:x}\t{r[4]:x}\t{r[5]}' for k, r in enumerate(prof)]
+        write_if_changed(out / 'sites.tsv', '\n'.join(rows) + '\n')
     hdr += [f'void f_{a:08x}(void);' for a in tr]
     hdr += [f'void {n}(void);' for n in sorted(set(p.stubs.values()))]
     write_if_changed(out / 'funcs.h', '\n'.join(hdr) + '\n')
@@ -1202,20 +1562,46 @@ def main():
     skip = sorted(a for a in p.starts if p.kind(a) == 'skip')
     ft = ['/* generated: guest address -> host function */', '#include "funcs.h"']
     ft += [f'static void skip_{a:08x}(void) {{ recomp_skipped(0x{a:08x}); }}' for a in skip]
-    ent = [(a, f'f_{a:08x}') for a in tr] + list(p.stubs.items()) + [(a, f'skip_{a:08x}') for a in skip]
-    ent.sort()
-    ft.append('static const struct { u32 a; GuestFn f; } table[] = {')
-    ft += [f'    {{0x{a:08x}u, {n}}},' for a, n in ent]
-    ft.append('};')
-    ft.append('''void call_indirect(u32 t) {
-    int lo = 0, hi = (int)(sizeof table / sizeof table[0]) - 1;
-    while (lo <= hi) {
-        int m = (lo + hi) / 2;
-        if (table[m].a == t) { table[m].f(); return; }
-        if (table[m].a < t) lo = m + 1; else hi = m - 1;
-    }
-    recomp_bad(t, "call_indirect: no function at this address");
+    # starts recomp.py saw no pointer to (not p.taken): out() gave their returns only the stores
+    # their known callers read, so an indirect call to one is logged (its results may be stale)
+    ft.append('''static void untaken(u32 a) {
+    static u32 n;
+    if (n++ < 16) recomp_log("# call_indirect %08lx: no pointer to it seen by recomp.py, return stores per out() (recomp_unknowns.md)\\n", (unsigned long)a);
 }''')
+    ft += [f'static void u_{a:08x}(void) {{ untaken(0x{a:08x}u); f_{a:08x}(); }}' for a in tr
+           if a not in p.taken and a not in MTX_NATIVE]
+    # MTX bodies are reached through their sdk_ natives (weak stubs), as direct calls are
+    ent = ([(a, f'f_{a:08x}' if a in p.taken else f'u_{a:08x}') for a in tr if a not in MTX_NATIVE] +
+           list(p.stubs.items()) + [(a, f'skip_{a:08x}') for a in skip])
+    ent.sort()
+    # open addressing, linear probing, at most half full (was a binary search: ~12 probes per call,
+    # 1.3k calls per battle frame); slot 0 address = empty (no function starts at 0)
+    bits = (2 * len(ent) - 1).bit_length()
+    slot = lambda a: (((a >> 2) * 0x9E3779B1) & 0xFFFFFFFF) >> (32 - bits)
+    tab, probes = [None] * (1 << bits), 0
+    for a, n in ent:
+        k, j = slot(a), 1
+        while tab[k]:
+            k, j = (k + 1) & ((1 << bits) - 1), j + 1
+        tab[k], probes = (a, n), max(probes, j)
+    ft.append(f'/* {len(ent)} entries, longest probe sequence {probes} */')
+    ft.append(f'static const struct {{ u32 a; GuestFn f; }} table[{1 << bits}] = {{')
+    ft += [f'    [{k}] = {{0x{e[0]:08x}u, {e[1]}}},' for k, e in enumerate(tab) if e]
+    ft.append('};')
+    ft.append(f'''void call_indirect(u32 t) {{
+    for (u32 k = ((t >> 2) * 0x9E3779B1u) >> {32 - bits}; table[k].a; k = (k + 1) & {(1 << bits) - 1}u)
+        if (table[k].a == t) {{ table[k].f(); return; }}
+    recomp_bad(t, "call_indirect: no function at this address");
+}}''')
+    if prof is not None:
+        ft.append(f'u32 recomp_site_cnt[{len(prof)}];')
+        ft.append(f'''void recomp_site_dump(u32 retrace) {{
+    static u32 last[{len(prof)}];
+    for (u32 k = 0; k < {len(prof)}u; k++) if (recomp_site_cnt[k] != last[k]) {{
+        recomp_log("# site %lu %lu %lu\\n", (unsigned long)retrace, (unsigned long)k, (unsigned long)(recomp_site_cnt[k] - last[k]));
+        last[k] = recomp_site_cnt[k];
+    }}
+}}''')
     write_if_changed(out / 'functable.c', '\n'.join(ft) + '\n')
     for a, w in p.all_text_words():
         if w and p.kind(a) == 'tr' and a not in p.covered and decode(w):

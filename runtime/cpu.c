@@ -50,6 +50,12 @@ void recomp_wait_point(void) { recomp_dvd_service(); recomp_ar_service(); }
 void recomp_call_guest(u32 fn, u32 arg) { recomp_call_guest2(fn, arg, 0); }
 void recomp_call_guest2(u32 fn, u32 arg, u32 arg2) {
     CPU saved;   /* on the host stack: a callback may reach another wait point */
+    static int r1_said;   /* gen/'s *_sp stack accesses (ppc.h) assume r1 well inside the RAM mirror */
+    u32 o = R[1] & RAM_MASK;
+    if (!r1_said && (o < 0x10000u || o > RAM_MASK - 0x10000u)) {
+        r1_said = 1;
+        recomp_log("# r1 %08lx within 64 KB of the RAM mirror's end: *_sp stack accesses are wrong\n", (unsigned long)R[1]);
+    }
     memcpy(&saved, &cpu, sizeof cpu);
     R[3] = arg;
     R[4] = arg2;

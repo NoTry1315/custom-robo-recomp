@@ -260,6 +260,8 @@ logged once when first hit.
 - Profiling: `make FNPROF=1` (after `make clean`) makes gen/ store the running function
   in `recomp_cur_fn` and `# prof` lists functions (00000000 = SDK/runtime). Battle: 80%
   of samples outside game code, the game part flat (top function 2.4%, PSMTX-style code).
+  Since 2026-10-21 SDK and native functions show under their names and 00000000 is the
+  call-boundary glue only (see "Per-model cost (2026-10-21)").
 - Results, `# time` at r3600 / r3000:
   battle game 118.4 -> 75.4 (locals) -> 69.5 (EABI calls) -> 58.7 ms (fmadd_s, stack);
   campaign 4.6 -> 5.4-5.7 fps (game 38-45 ms); title 15 fps, game 21.7 ms.
@@ -288,11 +290,12 @@ interprocedural register summaries and emits each call's stores/reloads separate
   it and a later read or store needs it; otherwise its value stays in `cpu` and the stale
   local counts as clean, so it is never stored back (this keeps a callee's r3 return value
   on paths like `li r3,0; beq 1f; bl G; 1: blr`). Stores count as reads for that decision
-  (iterated per function until stable). Exception: ctr, ca, cr0, cr5-7 are still reloaded
-  after every call, as before. Keeping them in locals when the callee cannot change them
-  made the campaign replay rebuild 4 GX display lists every frame from r1500 (dl cache
-  misses; SDK calls and scenes unchanged). Bisected to that class (FPRs and GPRs are fine),
-  the reading code was not found.
+  (iterated per function until stable). Exception (until 2026-10-22): ctr, ca, cr0, cr5-7
+  were still reloaded after every call. Keeping them in locals when the callee cannot change
+  them made the campaign replay rebuild 4 GX display lists every frame from r1500 (dl cache
+  misses; SDK calls and scenes unchanged). Cause found 2026-10-22: no guest code reads them
+  after a call; the misses were the build-dependent DL cache set conflict (see "Call-boundary
+  glue (2026-10-22)").
 - Returns store only dirty RETU registers; tail branches every dirty register (a tail
   target can be shared code of the same function, e.g. 0x8009d5ec, a common epilogue
   reached from several functions); recomp_bad/sc/trap/rfi/mtmsr store every dirty register
@@ -739,10 +742,405 @@ reader). Design:
 - Citra replay of rec-to-battle (no card): SDK/pad/retrace lines and summary counts identical to the
   base build (only OSTicksToCalendarTime's wall-clock r4 differs, as before). Screenshot checked.
 
+## Codegen per guest instruction (2026-10-21)
+
+Battle is CPU-bound on the game thread with a flat profile, so these change what every translated
+function compiles to (recomp.py and ppc.h only; game semantics unchanged):
+
+- ppc.h memory helpers (`rd*/wr*`, `_ram`, bit casts) are `always_inline` (`RI`): in gen/'s large
+  functions GCC had stopped inlining them (37.5k out-of-line calls in 886 functions, e.g. rd16/wr16/wr8
+  on f_80090710's flag bytes). Alone this grew gen/ from 1.52 M to 2.01 M instructions; the items below
+  bring it back to 1.58 M.
+- psq_l/psq_st with I = 0 (MWCC's f14-f31 saves/restores, PSMTX-style code; 4.7k sites) emit
+  `psq_ld0/psq_st0`: float type without loading GQR0 or switching on its type; r1-relative ones skip
+  IS_HW and WR_MARK like other stack accesses (they went through wr32 before). Assumes GQR0 = 0, as
+  the native MTX functions already did. Guards: recomp.py records any translated mtspr GQR0 (there is
+  none) and then defines RECOMP_GQR0_WRITTEN in funcs.h, which turns psq_ld0/psq_st0 back into the
+  general psq_ld/psq_st; `check_gqr_writes()` fails the run if runtime/*.c writes cpu.gqr[0] other than 0
+  or uses a computed GQR index outside GQR_INDEX_OK (thp.c sets GQR2-5). I != 0 sites keep psq_ld/psq_st.
+- fctiw/fctiwz (558 sites, all fctiwz): `fctiw_bits` uses ARM `vcvt.s32.f64` (toward zero) /
+  `vcvtr.s32.f64` (FPSCR mode, nearest like the old rint) instead of libm trunc/rint. VCVT saturates to
+  0x7FFFFFFF/0x80000000 like the old clamps and gives 0 for NaN, which stays special-cased to
+  0x80000000; the -0 upper-word quirk is unchanged. Non-ARM builds keep the C version.
+- `so` is reloaded as `cpu.xer_so & 1u` (it is only ever 0 or 1: set_xer, mcrxr): GCC then knows
+  `cmp_s(..) | so` cannot set LT/GT/EQ, and branches on those bits test the compare only (12.2k
+  `tst #2/4/8` instructions -> 0.8k, -100k instructions).
+- r1- and r11-relative accesses with a constant offset (r11 = r1 + N in the inlined _savegpr/_savefpr)
+  are emitted as `rd32_sp(r1, k)` etc. (`stack_access()`): `ram + (r1 & RAM_MASK) + k`, so the mask is
+  computed once per r1 value and k becomes the load/store offset. `rd32_ram(r1 + k)` masked every
+  address, and GCC often precomputed those addresses and spilled them to the C stack. Update forms
+  (stwu r1, psq_stu) and indexed ones keep `*_ram`. Assumes r1 & RAM_MASK is more than 32 KB from both
+  ends of the mirror (else `ram + off` and the old wrapped mask differ); recomp_call_guest (cpu.c) logs
+  `# r1 ... within 64 KB of the RAM mirror's end` once if r1 is ever there. The stack is at 0x8046xxxx.
+- r2/r13 (SDA bases): `fold_base_regs()` checks that in all translated functions (Func write masks) the
+  only writes are __start's lis/ori pair, giving the value cpu_init also sets, and then replaces their
+  other reads by the constant (r13: 18221 reads, r2: 653). r13/r2-relative loads and stores get constant
+  addresses: no IS_HW check, no base register (-180k instructions). If the check fails it prints
+  `note: rN not folded` and nothing changes.
+- fneg/fabs/fnabs and ps_neg/abs/nabs use `-d` / `fabs()` (`fneg_d` etc.): VNEG/VABS change only the
+  sign bit (ARM: not arithmetic, no NaN processing, not flushed in RunFast mode), so they are exact for
+  all inputs; the `d2u ^ sign` form went through core registers and a C-stack round trip.
+- Stores to a compile-time constant WGPIPE address (0xCC008000, 705 sites in 22 functions) call
+  `recomp_gx_fifo_write` directly (`HW_WRITE`), as hw_write would.
+- Tried and dropped: `__attribute__((cold))` on hw_read/hw_write/recomp_poll_events (no hot/cold split
+  on this target, +47k instructions); masking a store's offset once for both the store and its WR_MARK
+  page through an empty asm (-17k static instructions, no measurable Citra change). For scale, removing
+  WR_MARK altogether (experiment only, wrong results) gave battle game 22.2 -> 21.1 ms.
+- Citra replays (`tools/citra/replay.ps1`, compare_logs.py exit 0 for every step: same SDK/pad/scene/
+  summary lines, byte-identical framebuffer dumps) vs 40f52fc, game ms (time_avg.py; battle scene 4.2
+  from r2460, campaign scene 8.3), f_ instructions (objdump) and .text, cumulative:
+
+  | step | battle game | campaign game | f_ instructions | .text MB |
+  |---|---|---|---|---|
+  | base 40f52fc | 28.3 | 14.4 | 1,522,525 | 6.73 |
+  | always_inline | 26.6 | 13.5 | 2,008,567 | 8.64 |
+  | + psq GQR0 | 25.0 | 12.8 | 1,929,998 | 8.29 |
+  | + fctiw vcvt | 24.9 | 12.8 | 1,921,845 | 8.25 |
+  | + so & 1 | 24.3 | 12.5 | 1,822,008 | 7.85 |
+  | + stack base+offset | 23.2 | 12.1 | 1,758,530 | 7.61 |
+  | + r2/r13 constants | 22.5 | 11.9 | 1,580,026 | 6.90 |
+  | + fneg/fabs, WGPIPE direct | 22.2 | 11.8 | 1,577,050 | 6.89 |
+
+  Battle frame 30.7 -> 24.7 ms (GX thread busy 18.5 -> 18.7, it varies a little per build with the
+  game/GX thread interplay); campaign frame 17.3 -> 17.2 ms (paced, now waiting more on GX/GPU).
+  Static mix base -> final: C-stack ldr/str 12.2% -> 10.3%, vldr/vstr 1.7% -> 2.2%; out-of-line calls
+  to rd*/wr*/psq_*/fctiw_bits/trunc 43.5k -> 720 (psq with GQR5/6: quant, psq_ld). The inlined IS_HW
+  slow paths (36k hw_read + 18.8k hw_write calls, never taken in these replays) sit at function ends.
+- Not yet on hardware: Citra time counts instructions, not I-cache misses; .text is 2% larger than base.
+
+## Per-model cost (2026-10-21)
+
+Question (user): the more models in a scene, the lower the frame rate. What grows per model, on
+which thread, and what part of it the runtime can remove. Citra only (replay.ps1 battle /
+campaign; Citra time is an instruction-count proxy, not hardware ms).
+
+Profiling added (FNPROF builds only; normal builds and their logs are unchanged):
+- `# prof` lists SDK and native functions by name: recomp_sdk_log (every LOG()), mtx.c and
+  libc.c natives tag `recomp_cur_fn` with their name. 00000000 is then only the call-boundary
+  glue of translated code: gen/ sets FNPROF(entry) after a function's entry reload and after
+  each post-call reload, and FNPROF(0) at each spill, so those register loads/stores and
+  call_indirect count as 0 (translator side). Top 60 entries instead of 25.
+- `# sdk r<n>`: SDK and native calls per frame over the last 300 retraces (natives are counted
+  in FNPROF builds only, and then also appear in the summary).
+
+Per 300-retrace window (FNPROF build of the base code, logs/perf/fnprof4-*; ms = sampler share x
+frame time, so the five parts add up to the frame; GX SDK = every GX/OS/PAD/VI call that LOGs):
+
+| window | DL calls/f | draws/f | GX SDK calls/f | pos+nrm mtx loads/f | PSMTXConcat/f | game thread | game code | glue (0) | GX SDK | MTX natives | waits | GX thread busy |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| battle 4.2 r2700 | 102 | 1143 | 3974 | 130 | 51 | 25.0 | 18.6 | 5.3 | 1.5 | 0.6 | 1.9 | 13.1 |
+| battle 4.2 r3300 | 247 | 2165 | 3409 | 594 | 508 | 32.5 | 24.8 | 4.8 | 1.4 | 1.8 | 1.5 | 21.1 |
+| campaign 8.3 r2100 | 97 | 1257 | 1379 | 637 | 1087 | 15.7 | 9.3 | 2.2 | 1.1 | 3.0 | 2.1 | 13.0 |
+| Vs. menu 7.0 r1800 | 0 | 199 | 2049 | 8 | 8 | 12.2 | 8.9 | 2.4 | 1.3 | 0.1 | 6.6 | 15.2 |
+| menu 5.0 r1500 | 0 | 197 | 623 | 13 | 32 | 5.8 | 3.9 | 1.3 | 0.3 | 0.1 | 13.5 | 16.6 |
+
+Unit costs (Citra):
+- GX SDK call on the game thread (LOG + record into the ring): 0.3-0.5 us per call.
+- PSMTXConcat native: 2.6 us per call (startup `# bench`; translated 7.0 us). Campaign: 1087 per
+  frame, 3.4 per position-matrix load (envelope skinning), 2.5-2.8 ms. InvXpose 1.7 us x 315.
+- GX thread: busy / DL calls = 76-130 us per display-list call in battle and campaign (all of the
+  thread: draw setup, uniforms, plan, signature, validation, index copy).
+- Battle r2700 -> r3300 (+145 DL calls, +464 matrix loads, +457 concats per frame): game thread
+  +7.5 ms = ~52 us per added DL call (game code +6.2, MTX natives +1.2, GX SDK and glue flat;
+  collision code grows too, so the play differs as well: an upper bound per model), GX thread
+  +8.0 ms = ~55 us per added DL call.
+
+What grows with models, largest first (battle r3300 / campaign 8.3, ms per frame):
+1. Translated game code, 24.8 / 9.3: spread over many functions (none above 1.8 ms).
+   Battle r3300: 80060fa4 1.8, 8006eef8 1.2, motion_eval_keyframes 8001eb48 1.1, 80023394 1.0,
+   8001b544 1.0, 8019fc14 0.8, 80090710 0.8, coll_test_faces 8005e270 0.75, gmtx_mul 8001e134
+   0.7; campaign: 8001eb48 1.0, 801958d0 0.8, 801a0098 0.7, gmtx_mul 0.55, 8019eb5c 0.5.
+   gmtx_mul (game code, scalar fmuls, a 3x4 multiply like PSMTXConcat) is 8.3 us per call
+   translated, PSMTXConcat native 1.6 us. MSL sin/cos (801689d0 / 80168f38): 0.5 / 0.1 ms.
+   Roles (Sonnet sweep of gen/ and the disassembly; guesses unless noted): 80023394 is a byte-wise
+   zero fill (r3 dst, r4 count; checked in the disassembly), 88 callers, 1.0 / 0.45 ms; 80060fa4
+   a call-free float loop (physics/collision pass); 8006eef8 an immediate-mode GX draw (GXBegin
+   x6, PSMTXMultVec x8; hit volumes or shadows); 8001b544 a vec3 distance check; 8019fc14 angles
+   -> rotation (sin/cos x3); 80090710 a 2D/TLUT screen draw; 801958d0 HSD matrix setup before a
+   draw (PSMTXConcat x4, InvXpose, Load Pos/Nrm/TexMtx); 801a0098 12-float scaled add (skinning
+   blend); 8019eb5c local matrix from SRT; 80195ee4 PObj draw (SetArray/VtxDesc, CallDisplayList);
+   80189058 TObj texture bind; 801aa74c MObj/TEV setup. gmtx_mul's 9 callers and
+   motion_eval_keyframes' 2 are all in 0x80052000-0x8005b000 (motion/skeleton code).
+2. Call-boundary glue (00000000), 4.8 / 2.2: grows with the number of calls.
+3. MTX natives, 1.8 / 3.0 (PSMTXConcat 508 / 1087 calls).
+4. GX SDK call path, 1.4 / 1.1: about flat in calls between battle windows (3400-4100).
+5. GX thread, 21.1 / 13.0 busy: in parallel and below the game thread here and on hardware
+   (run 24: busy 12.9 vs game 19.1); it decides the frame only once the game thread is faster.
+6. A cliff, not a slope: the display-list cache (2-way, DL_N 4096) keyed on host pointers (the
+   rd_ function pointer and ram + offset in plan_sig, the list pointer in the slot). Which keys
+   share a set changed with every build; ~250 keys per battle frame in 2048 sets put 3 in one
+   set in about every other build (expected triples 0.6), and those lists then missed every
+   frame, re-decoded into the arena, filled it and forced the full flush (vc_gen++) about once
+   per 60-frame window: a ~107 ms frame each time. Seen in this session's MTX-only build (5 lists
+   "new" every frame from r3000, worst frame 107 ms in each window from r3000, GX vertex +2.5 ms)
+   but not in the base build: this was the "battle vcache arena line varies by build" item.
+   More models = more keys = likelier.
+
+Fixes ranked by ms per frame (Citra game thread unless noted; estimates marked ~):
+1. Translator (not this session, ppc.h / recomp.py): call-boundary glue, up to 4.8 / 2.2 ms;
+   ~half of it if the callee's entry and the post-call reload load only what is read.
+2. Translator (recomp.py NATIVE + a runtime sdk_ function, like memset): the byte-wise zero fill
+   80023394 as a native, ~-0.9 / -0.4 ms (one wr8 with a write mark and a back-edge poll per byte
+   today). It is game code, but only a memzero; polls in its loop go away as with memset.
+3. Translator: float codegen of the hot game functions (gmtx_mul 8.3 us vs 1.6 us native for the
+   same arithmetic suggests ~2-4x headroom in that kind of code); spread, size unknown.
+4. Runtime, done: native MTX in float with flat pointers: campaign game -1.0 ms, battle -0.3/-0.5.
+5. Runtime, done: display-list / vertex cache 4-way with build-independent keys: removes the
+   per-build thrash (above); battle 4.2 vs the MTX-only build: frame 30.8 -> 30.1, worst 77 ->
+   42 ms.
+6. Runtime: cheaper SDK call path (a per-function static counter pointer in LOG() instead of
+   count_of's hash probe; record writes inline): ~-0.3 to -0.5 ms of 1.4 (battle), ~-0.3 campaign.
+7. Runtime: native MSL sin/cos, only if bit-identical: ~-0.3 ms battle, ~0 campaign.
+8. Runtime: vertex-cache arena eviction (LRU or compaction) instead of the full flush at 3/4: the
+   remaining flush (battle r2820 window, 113 ms frame) comes from slow growth of new keys. A
+   hitch every ~600-900 frames in battle, not the average.
+9. GX thread: memoise make_plan/trim_plan/plan_sig/texgen keys per display-list call on a GX
+   state generation counter, and draw cached index lists without the memcpy into ibuf: ~30-50%
+   of the ~55 us per DL call (~-3 to -5 ms GX busy in battle r3300). No frame-time gain until the
+   game thread drops below the GX thread's busy time.
+
+Implemented (runtime/mtx.c, mtx_impl.h, gx.c):
+- MTX natives: mtx_impl.h is generic in the value type MT and loads LD / LDK. With FLOATOPS
+  every single op is a float op whose double result is exact, so the native values stay float
+  (F_ADD..F_MSUB; float add/sub equal the double op rounded to float, 53 >= 2 * 24 + 2 bits);
+  without FLOATOPS nothing changes. A flat variant fp_ runs the same bodies on addresses masked
+  once, used when every range lies inside ram[] (else nat_). One write mark per destination
+  (MARK: first and last word, the same pages as one WR_MARK per store). Concat is fully
+  unrolled (inputs stay in VFP registers). `# bench` per call: PSMTXConcat 2607 -> 1563 ns,
+  MultVec 1280 -> 1052, InvXpose 1716 -> 1425; 0 ulp native vs translated for all 18.
+- Caches: plan_sig hashes the array's guest offset and not rd (it follows from type and n); the
+  DL and vertex cache slots use the list/data guest offset; both caches are CACHE_WAYS = 4-way
+  (LRU way replaced). The arena lines are now the same in a normal and an FNPROF build
+  (2100: 3887 KB in both; before: 3592 vs 2141 KB).
+- Before -> after (logs/perf base-* / new-*, time_avg, Citra): battle 4.2 frame 30.5 -> 30.1 ms,
+  game 28.2 -> 27.7, worst 48.2 -> 42.2, GX busy 18.3 -> 18.5; 4.0 frame 27.3 -> 26.8; 4.1 24.3
+  -> 24.2. Campaign 8.3 game 14.4 -> 13.4 ms, frame 17.3 -> 17.2 (at the 60 Hz cap: gx wait
+  1.7 -> 2.7). Menus unchanged. compare_logs.py exit 0 for both (SDK, pad, scene and summary
+  lines; framebuffer dumps byte-identical). Not yet on hardware.
+
+## GX thread per display-list cost (2026-10-22)
+
+Why: after the translator work the GX thread was close to being the battle bottleneck (Citra battle
+4.2: game thread 21.8 ms, GX thread busy 18.7; campaign 8.3: the game thread waited 5.2 ms per
+frame for it). Almost all of its time is in dl_draw (247 GXCallDisplayList hits per battle frame).
+Citra only (tools/citra/replay.ps1 battle / campaign; Citra time is an instruction-count proxy).
+
+Where a hit's ~75 us went (temporary per-step tick marks in dl_draw, battle r3000-3300, ms per
+frame; each mark adds 0.56 us): texture/TEV/pixel setup 4.6 (TEV rebuilds 0.8 for 23 per frame,
+unchanged-TEV checks 1.0 for 225), index memcpy + emit 4.9, matrix uniforms 2.4, texgen 1.9, plan
+(make_plan 1.5, trim/finish 1.0, plan_sig 1.0), lighting 0.7, clip 0.5, lookup/validation 0.7,
+frame_begin/cmdbuf_room 0.7. C3D_DrawElements: 2.7 ms for 133 calls (~20 us each), spread over
+the buckets that call pend_flush first (mostly the uniform setters); that is citro3d's own cost.
+
+Changes, each measured alone (GX busy, ms per frame, time_avg windows; battle --from 2460,
+campaign --from 1500):
+
+| step | battle 4.2 busy | battle vertex / tex / state | campaign 8.3 vertex | campaign busy - sync |
+|---|---|---|---|---|
+| base (14d19e7) | 18.7 | 10.6 / 1.1 / 2.6 | 7.8 | 11.4 |
+| 1. fewer tick reads | 17.9 | 10.6 / 0.7 / 3.4 | 7.8 | 11.1 |
+| 2. texture cache hash chains | 17.4 | 10.6 / 0.2 / 3.4 | 7.8 | 11.1 |
+| 3. index lists in place, rings with eviction | 13.5 | 6.7 / 0.2 / 3.4 | 3.9 | 7.0 |
+| 4. plan memo, texgen key | 12.6 | 5.9 / 0.2 / 3.4 | 3.4 | 6.5 |
+
+1. Timing: svcGetSystemTick is an SVC. Citra adds 150 ticks to every call (its kernel, as
+   recalled from its source: "measured on an o3DS", i.e. ~0.56 us at 268 MHz); on hardware an SVC
+   round trip is a few hundred cycles as well (not measured here). A display-list hit read it
+   10-12 times (dl_draw 4, 2 per texture unit, 2 for state, 2 in emit_ix), ~2700 reads per battle
+   frame. Now a chain of marks (t_start / t_mark / t_mark2: each read closes the interval since
+   the previous one): 4 per hit, 6 per per-primitive draw. Bucket meanings changed slightly: gx tex
+   is only the texture cache's slow path (timed alone and taken out of the chain), a hit through
+   the per-frame index counts as state; emit_ix is the caller's vertex part (was state);
+   dl_draw's make_plan now runs after the uniform setters (set_texgen does not read the plan
+   there: per-vertex texture matrices take the per-primitive path).
+2. tex_get: a texture's first use per frame scanned all 192 entries twice. Used entries are now
+   chained by (image, size, format) in tcache index order (the same candidates in the same order
+   as the scans); the LRU victim scan only runs for a new texture.
+3. Index lists in place and rings:
+   - Cached index lists (display-list and vertex cache) live in vc_ixa, a linear-memory ring of
+     0x30000 indices, and are drawn from there (was: a memcpy into ibuf per hit, ~170 KB per battle
+     frame). Lists of one frame are allocated in draw order, so consecutive hits stay adjacent
+     and still merge into one C3D_DrawElements. ibuf (immediate draws, fallbacks) 0x48000 ->
+     0x30000 indices per half, so linear memory use is unchanged; the static vc_ix is gone.
+   - vc_arena and vc_ixa are rings (ring_alloc). Each allocation has a record; live records are
+     queued in arena order from the ring's pointer, so the next allocation in the way is the
+     queue front. Allocations in the way are evicted (owner entry dropped: it misses and decodes
+     again) unless drawn in this GX frame (the GPU may not have read them; the previous frame's
+     are done, C3D_FrameBegin waits for its queue). Second chance: allocations drawn in the last
+     3 frames are passed over until a lap found no room. A plain ring evicted entries drawn every
+     frame; they decoded again the next frame and evicted the next ones (a 76 ms frame at r2952
+     in the test below, gone with second chance). An entry that gets a new allocation leaves the
+     old one unowned (reused once the pointer passes it). Replaces the whole-arena flush at 3/4
+     full. Flushes: each ring flushes its written range at kicks and frame end, and at once when
+     a new allocation is not contiguous with it.
+   - sdmc:/cr_vcache_small.txt: rings at 5/8, so that replays evict (battle 59 + 3 evictions,
+     campaign 2 + 23). In a test build at 3/8 the battle working set no longer fits: 25k+ failed
+     allocations, every frame falls back per primitive / to vbuf (~80 ms frames); logs and
+     framebuffers still identical. Normal size, end of the battle replay: arena 4657 KB of 5440,
+     index ring 317 KB of 384, no evictions yet.
+   - "# gx vcache" line: live arena and index ring KB, evictions and failed allocations since
+     start.
+4. Plan memo and texgen key:
+   - plan_get: dl_draw's trimmed, finished plan, template vertex and signature from a 256-entry
+     memo keyed on everything they read (vertex format of the present attributes, base/stride of
+     the indexed arrays, current matrix, material sources, texgen sources), the whole key
+     compared on a hit. A current matrix that is not a PNMTXn is not memoised (plan_finish logs
+     it). Battle: 245 of 247 calls per frame hit ("# gx dl" line: plan memo hits / misses).
+   - set_texgen's key held xf_gen, bumped by every matrix load (~2.4 per call in battle), so it
+     recomputed nearly every call; it now holds the write generation of the 3 XF rows each used
+     texgen reads (xf_row_gen, set by x_load_mtx).
+5. Tried and dropped: a TEV generation counter (every TEV/channel setter compares before it
+   writes, tev_changed skips its compare while the generation is unchanged) plus a light reload
+   compare: state 3.4 -> 3.0 ms but busy 12.6 -> 12.8 (the compares moved into the setters).
+
+Results (Citra): battle 4.2 GX busy 18.7 -> 12.6 ms (-33%); the frame stays 24.1-24.2 ms (game
+thread 21.8, gx wait 0.7 -> 0.6). Campaign 8.3 GX work (busy - sync) 11.4 -> 6.5 ms, frame
+17.2 -> 17.0 (60 Hz cap; the GX thread now waits on the cap: sync 4.0 -> 8.8). Battle 4.2 window
+worst 36.3 -> 35.0; the r2820 window 112.8 -> 87.6 ms (the arena flush was in it). The 87 ms
+frame left there (r2772) is the GX thread uploading new textures (that window's gx tex is 1.4 ms
+vs 0.2) and decoding new display lists when new content appears; next if hitches matter:
+texture upload cost. compare_logs.py exit 0 at every step, battle and campaign (SDK, pad, scene,
+summary lines; framebuffer dumps r2100/2700/3300 and r1500/1980/2300 byte-identical), also with
+cr_vcache_small. Not yet on hardware.
+
+Remaining per hit (battle, after): uniforms 4.5 ms per frame (set_mtx uploads, and the pending
+draw's C3D_DrawElements through pend_flush), state 3.4 (TEV compare, pixel state, binds), vertex
+rest 2.7 (lookup, validation, emit). Next for the GX thread: fewer C3D_DrawElements (~20 us each
+in citro3d) or a cheaper path to it.
+
+## Call-boundary glue (2026-10-22)
+
+Task: the game thread's cost at translated call boundaries ("Per-model cost" item 1, FNPROF glue
+4.8 / 2.2 ms) and the zero fill 0x80023394 (item 2). recomp.py, runtime/libc.c and runtime/vi.c
+only. Every step was checked with Citra replays (replay.ps1 battle / campaign) against the base
+14d19e7: compare_logs.py exit 0 (SDK calls with r3-r6 and lr, pad, scenes, summary counts,
+byte-identical framebuffer dumps), and no `# call_indirect` guard line (step 6) in either log.
+
+Measuring:
+- `RECOMP_SITEPROF=1 python tools/recomp/recomp.py` (then a normal make): every call site,
+  return and function entry counts its executions (`SITEC(k)`), gen/sites.tsv lists each site's
+  caller, callee and store/reload masks, and vi.c logs `# site <retrace> <k> <n>` (counts since
+  the last dump) every 300 retraces. A normal gen/ has none of it.
+- Per frame (battle 4.2 r2460 (after: r2400) to r3600, campaign 8.3 r1470 (after: r1500) to
+  r2400; one register = one u32 or one PS; entry loads = registers live at entry, the others are
+  dead loads GCC drops):
+
+  | per frame | battle before | battle after | campaign before | campaign after |
+  |---|---|---|---|---|
+  | calls (to SDK / natives / call_indirect) | 16553 (6693) | 14899 (6856) | 7450 (3474) | 6849 (3652) |
+  | translated function entries | 11140 | 9308 | 4368 | 3593 |
+  | call_indirect | 1272 | 1257 | 386 | 390 |
+  | registers stored before calls | 65047 | 57682 | 25565 | 23025 |
+  | registers reloaded after calls | 62146 | 34843 | 27395 | 14640 |
+  | registers stored at returns | 38844 | 26549 | 13915 | 8923 |
+  | registers loaded at entry | 84658 | 72920 | 31507 | 26140 |
+
+- Calibration: the old call_indirect (binary search, ~12 probes over 3975 entries) cost ~180
+  instructions per call; 1.3k calls were 0.84 ms of battle game time, so Citra charges ~270
+  instructions per us on the game thread (an instruction count at 268 MHz).
+- FNPROF of the final code: 00000000 is 15.2% of battle r3300 (~3.6 ms of the FNPROF frame) and
+  11.9% of campaign r2100 (~2.0 ms). That bucket is now mostly the C call itself (prologue and
+  epilogue, the caller's live values spilled around the call, the call and return) rather than
+  guest-register traffic. No FNPROF build of the base was made, so there is no before/after for it.
+
+Steps, game-thread ms (time_avg windows, battle 4.2 from r2460, campaign 8.3), cumulative:
+
+| step | battle game | campaign game |
+|---|---|---|
+| base 14d19e7 | 21.80 | 10.79 |
+| 1 0x80023394 native | 21.06 | 10.36 |
+| 2 so = 0 | 21.04 | 10.33 |
+| 3 use/def per statement | 21.00 | 10.31 |
+| 4 ctr/ca/cr0/cr5-7 kept in locals | 21.04 | 10.31 |
+| 5 call_indirect hash table | 20.20 | 10.07 |
+| 6 out(): return stores | 20.08 | 10.02 |
+| 7 native and call_indirect in-sets | 20.06 | 9.97 |
+| 8 leaf inlining | 19.86 | 9.93 |
+
+Battle frame 24.17 -> 22.61 ms (GX thread busy 18.7, unchanged); campaign frame 17.16 (paced,
+unchanged).
+
+1. 0x80023394 (game code, 88 callers) as `sdk_mem_zero` (recomp.py NATIVE, runtime/libc.c): `stb
+   0` per byte while i < n (cmplw, so n is unsigned), r3/r4 unchanged, r0 = 0 when n > 0
+   (`dol.py dis 0x80023394 0x10`). NATIVE_REGS: reads r3/r4, writes r0 (NATIVE_WRITE_EXTRA lets
+   libc.c write R[0]); write tracking through recomp_mark_ram. Not reproduced, as for memset: its
+   16-byte frame below r1 (back chain, saved r30/r31) and the back-edge polls. Its body now shows
+   in the generated "valid code not reached" list.
+2. XER[SO] is never set by translated code (OE forms are not modelled and none is listed; no
+   mtxer) and runtime/ never writes cpu.xer_* (check_native_writes), so `fold_so()` drops `| so`
+   from 21054 compares and the `so` local disappears (its entry load and reloads: ~11k per battle
+   frame). A translated mtxer (set_xer) would turn it off with a note.
+3. usedef() works statement by statement: a record form (`rlwinm. r0,..` = `r0 = ..; cr0 =
+   cmp_s(r0..)`) no longer reads the old r0. Liveness shrinks only where the old value was dead
+   (r0 looked live after 774 calls through this alone).
+4. ctr, ca, cr0, cr5-7 are kept across a call unless the callee may change them, like the other
+   registers. Cause of the 2026-10-19 symptom ("Register spills per call site"): with
+   pure-read liveness over all translated code, no call is followed by a read of ctr, ca or cr0
+   before a write. cr5-7 are read after 357 calls (270 after step 8), all by an mfcr whose value
+   feeds a cr0 single-bit extract (srwi/rlwinm .., 31, 31), in 5 functions (8003dd38, 8003fe98,
+   80041358, 8004b0a0, 801a5f10; the first four run in the battle replay); only f_801ae9b4, an
+   assert-path register dump that does not run, reads them at entry. Keeping them changes no
+   guest value. With the DL cache keyed on guest offsets ("Per-model cost", 4-way) the campaign
+   replay shows `cache hits 97 misses 0` in every window and both replays are identical, so the
+   2026-10-19 misses were most likely the host-pointer-keyed DL cache conflict that changed with
+   every build. No time change: the forced reloads were dead loads GCC already removed.
+   `check_call_reads()` prints the mfcr count and lists any call followed by a ctr/ca/cr0 read
+   (none).
+5. call_indirect looks the address up in a generated open-addressing hash table (8192 slots,
+   multiplicative hash, linear probing; 1.5 probes on average, longest 15) instead of a binary
+   search. MTX bodies are no longer in the table: indirect calls reach their natives, as direct
+   calls do (before, the table had both and the binary search picked one).
+6. out(F) (`solve_out()`): a return stores only the dirty RETU registers some reader may see
+   (was all of RETU). Least fixpoint: a direct call s in C adds (live after s | reaches C's return
+   unwritten & out(C)) & RETU, where live includes later callees' in-sets (so SDK calls keep their
+   logged r3-r6) and later stores; a tail call adds out(C); every call_indirect site adds the same
+   to all address-taken functions; functions runtime/ calls directly (MTX bodies for cr_mtx_off,
+   the mtx.c bench) keep all of RETU, __start none (main.c reads nothing after it). New
+   assumption, guarded: a function that is not address-taken (`Program.taken`: data pointers,
+   lis/addi constants, prologue-scan starts that no bl reaches, EXTRA_STARTS, the DOL entry, doc
+   names no bl reaches) is entered only by translated bl/b, so its callers are known. functable.c
+   sends call_indirect to any other start through a wrapper that logs `# call_indirect <addr>: no
+   pointer to it seen by recomp.py` (16 at most): none in either replay. Static: 39042 of 49374
+   return registers kept; r0 (mflr r0 in every prologue) is now rarely stored at a return.
+7. In-sets: SDK natives were assumed to read all of CALLU; `native_reads()` scans runtime/*.c for
+   R[k]/F[k]/cpu.gpr/fpr/cr reads, plus r1 (recomp_call_guest's stack) and r3-r6 (LOG()):
+   r1, r3-r10, f1-f8, so not r0, r11, r12, cr1. A computed index must be listed in INDEX_READS
+   (os.c R[gpr] gpr <= 10 and F[fpr] fpr <= 8, gx.c F[1 + i] taken as f1-f8) or the run fails.
+   Callbacks that natives run through recomp_call_guest get r1/r3/r4 and are assumed to read no
+   other register at entry, as for callbacks delivered at polls (which store only r1).
+   call_indirect's in-set is the native in-set plus the in-sets of all address-taken functions
+   (grown inside Summaries.solve; was all of CALLU).
+8. Leaf inlining (`inline_leaves()`, a first translation pass picks them): straight-line leaves
+   (one blr, no other event, no `cpu.` access, no ctr/ca write, at most 16 instructions, or 64 with
+   at most 4 call sites, not MTX bodies) whose entry reads only CALLU registers are emitted at each
+   bl to them. Their RETU writes go to the caller's locals, which the caller's own events store
+   where something reads them (same EABI assumption as for calls); their other writes (f0, cr0,
+   r1 ..) go to block-local `pv_` copies, which the caller never saw before either. `cpu.lr` is set
+   only when lr can be read before the next write (`lr_read_after()`: mflr, blrl, return, tail,
+   recomp_bad/skipped): 939 of 985 sites drop it, so the normal-build `# prof` (cpu.lr samples)
+   counts an inlined leaf under the caller's previous call site, FNPROF under the caller. 985 calls
+   to 258 functions; the hottest is 0x8001e5e4 (vec3 dot product, 508 calls per battle frame, 73
+   sites). Code: f_ functions 6.55 -> 6.73 MB (+2.7%; the inlined copies +189 KB, the other steps
+   -12 KB), most copies at sites that are cold in these replays. I-cache effect on hardware unknown.
+
+Not done (by the counts above):
+- Per battle frame there remain 58k stores before calls (mostly r3, r4, r5, r1, r6: arguments and
+  the stack pointer), 73k entry loads (r1, r3, and r14-r31 / f14-f31 loaded only to save stale
+  copies in prologues, see "Translator performance") and 27k return stores (r3, r4, f1-f4 that
+  callers read, often through SDK in-sets). Removing most of that means passing argument registers
+  as C arguments instead of through `cpu`, which is a redesign.
+- MTX summaries: callers still store/reload what the translated MTX body may change (r5, r7, r11,
+  r12, f2-f4, ctr: ~8k reloads per battle frame), because cr_mtx_off runs that body. Narrowing it
+  to the natives' effect (MTX_REGS) changes which stale values later SDK log lines print (r5, r6).
+- Per-native in-sets instead of the union over runtime/, no r1 store before natives that never
+  call back, no cpu.lr store before calls to translated leaves: ~0.05 ms or less each.
+- Inlining leaves with branches or loops (labels inside one Func instruction are not modelled).
+- Not yet on hardware.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
-Functions translated: 2744. SDK stubs: 1047. MetroTRK entries skipped: 184. Jump tables as switch: 52.
+Functions translated: 2743. SDK stubs: 1048. MetroTRK entries skipped: 184. Jump tables as switch: 52.
 
 ### flow into non-translated code that is not a known entry (1)
 
@@ -780,7 +1178,7 @@ Functions translated: 2744. SDK stubs: 1047. MetroTRK entries skipped: 184. Jump
 
 0x80003408 mtmsr
 
-### valid code not reached from any function start (606)
+### valid code not reached from any function start (621)
 
 0x800034b0, 0x800034b4, 0x800034b8, 0x800034bc, 0x800034c0, 0x800034c4, 0x800034c8, 0x800034cc, 0x800034d0, 0x800034d4, 0x800034d8, 0x800035ac, 0x800036ac, 0x800036b0, 0x800036b4, 0x800036b8, 0x800036bc, 0x800036c0, 0x800036c4, 0x800036c8, 0x800036cc, 0x800036d0, 0x800036d4, 0x800036d8, 0x800036dc, 0x800036e0, 0x800036e4, 0x800036e8, 0x800036ec, 0x800036f0, 0x800036f4, 0x800037ac, 0x800037b0, 0x800037b4, 0x800037b8, 0x800037bc, 0x800037c0, 0x800037c4, 0x800037c8, 0x800037cc, 0x800037d0, 0x800037d4, 0x800037d8, 0x800037dc, 0x800038ac, 0x800038b0, 0x800038b4, 0x800038b8, 0x800038bc, 0x800038c0, 0x800038c4, 0x800038c8, 0x800038cc, 0x800038d0, 0x800038d4, 0x800038d8, 0x800038dc, 0x800039ac, 0x800039b0, 0x800039b4, 0x800039b8, 0x800039bc, 0x800039c0, 0x800039c4, 0x800039c8, 0x800039cc, 0x800039d0, 0x800039d4, 0x800039d8, 0x800039dc, 0x80003aac, 0x80003ab0, 0x80003ab4, 0x80003ab8, 0x80003abc, 0x80003ac0, 0x80003ac4, 0x80003ac8, 0x80003acc, 0x80003ad0, 0x80003ad4, 0x80003ad8, 0x80003adc, 0x80003bac, 0x80003bb0, 0x80003bb4, 0x80003bb8, 0x80003bbc, 0x80003bc0, 0x80003bc4, 0x80003bc8, 0x80003bcc, 0x80003bd0, 0x80003bd4, 0x80003bd8, 0x80003bdc, 0x80003cac, 0x80003cb0, 0x80003cb4, 0x80003cb8, 0x80003cbc, 0x80003cc0, 0x80003cc4, 0x80003cc8, 0x80003ccc, 0x80003cd0, 0x80003cd4, 0x80003cd8, 0x80003cdc, 0x80003dac, 0x80003db0, 0x80003db4, 0x80003db8, 0x80003dbc, 0x80003dc0, 0x80003dc4, 0x80003dc8, 0x80003dcc, 0x80003dd0, 0x80003dd4, 0x80003dd8, 0x80003ddc, 0x800040ac, 0x800040b0, 0x800040b4, 0x800040b8, 0x800040bc, 0x800040c0, 0x800040c4, 0x800040c8, 0x800040cc, 0x800040d0, 0x800040d4, 0x800040d8, 0x800040dc, 0x800041ac, 0x800041b0, 0x800041b4, 0x800041b8, 0x800041bc, 0x800041c0, 0x800041c4, 0x800041c8, 0x800041cc, 0x800041d0, 0x800041d4, 0x800041d8, 0x800041dc, 0x800042ac, 0x800042b0, 0x800042b4, 0x800042b8, 0x800042bc, 0x800042c0, 0x800042c4, 0x800042c8, 0x800042cc, 0x800042d0, 0x800042d4, 0x800042d8, 0x800042dc, 0x800043ac, 0x800043cc, 0x800043d0, 0x800043d4, 0x800043d8, 0x800043dc, 0x800043e0, 0x800043e4, 0x800043e8, 0x800043ec, 0x800043f0, 0x800043f4, 0x800043f8, 0x800043fc, 0x80004400, 0x80004404, 0x80004408, 0x8000440c, 0x80004410, 0x80004414, 0x80004418, 0x8000441c, 0x80004420, 0x80004424, 0x80004428, 0x8000442c, 0x80004430, 0x800044ac, 0x800044b0, 0x800044b4, 0x800044b8, 0x800044bc, 0x800044c0, 0x800044c4, 0x800044c8, 0x800044cc, 0x800044d0, 0x800044d4, 0x800044d8 ...
 
