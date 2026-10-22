@@ -32,6 +32,13 @@ Stay in each state for about 30 s of campaign play (at least 10 `# time` windows
 Look at: no missing geometry with cull ON (holes in walls/robots = wrong winding; note where), and
 no texture colour changes with tex formats ON.
 
+Known open item (Citra): in the battle framebuffer dumps (r2100/2700/3300), the combined build differs
+from both the vsh-only and the cull-only builds. The hexagon markers over the robots (e.g. the "TM" one)
+show a textured face where those builds showed a solid colour, and some edge lines differ. The cause is not
+found yet (an interaction of cull with the texture changes is the guess, unverified), and it has not been
+checked against Dolphin. In battle, toggle cull and tex formats and say which state matches Dolphin/your
+memory of the game. Campaign dumps are byte-identical to the vsh build.
+
 ## Afterwards
 
 Copy sd:/cr_autotest.log to logs/cr_autotest_2026-10-2x_hw-run26-campaign-gpu.log in the main
