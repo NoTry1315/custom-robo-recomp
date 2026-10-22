@@ -254,8 +254,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   Log logs/cr_autotest_2026-10-22_hw-run26-campaign-gpu-vsh-single.log. Details: unknowns "Cull mode", "Texture mipmaps".
 - Hardware run 27 (2026-10-22, main 8575bae, logs/cr_autotest_2026-10-22_hw-run27-clean-main.log): campaign 8.3
   51.2 fps (85%, gpu 12.2 ms, GX thread busy 18.0 of 19.5); Vs. battle 4.2 45.3 fps (76%, game CPU 18.1 ms,
-  CPU-bound; run 25 54.2 fps / 16.1 ms with different battles: build vs play not yet checked); menus/pause ~60.
-  Next: confirm the battle drop (Citra replay main vs 9719c55, game ms), then battle game CPU.
+  CPU-bound; mostly campaign battles, which have more models/pods/effects than run 25's 1-v-1 Vs. arena; the user
+  saw the 1-v-1 arena run better); menus/pause ~60. Next: battle game CPU.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

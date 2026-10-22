@@ -19,7 +19,7 @@ Frame rates on hardware (New 3DS, averages of the in-game `# time` windows from
 |---|---|---|---|---|
 | Title, menus (2.x, 5.0) | 49-60 | ~60 | 58-60 | 97-100% |
 | Campaign (8.3) | 42.4 | 44.4 | **51.2** (210 windows) | 85% |
-| Vs. battle (4.2) | 47.9 | 54.2 | 45.3 (103 windows) | 76% |
+| Battle (4.2; run 27 mostly campaign battles) | 47.9 | 54.2 | 45.3 (103 windows) | 76% |
 | Battle other phases (4.0-4.9) | - | - | 53-60 | 89-100% |
 | Pause (c.0) | 40.1 | 55.8 | 59.1 | 99% |
 | Scenes 6 / 7 | - / 49.3 | - / 56.4 | 53.9 / 57.4 | 90 / 96% |
@@ -34,13 +34,13 @@ Where the time goes now (run 27, ms per frame):
 | Scene | frame | game CPU | gx wait | GPU | bound by |
 |---|---|---|---|---|---|
 | Campaign 8.3 | 19.5 | 8.7 | 10.1 | 12.2 | GPU / GX thread (busy 18.0) |
-| Vs. battle 4.2 | 22.1 | 18.1 | 2.6 | 9.3 | game CPU |
+| Battle 4.2 (campaign battles) | 22.1 | 18.1 | 2.6 | 9.3 | game CPU |
 
 Back-face culling (2026-10-22) cut campaign GPU time: run 26 measured 15.6 ms GPU
-with culling vs 19.9 without it. Vs. battle in run 27 is slower than in run 25,
-with more game CPU time (18.1 vs 16.1 ms). Different battles were played, so it
-is not yet known whether this build caused it. Battle draw calls rose from about 123
-to 165 per frame with culling (Citra). Per-run details: `docs/recomp_unknowns.md`
+with culling vs 19.9 without it. The lower battle figure in run 27 comes from what was played,
+not from the build: most of its battle windows were campaign battles, where the opponent
+fights back with more models, pods, explosions and effects than a 1-v-1 Vs. arena match. The
+1-v-1 Vs. arena ran better (user report). Battle stays CPU-bound by the game code (18.1 ms). Per-run details: `docs/recomp_unknowns.md`
 ("Hardware runs 26-27") and `CLAUDE.md` Status.
 
 Known problems:

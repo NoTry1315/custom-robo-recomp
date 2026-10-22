@@ -1339,10 +1339,10 @@ Citra results (pause-ok campaign and rec-to-battle replays, fb dumps 1500/1980/2
 - Campaign: GPU 18.9 -> 12.2 ms, so campaign is no longer clearly GPU-bound. The GX thread is now busy 18.0
   of a 19.5 ms frame (sync 13.2 of it = waiting in C3D_FrameBegin), so the frame is bound by the GPU queue
   plus the GX thread. Game CPU 8.7 (run 25: 5.5; different areas played).
-- Vs. battle: 54.2 -> 45.3 fps with game CPU 16.1 -> 18.1 ms. The battle is CPU-bound by the game thread,
-  which culling does not touch. The GX thread has room (gx wait 2.6), so the drop is most likely
-  different battles (robots, stages, 103 vs 49 windows). Not confirmed: a replay A/B of main vs 9719c55
-  on the same input in Citra (game ms) would settle it.
+- Battle 4.2: the drop from 54.2 to 45.3 fps (game CPU 16.1 -> 18.1 ms) comes from what was played. Run 27's
+  battle windows were mostly campaign battles, where the opponent fights back with more models, pods,
+  explosions and effects; run 25 was a 1-v-1 Vs. arena match, which the user saw run better in run 27
+  too. Still CPU-bound by the game thread (gx wait 2.6).
 - Draw calls per frame (split line): campaign ~130 with 75-94k indices at peak windows.
 - Stalls: 30 DVD-slow / log-write-slow lines, mostly at boot (font.out 180 ms, logo.tpl 64 ms).
 
