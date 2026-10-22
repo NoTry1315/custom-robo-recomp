@@ -194,8 +194,9 @@ void recomp_prof_frame(u32 retrace) {
     const char *kick = recomp_gx_kick_flips != flips ? "mixed" : recomp_gx_kick_on ? "on" : "off";
     const char *gxt = recomp_gx_thread_flips != gflips ? "mixed" : recomp_gx_thread ? "on" : "off";
     flips = recomp_gx_kick_flips; gflips = recomp_gx_thread_flips;
-    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s, gx thread %s\n",
-               (unsigned long)retrace, pre, frame - pre, gpu, span, kick, gxt);
+    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s, gx thread %s; %.0f draw calls, %.0f indices per frame\n",
+               (unsigned long)retrace, pre, frame - pre, gpu, span, kick, gxt,
+               (cur[PROF_GPU_DRAWS] - sum[PROF_GPU_DRAWS]) / 60.0, (cur[PROF_GPU_IDX] - sum[PROF_GPU_IDX]) / 60.0);
     if (retrace % 300 == 0) {
         double un = (cur[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (cur[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
         double dl = (cur[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;

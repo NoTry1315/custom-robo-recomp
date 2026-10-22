@@ -234,6 +234,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   frame) queued mid-frame to overlap GPU with CPU. Hardware run 19 (logs/ hw-run19a-split-off, 19b-split-on):
   battle 35.0 -> 39.3 ms, gx sync 12.1 -> 13.4 (no overlap gained). Note title has gx sync ~12 ms with gpu ~4,
   so gx sync is not only GPU wait; what it waits on is not yet split out (vblank cap vs C3D_FrameBegin).
+- GPU-bound test (2026-10-19): scene 8 = campaign (pause-ok replay). Scissor fix: C3D_FrameDrawOn ->
+  C3D_SetViewport disables the scissor and gx.c never resent it, so the game's scissor was ignored after
+  frame 1; now resent every frame (campaign frame 2100: only y 40-359 drawn, was full height; not yet
+  checked against Dolphin). `# time .. split` ends with draw calls / indices per frame (Citra: campaign
+  60 / 55.7k, battle 69 / 63.4k). sdmc:/cr_gpu_quarter.txt clips drawing to the centre quarter: if gpu ms
+  drops ~4x on hardware the frame is fill-bound, else vertex-bound. Not yet on hardware.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
