@@ -95,6 +95,10 @@ void sdk_PADRead(void) {
     if (!irrst) irrst = irrstInit() == 0 ? 1 : -1;   /* C-stick: New 3DS */
     hidScanInput();
     u32 held = hidKeysHeld();
+    if (hidKeysDown() & KEY_TOUCH) {   /* not a game input: the bottom screen's toggle buttons (runtime/menu.c) */
+        touchPosition t; hidTouchRead(&t);
+        recomp_menu_touch(t.px, t.py);
+    }
     u16 b = 0;
     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++) if (held & map[i].key) b |= map[i].pad;
     b |= script_buttons();
