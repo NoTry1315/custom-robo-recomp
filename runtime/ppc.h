@@ -47,29 +47,45 @@ extern u32 recomp_wr_epoch;
 #define WR_MARK(a) (ram_wr[((a) & RAM_MASK) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
 void recomp_mark_ram(u32 a, u32 n);   /* bulk writers */
 
-static inline u8  rd8 (u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,1); return ram[a & RAM_MASK]; }
-static inline u16 rd16(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,2); u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
-static inline u32 rd32(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,4); u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
-static inline u64 rd64(u32 a){ return ((u64)rd32(a) << 32) | rd32(a + 4); }
-static inline void wr8 (u32 a, u8 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,1); return; } WR_MARK(a); ram[a & RAM_MASK] = v; }
-static inline void wr16(u32 a, u16 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,2); return; } WR_MARK(a); v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
-static inline void wr32(u32 a, u32 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,4); return; } WR_MARK(a); v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
-static inline void wr64(u32 a, u64 v){ wr32(a, (u32)(v >> 32)); wr32(a + 4, (u32)v); }
+/* forced inline: in gen/'s large functions GCC stopped inlining these (37.5k out-of-line calls) */
+#define RI static inline __attribute__((always_inline))
+RI u8  rd8 (u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,1); return ram[a & RAM_MASK]; }
+RI u16 rd16(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,2); u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
+RI u32 rd32(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,4); u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
+RI u64 rd64(u32 a){ return ((u64)rd32(a) << 32) | rd32(a + 4); }
+RI void wr8 (u32 a, u8 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,1); return; } WR_MARK(a); ram[a & RAM_MASK] = v; }
+RI void wr16(u32 a, u16 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,2); return; } WR_MARK(a); v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
+RI void wr32(u32 a, u32 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,4); return; } WR_MARK(a); v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
+RI void wr64(u32 a, u64 v){ wr32(a, (u32)(v >> 32)); wr32(a + 4, (u32)v); }
 
 /* r1-relative (stack) accesses never reach hardware registers: no IS_HW check */
-static inline u8  rd8_ram (u32 a){ return ram[a & RAM_MASK]; }
-static inline u16 rd16_ram(u32 a){ u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
-static inline u32 rd32_ram(u32 a){ u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
-static inline u64 rd64_ram(u32 a){ return ((u64)rd32_ram(a) << 32) | rd32_ram(a + 4); }
-static inline void wr8_ram (u32 a, u8 v){ ram[a & RAM_MASK] = v; }
-static inline void wr16_ram(u32 a, u16 v){ v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
-static inline void wr32_ram(u32 a, u32 v){ v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
-static inline void wr64_ram(u32 a, u64 v){ wr32_ram(a, (u32)(v >> 32)); wr32_ram(a + 4, (u32)v); }
+RI u8  rd8_ram (u32 a){ return ram[a & RAM_MASK]; }
+RI u16 rd16_ram(u32 a){ u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
+RI u32 rd32_ram(u32 a){ u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
+RI u64 rd64_ram(u32 a){ return ((u64)rd32_ram(a) << 32) | rd32_ram(a + 4); }
+RI void wr8_ram (u32 a, u8 v){ ram[a & RAM_MASK] = v; }
+RI void wr16_ram(u32 a, u16 v){ v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
+RI void wr32_ram(u32 a, u32 v){ v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
+RI void wr64_ram(u32 a, u64 v){ wr32_ram(a, (u32)(v >> 32)); wr32_ram(a + 4, (u32)v); }
 
-static inline float  u2f(u32 v){ float f; memcpy(&f, &v, 4); return f; }
-static inline u32    f2u(float f){ u32 v; memcpy(&v, &f, 4); return v; }
-static inline double u2d(u64 v){ double d; memcpy(&d, &v, 8); return d; }
-static inline u64    d2u(double d){ u64 v; memcpy(&v, &d, 8); return v; }
+/* gen/'s r1/r11-relative accesses with a constant offset (recomp.py stack_access): ram + (b & RAM_MASK)
+ * + k, so GCC masks each r1 value once and folds k into the load/store (rd32_ram(b + k) masked every
+ * address, often precomputed and spilled). Same bytes as rd32_ram(b + k) while b & RAM_MASK is more
+ * than 32 KB from both ends of the mirror: the stack lies below STACK_TOP (recomp_call_guest checks). */
+RI u8 *sp_at(u32 b, s32 k){ return ram + (b & RAM_MASK) + k; }
+RI u8  rd8_sp (u32 b, s32 k){ return *sp_at(b, k); }
+RI u16 rd16_sp(u32 b, s32 k){ u16 v; memcpy(&v, sp_at(b, k), 2); return __builtin_bswap16(v); }
+RI u32 rd32_sp(u32 b, s32 k){ u32 v; memcpy(&v, sp_at(b, k), 4); return __builtin_bswap32(v); }
+RI u64 rd64_sp(u32 b, s32 k){ return ((u64)rd32_sp(b, k) << 32) | rd32_sp(b, k + 4); }
+RI void wr8_sp (u32 b, s32 k, u8 v){ *sp_at(b, k) = v; }
+RI void wr16_sp(u32 b, s32 k, u16 v){ v = __builtin_bswap16(v); memcpy(sp_at(b, k), &v, 2); }
+RI void wr32_sp(u32 b, s32 k, u32 v){ v = __builtin_bswap32(v); memcpy(sp_at(b, k), &v, 4); }
+RI void wr64_sp(u32 b, s32 k, u64 v){ wr32_sp(b, k, (u32)(v >> 32)); wr32_sp(b, k + 4, (u32)v); }
+
+RI float  u2f(u32 v){ float f; memcpy(&f, &v, 4); return f; }
+RI u32    f2u(float f){ u32 v; memcpy(&v, &f, 4); return v; }
+RI double u2d(u64 v){ double d; memcpy(&d, &v, 8); return d; }
+RI u64    d2u(double d){ u64 v; memcpy(&v, &d, 8); return v; }
 
 /* ---- condition register ---- */
 #define CRBIT(n) ((cpu.cr >> (31 - (n))) & 1u)
@@ -125,9 +141,20 @@ static inline void set_xer(u32 v){ cpu.xer_so = v >> 31; cpu.xer_ov = (v >> 30) 
 static inline double fsgl(double d){ return (double)(float)d; }
 static inline double f25(double d){ u64 b = d2u(d); b = (b & 0xFFFFFFFFF8000000ull) + (b & 0x8000000ull); return u2d(b); }
 static inline double fnoneg(double d){ return isnan(d) ? d : -d; }
-static inline u64 fctiw_bits(double b, int tz){
-    s32 r; double t = tz ? trunc(b) : rint(b);
-    if (isnan(b) || t <= -2147483648.0) r = (s32)0x80000000; else if (t >= 2147483647.0) r = 0x7FFFFFFF; else r = (s32)t;
+/* fctiw/fctiwz result bits (Dolphin): saturated to s32, NaN -> 0x80000000, -0 quirk in the upper
+ * word. ARM: vcvt (toward zero) / vcvtr (FPSCR mode, nearest like rint) saturate the same way and
+ * give 0 for NaN, so only NaN is special-cased; was libm trunc + an out-of-line call per site. */
+RI u64 fctiw_bits(double b, int tz){
+    s32 r;
+#ifdef __arm__
+    float t;
+    if (tz) __asm__("vcvt.s32.f64 %0, %P1" : "=t"(t) : "w"(b));
+    else __asm__("vcvtr.s32.f64 %0, %P1" : "=t"(t) : "w"(b));
+    memcpy(&r, &t, 4);
+#else
+    double t = tz ? trunc(b) : rint(b);
+    if (t <= -2147483648.0) r = (s32)0x80000000; else if (t >= 2147483647.0) r = 0x7FFFFFFF; else r = (s32)t;
+#endif
     if (isnan(b)) r = (s32)0x80000000;
     u64 v = 0xFFF8000000000000ull | (u32)r;
     if (r == 0 && signbit(b)) v |= 0x100000000ull;
@@ -215,6 +242,26 @@ static inline void psq_st(PS v, u32 a, int w, int i){
     quant(a, v.ps0, type, scale, &sz);
     if (!w) quant(a + sz, v.ps1, type, scale, &sz);
 }
+
+/* psq_l/psq_st with GQR0 (I = 0: MWCC's f14-f31 saves, PSMTX-style code): GQR0 is 0 (float, no
+ * scale), so no GQR load or type switch; _ram = r1-relative (no IS_HW check, no WR_MARK, like
+ * wr32_ram). recomp.py guards the assumption: a translated mtspr GQR0 makes funcs.h define
+ * RECOMP_GQR0_WRITTEN (the general path below), check_gqr_writes() fails on runtime/ writers. */
+#ifndef RECOMP_GQR0_WRITTEN
+RI PS psq_ld0(u32 a, int w){ PS r; r.ps0 = u2f(rd32(a)); r.ps1 = w ? 1.0 : u2f(rd32(a + 4)); return r; }
+RI PS psq_ld0_ram(u32 a, int w){ PS r; r.ps0 = u2f(rd32_ram(a)); r.ps1 = w ? 1.0 : u2f(rd32_ram(a + 4)); return r; }
+RI void psq_st0(PS v, u32 a, int w){ wr32(a, f2u((float)v.ps0)); if (!w) wr32(a + 4, f2u((float)v.ps1)); }
+RI void psq_st0_ram(PS v, u32 a, int w){ wr32_ram(a, f2u((float)v.ps0)); if (!w) wr32_ram(a + 4, f2u((float)v.ps1)); }
+RI PS psq_ld0_sp(u32 b, s32 k, int w){ PS r; r.ps0 = u2f(rd32_sp(b, k)); r.ps1 = w ? 1.0 : u2f(rd32_sp(b, k + 4)); return r; }
+RI void psq_st0_sp(PS v, u32 b, s32 k, int w){ wr32_sp(b, k, f2u((float)v.ps0)); if (!w) wr32_sp(b, k + 4, f2u((float)v.ps1)); }
+#else
+#define psq_ld0(a, w) psq_ld(a, w, 0)
+#define psq_ld0_ram(a, w) psq_ld(a, w, 0)
+#define psq_st0(v, a, w) psq_st(v, a, w, 0)
+#define psq_st0_ram(v, a, w) psq_st(v, a, w, 0)
+#define psq_ld0_sp(b, k, w) psq_ld((b) + (k), w, 0)
+#define psq_st0_sp(v, b, k, w) psq_st(v, (b) + (k), w, 0)
+#endif
 
 #ifdef RECOMP_FNPROF               /* make FNPROF=1: sampler counts the running guest function */
 extern volatile u32 recomp_cur_fn;

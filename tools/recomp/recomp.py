@@ -95,6 +95,7 @@ class Program:
         self.unk = defaultdict(list)  # category -> [(addr, note)]
         self.jt = {}                  # bctr addr -> [targets]
         self.sda2 = self._sda2()
+        self.gqr0_written = []        # translated mtspr GQR0 sites (psq_op, funcs.h)
 
     def _sda2(self):
         """(r2, lo, hi): r2 is set once in translated code (lis/ori in __start; skipped
@@ -336,6 +337,13 @@ CROPS = {'crand': '{a} & {b}', 'cror': '{a} | {b}', 'crxor': '{a} ^ {b}', 'crnan
          'crnor': '~({a} | {b})', 'creqv': '~({a} ^ {b})', 'crandc': '{a} & ~{b}', 'crorc': '{a} | ~{b}'}
 
 
+def psq_op(d, D, W, I):
+    """psq_l*/psq_st* body; I = 0 -> psq_ld0/psq_st0 (GQR0 = 0, ppc.h; r1-relative: stack_access)."""
+    if I == 0:
+        return f'F[{D}] = psq_ld0(ea, {W});' if d.startswith('psq_l') else f'psq_st0(F[{D}], ea, {W});'
+    return f'F[{D}] = psq_ld(ea, {W}, {I});' if d.startswith('psq_l') else f'psq_st(F[{D}], ea, {W}, {I});'
+
+
 def emit_op(p, a, w, d):
     """Straight-line instruction -> list of C statements. Control flow is handled by the caller."""
     D, A, B, C = rD(w), rA(w), rB(w), rC(w)
@@ -470,11 +478,11 @@ def emit_op(p, a, w, d):
         dd = dd - 0x1000 if dd & 0x800 else dd
         W, I = (w >> 15) & 1, (w >> 12) & 7
         ea = (f'R[{A}] + {dd}' if A or d.endswith('u') else h(dd) + 'u')
-        op = f'F[{D}] = psq_ld(ea, {W}, {I});' if 'l' in d[4:] else f'psq_st(F[{D}], ea, {W}, {I});'
+        op = psq_op(d, D, W, I)
         o(f'{{ u32 ea = {ea}; {op}' + (f' R[{A}] = ea;' if d.endswith('u') else '') + ' }')
     elif d in ('psq_lx', 'psq_stx', 'psq_lux', 'psq_stux'):
         W, I = (w >> 10) & 1, (w >> 7) & 7
-        op = f'F[{D}] = psq_ld(ea, {W}, {I});' if d.startswith('psq_l') else f'psq_st(F[{D}], ea, {W}, {I});'
+        op = psq_op(d, D, W, I)
         upd = 'ux' in d
         o(f'{{ u32 ea = {ea_x(w)}; {op}' + (f' R[{A}] = ea;' if upd else '') + ' }')
     # ---- floating point (Dolphin semantics: single ops round via fsgl, c via f25)
@@ -595,6 +603,8 @@ def emit_op(p, a, w, d):
     elif d in ('mfspr', 'mtspr'):
         n = p._spr(w)
         fld = {8: 'cpu.lr', 9: 'cpu.ctr'}.get(n) or (f'cpu.gqr[{n - 912}]' if 912 <= n < 920 else None)
+        if d == 'mtspr' and n == 912:
+            p.gqr0_written.append(a)
         if d == 'mfspr':
             o(f'R[{D}] = {fld};' if fld else (f'@CA_OUT@ R[{D}] = get_xer();' if n == 1 else f'R[{D}] = ppc_mfspr({n});'))
         else:
@@ -635,9 +645,32 @@ def emit_op(p, a, w, d):
                     'lfd': f'F[{D}].ps0 = u2d(0x{v:x}ull);'}[d]]
             p.sda2_folds = getattr(p, 'sda2_folds', 0) + 1
     if A == 1 and (d in LOADS or d in STORES or d[:-1] in LOADS or d[:-1] in STORES or
-                   d in ('lmw', 'stmw') or d[:3] in ('lfs', 'lfd', 'stf')):
-        out = [re.sub(r'\b(rd|wr)(8|16|32|64)\(', r'\1\2_ram(', x) for x in out]
+                   d in ('lmw', 'stmw') or d[:3] in ('lfs', 'lfd', 'stf', 'psq')):
+        out = [stack_access(x) for x in out]
     return out
+
+
+SP_EA = re.compile(r'\{ u32 ea = (R\[1?1\])(?: ([+-]) (-?\d+))?; (.*) \}$')   # psq: R[1] + -24
+SP_USE = re.compile(r'\b(?:(rd|wr)(8|16|32|64)|psq_(ld|st)0)\((F\[\d+\], )?ea(?: \+ (\d+))?(?=[,)])')
+
+
+def stack_access(x):
+    """r1/r11-relative (stack) access -> *_sp(base, k) (ppc.h: base masked once, k as the load/store
+    offset); update forms, which need ea, and indexed ones -> *_ram (no IS_HW check, no WR_MARK)."""
+    x = re.sub(r'\b(rd|wr)(8|16|32|64)\((R\[1?1\])(?: ([+-]) (\d+))?(?=[,)])',
+               lambda m: f'{m[1]}{m[2]}_sp({m[3]}, {(m[4] or "") + (m[5] or "0")}'.replace('+', ''), x)
+    m = SP_EA.match(x)
+    if m and ' = ea;' not in m[4]:
+        k = (-1 if m[2] == '-' else 1) * int(m[3] or 0)
+        def use(u):
+            off = k + int(u[5] or 0)
+            name = f'{u[1]}{u[2]}_sp(' if u[1] else f'psq_{u[3]}0_sp({u[4] or ""}'
+            return f'{name}{m[1]}, {off}'
+        body = SP_USE.sub(use, m[4])
+        if not re.search(r'\bea\b', body):
+            return '{ ' + body + ' }'
+    x = re.sub(r'\b(rd|wr)(8|16|32|64)\(', r'\1\2_ram(', x)
+    return re.sub(r'\bpsq_(ld|st)0\(', r'psq_\g<1>0_ram(', x)
 
 
 def cond_expr(w):
@@ -672,7 +705,7 @@ def inline_body(p, t):
         if d == 'bclr':
             return out
         assert d in ('stw', 'lwz', 'stfd', 'lfd') and rA(w) == 11, f'save/restore helper {t:08x}: {d}'
-        out += [re.sub(r'\b(rd|wr)(32|64)\(', r'\1\2_ram(', x) for x in emit_op(p, t, w, d)]
+        out += [stack_access(x) for x in emit_op(p, t, w, d)]
         t += 4
 
 
@@ -849,6 +882,46 @@ def check_native_writes():
         sys.exit('guest register written by a native outside NATIVE_CLOB (recomp.py):\n' + '\n'.join(bad))
 
 
+def fold_base_regs(fns):
+    """r2 and r13 (SDA bases) are written only by one lis/ori pair (__start; Func write masks of all
+    translated code) to the value cpu_init also sets: their other reads become that constant, so
+    r2/r13-relative accesses get constant addresses (GCC drops the IS_HW check and the base register)."""
+    init = dict(re.findall(r'R\[(\d+)\] = (0x[0-9a-fA-F]+)u;', (ROOT / 'runtime' / 'cpu.c').read_text(encoding='utf-8')))
+    for n in (2, 13):
+        wr = {a: tuple(fn.lines[a]) for fn in fns for a in fn.order if fn.write[a] & GB(n)}
+        hi = [int(m[1], 16) for x in wr.values() for m in [re.fullmatch(rf'r{n} = 0x([0-9a-f]+)u;', ' '.join(x))] if m]
+        lo = [int(m[1], 16) for x in wr.values() for m in [re.fullmatch(rf'r{n} = r{n} \| 0x([0-9a-f]+)u;', ' '.join(x))] if m]
+        if len(wr) != 2 or len(hi) != 1 or len(lo) != 1 or int(init.get(str(n), '0'), 16) != hi[0] | lo[0]:
+            print(f'note: r{n} not folded (written at ' + ', '.join(f'{a:08x}' for a in sorted(wr)) + ')')
+            continue
+        v, k = hi[0] | lo[0], 0
+        for i, fn in enumerate(fns):
+            if not any(fn.use[a] & GB(n) for a in fn.order if a not in wr):
+                continue
+            body = {a: x if a in wr else [re.sub(rf'\bR\[{n}\]', f'0x{v:08x}u', y) for y in x] for a, x in fn.body.items()}
+            k += sum(len(re.findall(rf'\bR\[{n}\]', y)) for a, x in fn.body.items() if a not in wr for y in x)
+            fns[i] = Func(fn.entry, fn.order, body, fn.labels, fn.gotos)
+        print(f'r{n} = 0x{v:08x}: {k} reads folded to the constant')
+    return fns
+
+
+def check_gqr_writes():
+    """psq_ld0/psq_st0 (ppc.h) assume GQR0 = 0: runtime/*.c may only write 0 to cpu.gqr[0], and a
+    computed index only where listed (GQR_INDEX_OK: thp.c sets GQR2-5)."""
+    bad = []
+    for f in sorted((ROOT / 'runtime').glob('*.c')):
+        for n, line in enumerate(f.read_text(encoding='utf-8').splitlines(), 1):
+            for m in re.finditer(r'\bgqr\[([^\]]*)\]\s*[-+*/|&^]?=(?!=)\s*([^;]*)', line):
+                i, v = m.group(1).strip(), m.group(2).strip()
+                if i == '0' and v != '0' or not i.isdigit() and (f.name, i) not in GQR_INDEX_OK:
+                    bad.append(f'{f.name}:{n}: {line.strip()}')
+    if bad:
+        sys.exit('GQR0 may be written non-zero by runtime/ (psq_ld0/psq_st0 assume 0, recomp.py):\n' + '\n'.join(bad))
+
+
+GQR_INDEX_OK = {('thp.c', 'i')}
+
+
 def popc(m):
     return bin(m).count('1')
 
@@ -901,6 +974,7 @@ class Func:
 
     def __init__(self, entry, order, body, labels, gotos):
         self.entry, self.order, self.labels, self.gotos = entry, order, labels, gotos
+        self.body = body
         self.lines, self.events = {}, []
         self.use, self.kill, self.write, self.ev, self.succ = {}, {}, {}, {}, {}
         term = lambda x: x.endswith('return;') or x.startswith(('goto ', 'if (__builtin_expect(recomp_event_pending', 'switch'))
@@ -1131,7 +1205,8 @@ def emit(fn, sites):
         out = ([f'r{k} = R[{k}];' for k in fn.gu if m >> k & 1] +
                [f'fp{k} = F[{k}];' for k in fn.fu if m >> (32 + k) & 1] +
                [f'cr{i} = (cpu.cr >> {28 - 4 * i}) & 15;' for i in fn.cu if m >> (64 + i) & 1])
-        out += [f'{n} = cpu.{v};' for n, v in (('ctr', 'ctr'), ('ca', 'xer_ca'), ('so', 'xer_so'))
+        # xer_so is 0 or 1 (set_xer, mcrxr); `& 1u` tells GCC, so `cmp | so` branches test the compare only
+        out += [f'{n} = cpu.{v};' for n, v in (('ctr', 'ctr'), ('ca', 'xer_ca'), ('so', 'xer_so & 1u'))
                 if n in fn.xu and m & bit(n)]
         return ' '.join(out + [f'FNPROF(0x{entry:08x}u);'])
 
@@ -1168,9 +1243,11 @@ def main():
             p.sdk_name(a)
     out.mkdir(parents=True, exist_ok=True)
     fns = [translate_function(p, a) for a in tr]
+    fns = fold_base_regs(fns)
     for fn in fns:
         if fn.order[0] != fn.entry: print(f"note: f_{fn.entry:08x} starts at {fn.order[0]:08x}")
     check_native_writes()
+    check_gqr_writes()
     sm = Summaries(p, fns)
     sm.solve()
     funcs, n = [], [0] * 5
@@ -1181,7 +1258,11 @@ def main():
             if fn.events[i][0] == 'call':
                 n = [x + y for x, y in zip(n, (1, popc(sp), popc(rl), popc(fn.W & CALLU), popc(RELU & fn.used)))]
     print(f'{n[0]} call sites: {n[1]} register stores (fixed sets: {n[3]}), {n[2]} reloads ({n[4]})')
-    hdr = ['/* generated by tools/recomp/recomp.py -- do not edit */', '#pragma once', '#include "ppc.h"']
+    hdr = ['/* generated by tools/recomp/recomp.py -- do not edit */', '#pragma once']
+    if p.gqr0_written:   # psq_ld0/psq_st0 (ppc.h) fall back to the general GQR path
+        print('note: mtspr GQR0 at ' + ', '.join(f'{a:08x}' for a in p.gqr0_written) + ': RECOMP_GQR0_WRITTEN')
+        hdr.append('#define RECOMP_GQR0_WRITTEN 1')
+    hdr.append('#include "ppc.h"')
     hdr += [f'void f_{a:08x}(void);' for a in tr]
     hdr += [f'void {n}(void);' for n in sorted(set(p.stubs.values()))]
     write_if_changed(out / 'funcs.h', '\n'.join(hdr) + '\n')
