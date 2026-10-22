@@ -1,6 +1,6 @@
 """Per-scene averages of the '# time' windows in cr_autotest logs, split by GX thread mode and gpukick.
 Reads both '# time' formats (inline: game, gx vertex..; GX thread: game, gx wait..; gx thread busy..).
-Windows with a toggle inside (mixed) are dropped.
+Windows with a toggle inside (mixed, or a '# menu r<n>:' bottom-screen flag toggle) are dropped.
     PYTHONUTF8=1 python tools/time_avg.py logs/perf/base-battle.log logs/perf/new-battle.log [--from 2460]
 --from N: only windows ending at retrace >= N (skip a scene's first windows, e.g. loading)."""
 import re, sys, collections
@@ -10,14 +10,17 @@ OLD = re.compile(r'^# time r(\d+): ([\d.]+) fps, frame ([\d.]+) ms \(worst ([\d.
 NEW = re.compile(r'^# time r(\d+): ([\d.]+) fps, frame ([\d.]+) ms \(worst ([\d.]+)\): game ([\d.]+), gx wait ([\d.]+), '
                  r'audio ([\d.]+) .*gx thread busy ([\d.]+): vertex ([\d.]+), tex ([\d.]+), state ([\d.]+), end/wait ([\d.]+), sync ([\d.]+)')
 SPLIT = re.compile(r'^# time r(\d+) split: .*gpu ([\d.]+) \(tail.*gpu span ([\d.]+).*gpukick (\w+)(?:, gx thread (\w+))?')
+MENU = re.compile(r'^# menu r(\d+): ')
 SCENE = re.compile(r'^# retrace (\d+) scene (\w+) sub (\w+)')
 KEYS = ['frame', 'worst', 'game', 'gxwait', 'busy', 'vtx', 'tex', 'state', 'sync', 'audio', 'gpu', 'span']
 
 
 def windows(path):
-    scene, rows = {}, {}
+    scene, rows, menu = {}, {}, []
     for line in open(path, encoding='utf-8', errors='replace'):
-        if m := SCENE.match(line):
+        if m := MENU.match(line):
+            menu.append(int(m[1]))
+        elif m := SCENE.match(line):
             scene[int(m[1])] = f'{m[2]}.{m[3]}'
         elif m := NEW.match(line):
             g = [float(m[i]) for i in range(2, 14)]
@@ -35,6 +38,8 @@ def windows(path):
     for r, d in rows.items():
         d['scene'] = scene.get(r) or scene.get(r - 30) or '?'
         d['r'] = r
+        if any(r - 60 < t <= r for t in menu):
+            d['kick'] = 'mixed'
     return list(rows.values())
 
 

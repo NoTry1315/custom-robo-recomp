@@ -287,7 +287,7 @@ static void frame_begin(void) {
     if (frame_open) return;
     recomp_gx_kick_on = !kick_off;
     if (kick_req) { kick_req = 0; kick_off ^= 1; recomp_gx_kick_on = !kick_off; recomp_gx_kick_flips++;   /* ZL (runtime/pad.c), applied between frames */
-        recomp_log("# gx r%lu: mid-frame GPU submit %s (ZL)\n", (unsigned long)recomp_retrace_count(), kick_off ? "off" : "on"); }   /* bottom screen: status_draw */
+        recomp_log("# gx r%lu: mid-frame GPU submit %s (ZL)\n", (unsigned long)recomp_retrace_count(), kick_off ? "off" : "on"); }   /* bottom screen: menu.c button */
     if (cull_req) { cull_req = 0; cull_off ^= 1; recomp_gx_cull_flips++;
         recomp_log("# gx r%lu: cull %s\n", (unsigned long)recomp_retrace_count(), cull_off ? "off" : "on"); }
     if (tex_fliptest && recomp_retrace_count() % 300 == 150) tex_fmt_req = 1;
@@ -2300,17 +2300,7 @@ static int gq_fliptest;        /* sdmc:/cr_gxthread_fliptest.txt: a switch every
 u32 recomp_gx_thread_flips;    /* switches so far */
 void recomp_gx_thread_toggle(void) { gq_req = 1; }
 
-/* bottom screen's status line: both A/B toggles as they are now, redrawn when one changed
- * (game thread; a ZL toggle shows once the GX thread's next frame_begin applied it) */
-static void status_draw(void) {
-    static int shown = -1;
-    int k = recomp_gx_kick_on, t = recomp_gx_thread, v = k | t << 1 | gq_ok << 2;
-    if (v == shown) return;
-    shown = v;
-    char s[48];
-    snprintf(s, sizeof s, "ZL gpukick %s   %s", k ? "ON" : "OFF", !gq_ok ? "gx thread OFF" : t ? "tap gx thread ON" : "tap gx thread OFF");
-    recomp_status(s);
-}
+int recomp_gx_thread_ok(void) { return gq_ok; }
 
 void recomp_gx_retrace(void) {
     recomp_gx_sync();
@@ -2325,7 +2315,7 @@ void recomp_gx_retrace(void) {
             recomp_log("# gx r%lu: GX thread %s (%s)\n", (unsigned long)recomp_retrace_count(), recomp_gx_thread ? "on" : "off", why);
         }
     }
-    status_draw();
+    recomp_menu_retrace();
 }
 
 void recomp_gx_stop(void) {
@@ -2396,9 +2386,8 @@ void recomp_gx_start(void) {
     }
     recomp_gx_thread = gq_ok && !off;
     recomp_log("# gx: GX thread %s\n", !gq_ok ? "off (no core 2): GX runs on the game thread"
-               : recomp_gx_thread ? "on core 2 (GX state and draws handled off the game thread; a tap on the right half of the bottom screen toggles it)"
-               : "on core 2, starting off (cr_gxthread_off.txt): GX runs on the game thread until a tap on the right half of the bottom screen");
-    status_draw();
+               : recomp_gx_thread ? "on core 2 (GX state and draws handled off the game thread; its bottom-screen button toggles it)"
+               : "on core 2, starting off (cr_gxthread_off.txt): GX runs on the game thread until its bottom-screen button is tapped");
 }
 
 /* ---------------------------------------------------------------- FIFO

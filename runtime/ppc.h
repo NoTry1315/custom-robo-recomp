@@ -347,9 +347,15 @@ void recomp_gx_thread_toggle(void);    /* bottom-screen tap: GX thread on/off at
 void recomp_gx_stop(void);             /* at exit: sync, then end the GX thread */
 extern int recomp_gx_thread;           /* GX calls are handled on the GX thread now (else inline on the game thread) */
 extern u32 recomp_gx_thread_flips;     /* GX thread switches so far (for the # time lines) */
-void recomp_status(const char *s);     /* bottom screen's fixed last row (main.c; game thread) */
-#define RECOMP_STATUS_ROWS 8            /* bottom screen's fixed rows: stats (log.c), then the toggle line (gx.c) */
-void recomp_status_row(int row, const char *s);   /* fixed row 0..RECOMP_STATUS_ROWS-1, redrawn only when changed (main.c; game thread) */
+#define RECOMP_STAT_ROWS 9              /* bottom screen's stats rows (log.c) */
+void recomp_status_row(int row, const char *s);   /* stats row 0..RECOMP_STAT_ROWS-1, redrawn only when changed (menu.c; game thread) */
+void recomp_menu_init(void);           /* bottom screen console + layout (menu.c) */
+void recomp_menu_header(const char *build, const char *flags);   /* build id + sdmc flags rows */
+void recomp_menu_touch(int px, int py); /* PADRead: a new touch, in pixels */
+void recomp_menu_retrace(void);        /* recomp_gx_retrace after the sync: apply bound-flag toggles, redraw buttons */
+void recomp_menu_bind(const char *name, int *var, void (*changed)(void));   /* live-toggle a flag variable from its button (menu.c btn[]) */
+extern u32 recomp_menu_flips;          /* bound-flag toggles so far */
+int  recomp_gx_thread_ok(void);        /* the GX thread exists (core 2) */
 extern volatile u32 recomp_gx_stat[4];  /* GX frames, draws, triangles (running totals), linear heap free (bytes); written by whoever runs GX */
 extern u32 recomp_dvd_slow_n, recomp_dvd_late_n;   /* dvd.c */
 void recomp_gx_kick_toggle(void);      /* ZL: mid-frame GPU submit on/off from the next frame */
