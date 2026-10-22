@@ -54,7 +54,8 @@ typedef struct { TevSide c, a; u8 coord, map, chan, ksel_c, ksel_a, ras_swap, te
 typedef struct { u8 enable, amb_src, mat_src, attn_fn, diff_fn; u8 light_mask; } Chan;
 typedef struct { float pos[3], dir[3], a[3], k[3]; u8 color[4]; } Light;
 typedef struct { u8 func, src, normalize; u32 mtx; } TexGen;
-typedef struct { u32 img; u16 w, h; u8 fmt, wrap_s, wrap_t, min_f, mag_f, ci; u32 tlut; } TexMap;
+/* min_lod/max_lod in 1/16 (TX_SETMODE1), lod_bias in 1/32 (TX_SETMODE0) */
+typedef struct { u32 img; u16 w, h; u8 fmt, wrap_s, wrap_t, min_f, mag_f, ci; u32 tlut; u8 min_lod, max_lod; s8 lod_bias; } TexMap;
 typedef struct { u32 addr; u8 fmt; u16 n; } Tlut;
 
 static struct {
@@ -278,6 +279,10 @@ static u64 fe_t;   /* ticks at the previous C3D_FrameEnd */
 static int vsync_on;   /* read in recomp_gx_start */
 static u32 last_vbl;
 
+static volatile int tex_mip_req, tex_fmt_req;
+static u8 tex_gen;
+static int tex_fliptest;   /* sdmc:/cr_tex_fliptest.txt: 16-bit formats flip every 300 retraces (test of the toggle) */
+static void tex_flush_index(void);
 static void frame_begin(void) {
     if (frame_open) return;
     recomp_gx_kick_on = !kick_off;
@@ -285,6 +290,15 @@ static void frame_begin(void) {
         recomp_log("# gx r%lu: mid-frame GPU submit %s (ZL)\n", (unsigned long)recomp_retrace_count(), kick_off ? "off" : "on"); }   /* bottom screen: status_draw */
     if (cull_req) { cull_req = 0; cull_off ^= 1; recomp_gx_cull_flips++;
         recomp_log("# gx r%lu: cull %s\n", (unsigned long)recomp_retrace_count(), cull_off ? "off" : "on"); }
+    if (tex_fliptest && recomp_retrace_count() % 300 == 150) tex_fmt_req = 1;
+    if (tex_mip_req || tex_fmt_req) {
+        int mip = tex_mip_req;   /* one flip per frame */
+        if (mip) { tex_mip_req = 0; recomp_tex_mip_off ^= 1; } else { tex_fmt_req = 0; recomp_tex_fmt_off ^= 1; }
+        tex_gen++; recomp_tex_flips++;
+        tex_flush_index();
+        recomp_log("# gx r%lu: %s %s\n", (unsigned long)recomp_retrace_count(), mip ? "texture mipmaps" : "lossless 16-bit texture formats",
+                   (mip ? recomp_tex_mip_off : recomp_tex_fmt_off) ? "off" : "on");
+    }
     u64 ts = recomp_ticks();
     if (!vsync_on && C3D_FrameCounter(0) == last_vbl) C3D_FrameSync();
     if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
@@ -315,6 +329,7 @@ volatile u32 recomp_gx_stat[4];
 static RecursiveLock lin_lock;   /* below, at the linearAlloc wrappers */
 static u32 st_dl_calls, st_dl_prims, st_dl_hits, st_dl_misses, st_dl_slow, pm_hits, pm_misses;
 static void fb_dump(void);
+static void tex_resident(u32 *bytes, u32 *etc1);
 
 static int in_draw;
 static void frame_end(void) {
@@ -330,6 +345,10 @@ static void frame_end(void) {
             (unsigned long)(batch_off ? st_draws : st_draws - st_merged), batch_off ? " (batching off)" : "");
     }
     if (frames % 300 == 0) {
+        u32 tb, te;
+        tex_resident(&tb, &te);
+        recomp_log("# gx tex frame %lu: resident %lu KB (as ETC1/ETC1A4 %lu KB), mipmaps %s, 16-bit formats %s\n", (unsigned long)frames,
+                   (unsigned long)(tb >> 10), (unsigned long)(te >> 10), recomp_tex_mip_off ? "off" : "on", recomp_tex_fmt_off ? "off" : "on");
         gap_dump();
         recomp_log("# gx vcache frame %lu: hits %lu misses %lu (draws), arena %lu KB, index ring %lu KB, evicted %lu + %lu, full %lu + %lu (since start), linear free %lu KB\n", (unsigned long)frames,
                    (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vring.live * sizeof(PVtx) >> 10), (unsigned long)(iring.live * 2 >> 10),
@@ -369,11 +388,12 @@ static u32 rgb565(u16 v) {
     return (r << 3 | r >> 2) | (g << 2 | g >> 4) << 8 | (b << 3 | b >> 2) << 16 | 0xffu << 24;
 }
 static u32 rgb5a3(u16 v) {
-    if (v & 0x8000) {
+    if (v & 0x8000) {   /* bit replication as Dolphin (Convert5To8 / Convert3To8) */
         u32 r = (v >> 10) & 31, g = (v >> 5) & 31, b = v & 31;
-        return (r * 255 / 31) | (g * 255 / 31) << 8 | (b * 255 / 31) << 16 | 0xffu << 24;
+        return (r << 3 | r >> 2) | (g << 3 | g >> 2) << 8 | (b << 3 | b >> 2) << 16 | 0xffu << 24;
     }
-    return ((v >> 8) & 15) * 17 | ((v >> 4) & 15) * 17 << 8 | (v & 15) * 17 << 16 | ((v >> 12) & 7) * 255 / 7 << 24;
+    u32 a = (v >> 12) & 7;
+    return ((v >> 8) & 15) * 17 | ((v >> 4) & 15) * 17 << 8 | (v & 15) * 17 << 16 | (a << 5 | a << 2 | a >> 1) << 24;
 }
 static u32 ia8(u16 v) { u32 i = v & 0xff; return i | i << 8 | i << 16 | (u32)(v >> 8) << 24; }
 static u32 pal_color(const Tlut *t, u32 i) {
@@ -430,10 +450,20 @@ static void tex_decode(u32 *out, u32 src, int w, int h, int fmt, const Tlut *tl)
 
 static u32 pow2(u32 v) { u32 p = 8; while (p < v && p < 1024) p <<= 1; return p; }
 
-typedef struct { u32 img, tlut_addr, hash, last, pkey, vep, tlut_n; u16 w, h; u8 fmt, tlut_fmt, used; C3D_Tex tex; } TexEntry;
+/* lv: PICA levels allocated, lk: tex_lk of the texmap it was made for; etc1: bytes the texture would take as ETC1/ETC1A4 (estimate only) */
+typedef struct { u32 img, tlut_addr, hash, last, pkey, vep, tlut_n, etc1; u16 w, h; u8 fmt, tlut_fmt, used, lv, lk, gen; C3D_Tex tex; } TexEntry;
 #define TEX_CACHE 192
 static TexEntry tcache[TEX_CACHE];
 static u32 *decode_buf;
+/* sdmc:/cr_mip_off.txt = level 0 only; sdmc:/cr_texfmt_off.txt = no lossless 16-bit formats
+ * (all but I4/I8/IA4/IA8/RGB565 as RGBA8); read in recomp_gx_start */
+int recomp_tex_mip_off, recomp_tex_fmt_off;
+/* runtime A/B: recomp_tex_mip_toggle / recomp_tex_fmt_toggle (any thread) flip one between frames
+ * (frame_begin); the texture cache is then invalidated: tex_gen is part of every entry's key, old
+ * entries are only evicted (by LRU, once the GPU is done with them) */
+u32 recomp_tex_flips;
+void recomp_tex_mip_toggle(void) { tex_mip_req = 1; }
+void recomp_tex_fmt_toggle(void) { tex_fmt_req = 1; }
 
 static u32 hash_bytes(u32 addr, u32 n) {
     const u8 *p = ram + (addr & RAM_MASK);
@@ -456,11 +486,32 @@ static u32 tex_bytes(int w, int h, int fmt) {
     if (!tw) return 0;
     return ((w + tw - 1) / tw * tw) * ((h + th - 1) / th * th) * tex_bpp[fmt] / 8;
 }
+static int lvdim(int v, int l) { v >>= l; return v ? v : 1; }
+/* the texmap fields tex_levels depends on besides the size: entries are per (img, w, h, fmt, lk) */
+static u8 tex_lk(const TexMap *m) { return recomp_tex_mip_off || m->min_f < 2 ? 0 : (u8)(m->max_lod + 1); }
+
+/* PICA levels for a texmap: the GX chain (mip min filter: max_lod rounded up + 1, as Dolphin,
+ * at most down to 1x1) cut at the PICA minimum of 8x8 for the W x H allocation */
+static int tex_levels(const TexMap *m, u32 W, u32 H) {
+    if (recomp_tex_mip_off || m->min_f < 2) return 1;
+    int n = (m->max_lod + 15) / 16 + 1, lg = 0, pl = 1;
+    for (u32 v = m->w > m->h ? m->w : m->h; v > 1; v >>= 1) lg++;
+    if (n > lg + 1) n = lg + 1;
+    for (u32 v = W < H ? W : H; v > 8; v >>= 1) pl++;
+    return n < pl ? n : pl;
+}
+/* guest bytes of levels 0..lv-1 (the levels follow each other in RAM) */
+static u32 tex_chain_bytes(const TexMap *m, int lv) {
+    u32 n = 0;
+    for (int l = 0; l < lv; l++) n += tex_bytes(lvdim(m->w, l), lvdim(m->h, l), m->fmt);
+    return n;
+}
 
 static C3D_Tex *tex_bind_params(TexEntry *e, const TexMap *m, float *su, float *sv);
 
 /* PICA format holding a GX format exactly: I4/IA4 -> LA4, I8/IA8 -> LA8 (GX
- * intensity also feeds alpha), RGB565 -> RGB565; the rest RGBA8 */
+ * intensity also feeds alpha), RGB565 -> RGB565; the rest RGBA8 (tex_classify
+ * may then pick a 16-bit one) */
 static GPU_TEXCOLOR pica_fmt(int fmt) {
     switch (fmt) {
     case 0: case 2: return GPU_LA4;
@@ -470,49 +521,132 @@ static GPU_TEXCOLOR pica_fmt(int fmt) {
     }
 }
 
+/* decode levels 0..lv-1 into decode_buf (level after level, w_l * h_l texels each) and pick
+ * the smallest PICA format that holds every texel exactly: LA4 (grey, 4-bit l and a), then
+ * RGB565 (opaque, bit-replicated 5/6/5), RGBA5551 (alpha 0 or 255, 5/5/5), LA8 (grey),
+ * RGBA4 (every channel a 4-bit value * 17), else RGBA8. *alpha: some texel is not opaque */
+static u32 lv_off[11];
+static GPU_TEXCOLOR tex_classify(const TexMap *m, const Tlut *tl, int lv, int *alpha) {
+    int w = m->w > 1024 ? 1024 : m->w, h = m->h > 1024 ? 1024 : m->h;
+    if (!decode_buf) decode_buf = malloc(1024 * 1024 * 4 * 4 / 3 + 64);
+    u32 src = m->img, o = 0;
+    int f565 = !recomp_tex_fmt_off, f5551 = f565, fla8 = f565, fla4 = f565, f4 = f565, a = 0;
+    for (int l = 0; l < lv; l++) {
+        int wl = lvdim(w, l), hl = lvdim(h, l);
+        lv_off[l] = o;
+        tex_decode(decode_buf + o, src, wl, hl, m->fmt, tl);
+        for (u32 i = o, n = o + wl * hl; i < n; i++) {
+            u32 c = decode_buf[i], r = c & 255, g = (c >> 8) & 255, b = (c >> 16) & 255, al = c >> 24;
+            int rb5 = r == ((r >> 3) << 3 | r >> 5) && b == ((b >> 3) << 3 | b >> 5);
+            if (al != 255) a = 1;
+            if (f565 && !(al == 255 && rb5 && g == ((g >> 2) << 2 | g >> 6))) f565 = 0;
+            if (f5551 && !((al == 255 || !al) && rb5 && g == ((g >> 3) << 3 | g >> 5))) f5551 = 0;
+            int grey = r == g && g == b, c4 = r % 17 == 0 && g % 17 == 0 && b % 17 == 0 && al % 17 == 0;
+            if (fla8 && !grey) fla8 = 0;
+            if (fla4 && !(grey && c4)) fla4 = 0;
+            if (f4 && !c4) f4 = 0;
+        }
+        o += wl * hl;
+        src += tex_bytes(wl, hl, m->fmt);
+    }
+    *alpha = a;
+    return fla4 ? GPU_LA4 : f565 ? GPU_RGB565 : f5551 ? GPU_RGBA5551 : fla8 ? GPU_LA8 : f4 ? GPU_RGBA4 : GPU_RGBA8;
+}
+
 static const u8 morton_x[8] = {0, 1, 4, 5, 16, 17, 20, 21}, morton_y[8] = {0, 2, 8, 10, 32, 34, 40, 42};
 static u32 col_src[1024], col_dst[1024];
 
-/* GX texture -> W x H PICA tiled texture; GX row y is PICA memory row y,
- * sampled at v = 1 - y/H (see set_texgen); padding repeats the edge. The
- * compact formats are converted straight from the GX tiles. */
-static void tex_upload(TexEntry *e, const TexMap *m, u32 W, u32 H, GPU_TEXCOLOR pf, const Tlut *tl) {
-    int w = m->w > 1024 ? 1024 : m->w, h = m->h > 1024 ? 1024 : m->h, fmt = m->fmt;
-    if (pf != GPU_RGBA8) {
-        int tw = tile_w[fmt], th = tile_h[fmt], tn = tw * th, bw = (w + tw - 1) / tw;
-        const u8 *src = ram + (m->img & RAM_MASK);
-        for (u32 x = 0; x < W; x++) {   /* texel index of column x inside its GX tile row */
-            u32 sx = x < (u32)w ? x : w - 1;
-            col_src[x] = sx / tw * tn + sx % tw;
-            col_dst[x] = (x >> 3) * 64 + morton_x[x & 7];
-        }
-        for (u32 y = 0; y < H; y++) {
-            u32 sy = y < (u32)h ? y : h - 1;
-            u32 rs = sy / th * bw * tn + sy % th * tw, rd = (y >> 3) * (W >> 3) * 64 + morton_y[y & 7];
-            switch (fmt) {
-            case 0: { u8 *d = e->tex.data; for (u32 x = 0; x < W; x++) { u32 i = rs + col_src[x], v = (src[i >> 1] >> ((i & 1) ? 0 : 4)) & 15; d[rd + col_dst[x]] = (u8)(v << 4 | v); } break; }
-            case 2: { u8 *d = e->tex.data; for (u32 x = 0; x < W; x++) { u8 v = src[rs + col_src[x]]; d[rd + col_dst[x]] = (u8)(v << 4 | v >> 4); } break; }
-            case 1: { u16 *d = e->tex.data; for (u32 x = 0; x < W; x++) { u16 v = src[rs + col_src[x]]; d[rd + col_dst[x]] = v << 8 | v; } break; }
-            case 3: { u16 *d = e->tex.data; for (u32 x = 0; x < W; x++) { const u8 *p = src + 2 * (rs + col_src[x]); d[rd + col_dst[x]] = (u16)(p[1] << 8 | p[0]); } break; }
-            default: { u16 *d = e->tex.data; for (u32 x = 0; x < W; x++) { const u8 *p = src + 2 * (rs + col_src[x]); d[rd + col_dst[x]] = (u16)(p[0] << 8 | p[1]); } break; }
-            }
-        }
-    } else {
-        if (!decode_buf) decode_buf = malloc(1024 * 1024 * 4);
-        tex_decode(decode_buf, m->img, w, h, fmt, tl);
-        u32 *d = e->tex.data;
-        for (u32 x = 0; x < W; x++) col_dst[x] = (x >> 3) * 64 + morton_x[x & 7];
-        for (u32 y = 0; y < H; y++) {
-            const u32 *row = decode_buf + (y < (u32)h ? y : h - 1) * w;
-            u32 rd = (y >> 3) * (W >> 3) * 64 + morton_y[y & 7];
-            for (u32 x = 0; x < W; x++) {
-                u32 c = row[x < (u32)w ? x : w - 1];
-                d[rd + col_dst[x]] = __builtin_bswap32(c);   /* R,G,B,A bytes -> PICA A,B,G,R */
-            }
+/* one GX level (w x h at srca) -> one W x H PICA level at dv, straight from the GX tiles
+ * (the formats pica_fmt maps to LA4/LA8/RGB565) */
+static void tex_level_native(void *dv, u32 W, u32 H, u32 srca, int w, int h, int fmt) {
+    int tw = tile_w[fmt], th = tile_h[fmt], tn = tw * th, bw = (w + tw - 1) / tw;
+    const u8 *src = ram + (srca & RAM_MASK);
+    for (u32 x = 0; x < W; x++) {   /* texel index of column x inside its GX tile row */
+        u32 sx = x < (u32)w ? x : w - 1;
+        col_src[x] = sx / tw * tn + sx % tw;
+        col_dst[x] = (x >> 3) * 64 + morton_x[x & 7];
+    }
+    for (u32 y = 0; y < H; y++) {
+        u32 sy = y < (u32)h ? y : h - 1;
+        u32 rs = sy / th * bw * tn + sy % th * tw, rd = (y >> 3) * (W >> 3) * 64 + morton_y[y & 7];
+        switch (fmt) {
+        case 0: { u8 *d = dv; for (u32 x = 0; x < W; x++) { u32 i = rs + col_src[x], v = (src[i >> 1] >> ((i & 1) ? 0 : 4)) & 15; d[rd + col_dst[x]] = (u8)(v << 4 | v); } break; }
+        case 2: { u8 *d = dv; for (u32 x = 0; x < W; x++) { u8 v = src[rs + col_src[x]]; d[rd + col_dst[x]] = (u8)(v << 4 | v >> 4); } break; }
+        case 1: { u16 *d = dv; for (u32 x = 0; x < W; x++) { u16 v = src[rs + col_src[x]]; d[rd + col_dst[x]] = v << 8 | v; } break; }
+        case 3: { u16 *d = dv; for (u32 x = 0; x < W; x++) { const u8 *p = src + 2 * (rs + col_src[x]); d[rd + col_dst[x]] = (u16)(p[1] << 8 | p[0]); } break; }
+        default: { u16 *d = dv; for (u32 x = 0; x < W; x++) { const u8 *p = src + 2 * (rs + col_src[x]); d[rd + col_dst[x]] = (u16)(p[0] << 8 | p[1]); } break; }
         }
     }
-    GSPGPU_FlushDataCache(e->tex.data, e->tex.size);
-    st_upload++; st_upbytes += e->tex.size;
+}
+
+/* GX texture -> W x H PICA tiled texture with e->lv levels; GX row y is PICA memory row y,
+ * sampled at v = 1 - y/H (see set_texgen); padding repeats the edge. The native compact
+ * formats are converted straight from the GX tiles, the rest from decode_buf (tex_classify) */
+static void tex_upload(TexEntry *e, const TexMap *m, u32 W, u32 H) {
+    int w = m->w > 1024 ? 1024 : m->w, h = m->h > 1024 ? 1024 : m->h, fmt = m->fmt;
+    GPU_TEXCOLOR pf = e->tex.fmt;
+    u32 src = m->img;
+    for (int l = 0; l < e->lv; l++) {
+        int wl = lvdim(w, l), hl = lvdim(h, l);
+        u32 Wl = W >> l, Hl = H >> l;
+        void *dl = C3D_TexGetImagePtr(&e->tex, e->tex.data, l, NULL);
+        if (pica_fmt(fmt) != GPU_RGBA8) tex_level_native(dl, Wl, Hl, src, wl, hl, fmt);
+        else {
+            const u32 *lvb = decode_buf + lv_off[l];
+            for (u32 x = 0; x < Wl; x++) col_dst[x] = (x >> 3) * 64 + morton_x[x & 7];
+            for (u32 y = 0; y < Hl; y++) {
+                const u32 *row = lvb + (y < (u32)hl ? y : hl - 1) * wl;
+                u32 rd = (y >> 3) * (Wl >> 3) * 64 + morton_y[y & 7];
+                if (pf == GPU_RGBA8) {
+                    u32 *d = dl;
+                    for (u32 x = 0; x < Wl; x++) d[rd + col_dst[x]] = __builtin_bswap32(row[x < (u32)wl ? x : wl - 1]);   /* R,G,B,A bytes -> PICA A,B,G,R */
+                } else if (pf == GPU_LA4) {
+                    u8 *d = dl;
+                    for (u32 x = 0; x < Wl; x++) { u32 c = row[x < (u32)wl ? x : wl - 1]; d[rd + col_dst[x]] = (u8)((c & 0xf0) | c >> 28); }
+                } else if (pf == GPU_LA8 || pf == GPU_RGBA4) {
+                    u16 *d = dl;
+                    for (u32 x = 0; x < Wl; x++) {
+                        u32 c = row[x < (u32)wl ? x : wl - 1];
+                        d[rd + col_dst[x]] = pf == GPU_LA8 ? (u16)((c & 0xff) << 8 | c >> 24)
+                                                           : (u16)((c & 0xf0) << 8 | (c & 0xf000) >> 4 | (c & 0xf00000) >> 16 | c >> 28);
+                    }
+                } else {
+                    u16 *d = dl;
+                    for (u32 x = 0; x < Wl; x++) {
+                        u32 c = row[x < (u32)wl ? x : wl - 1];
+                        d[rd + col_dst[x]] = pf == GPU_RGB565 ? (u16)((c & 0xf8) << 8 | (c & 0xfc00) >> 5 | (c & 0xf80000) >> 19)
+                                                              : (u16)((c & 0xf8) << 8 | (c & 0xf800) >> 5 | (c & 0xf80000) >> 18 | c >> 31);
+                    }
+                }
+            }
+        }
+        src += tex_bytes(wl, hl, fmt);
+    }
+    u32 total = C3D_TexCalcTotalSize(e->tex.size, e->lv - 1);
+    GSPGPU_FlushDataCache(e->tex.data, total);
+    st_upload++; st_upbytes += total;
+}
+
+/* first upload of each texture (up to 400 lines): the texture inventory */
+static void tex_note(const TexMap *m, const TexEntry *e) {
+    static u32 seen[400];
+    static int n;
+    u32 key = GUEST(m->img) ^ (u32)m->fmt << 28 ^ (u32)m->w << 16 ^ m->h;
+    for (int i = 0; i < n; i++) if (seen[i] == key) return;
+    if (n == 400) return;
+    seen[n++] = key;
+    static const char *const pn[] = {"RGBA8", "RGB8", "RGBA5551", "RGB565", "RGBA4", "LA8", "HILO8", "L8", "A8", "LA4", "L4", "A4", "ETC1", "ETC1A4"};
+    recomp_log("# gx tex new: img %08lx fmt %d %dx%d min %d mag %d lod %d..%d bias %d -> %s %ux%u levels %d, %lu bytes (etc1 %lu) frame %lu\n",
+               (unsigned long)GUEST(m->img), m->fmt, m->w, m->h, m->min_f, m->mag_f, m->min_lod, m->max_lod, m->lod_bias,
+               pn[e->tex.fmt], e->tex.width, e->tex.height, e->lv,
+               (unsigned long)C3D_TexCalcTotalSize(e->tex.size, e->lv - 1), (unsigned long)e->etc1, (unsigned long)frames);
+}
+
+/* resident texture bytes and their ETC1 estimate, for the 300-frame stats line */
+static void tex_resident(u32 *bytes, u32 *etc1) {
+    u32 b = 0, t = 0;
+    for (int i = 0; i < TEX_CACHE; i++) if (tcache[i].used) { b += C3D_TexCalcTotalSize(tcache[i].tex.size, tcache[i].lv - 1); t += tcache[i].etc1; }
+    *bytes = b; *etc1 = t;
 }
 
 /* GXCopyTex destinations: EFB -> texture copies are not emulated, so RAM there
@@ -536,6 +670,7 @@ static void tex_miss(const char *why, const TexMap *m) {
 static int range_clean(const u8 *p, u32 n, u32 vep);
 static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float *su, float *sv);
 static TexEntry *fidx[256];
+static void tex_flush_index(void) { memset(fidx, 0, sizeof fidx); }
 /* used entries chained by (img, w, h, fmt), each chain in tcache index order: the lookups below
  * visit the same candidates in the same order as a scan of the whole cache. Links are index + 1. */
 #define TEX_HASH 256
@@ -551,7 +686,7 @@ static void tex_unlink(TexEntry *e) {
     while (*p != i) p = &tex_next[*p - 1];
     *p = tex_next[i - 1];
 }
-#define TEX_SAME_KEY(t, m) ((t)->img == (m)->img && (t)->w == (m)->w && (t)->h == (m)->h && (t)->fmt == (m)->fmt)
+#define TEX_SAME_KEY(t, m) ((t)->img == (m)->img && (t)->w == (m)->w && (t)->h == (m)->h && (t)->fmt == (m)->fmt && (t)->lk == tex_lk(m) && (t)->gen == tex_gen)
 static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     if (!m->img) { tex_miss("no image", m); return NULL; }
     if (!tile_w[m->fmt & 15]) { tex_miss("format not decoded", m); return NULL; }
@@ -564,8 +699,7 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     u32 tla = tl ? tl->addr : 0;
     u32 fk = (m->img * 0x9e3779b1u ^ (u32)m->w << 20 ^ (u32)m->h << 8 ^ m->fmt ^ tla * 0x85ebca6bu) >> 24;
     TexEntry *t = fidx[fk];
-    if (t && t->used && t->last == frames && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt &&
-        t->tlut_addr == tla) return tex_bind_params(t, m, su, sv);
+    if (t && t->used && t->last == frames && TEX_SAME_KEY(t, m) && t->tlut_addr == tla) return tex_bind_params(t, m, su, sv);
     u64 t0 = recomp_ticks();   /* the slow path is the gx tex bucket, taken out of the draw's chain */
     C3D_Tex *r = tex_find(m, tl, tla, fk, su, sv);
     u64 d = recomp_ticks() - t0;
@@ -579,7 +713,9 @@ static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float
         t = &tcache[k - 1];
         if (t->last == frames && TEX_SAME_KEY(t, m) && t->tlut_addr == tla) { fidx[fk] = t; return tex_bind_params(t, m, su, sv); }
     }
-    u32 n = tex_bytes(m->w, m->h, m->fmt), hash;
+    u32 W = pow2(m->w), H = pow2(m->h);
+    int lv = tex_levels(m, W, H);
+    u32 n = tex_chain_bytes(m, lv), hash;
     /* contents not written since the entry was last hashed (see range_clean): reuse it without hashing */
     u32 tln = tl ? tl->n : 0;
     for (u8 k = chain; k; k = tex_next[k - 1]) {
@@ -607,18 +743,20 @@ static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float
         else if ((!victim || (victim->used && t->last < victim->last)) && t->last + 2 < frames) victim = t;
     }
     if (!e) pend_flush();   /* the entry may be bound to a pending draw */
-    if (!e && same) {
+    GPU_TEXCOLOR pf = pica_fmt(m->fmt);
+    int alpha = m->fmt == 2 || m->fmt == 3;
+    if (!e && pf == GPU_RGBA8) pf = tex_classify(m, tl, lv, &alpha);   /* decodes into decode_buf for tex_upload */
+    if (!e && same && same->tex.fmt == pf) {   /* (lv is the same: same key) */
         e = same;
-        tex_upload(e, m, e->tex.width, e->tex.height, pica_fmt(m->fmt), tl);
+        tex_upload(e, m, W, H);
         e->hash = hash; e->vep = ep; e->tlut_n = tln;
     } else if (!e) {
+        if (same) victim = same;   /* contents now need another PICA format */
         if (!victim) { ONCE("texture cache full\n"); tex_miss("cache full", m); return NULL; }
         e = victim;
         if (e->used) { C3D_TexDelete(&e->tex); tex_unlink(e); }
         e->used = 0;
-        u32 W = pow2(m->w), H = pow2(m->h);
-        GPU_TEXCOLOR pf = pica_fmt(m->fmt);
-        while (!C3D_TexInit(&e->tex, W, H, pf)) {   /* out of linear memory: free the least recently used */
+        while (!C3D_TexInitWithParams(&e->tex, NULL, (C3D_TexInitParams){W, H, lv - 1, pf, GPU_TEX_2D, false})) {   /* out of linear memory: free the least recently used */
             TexEntry *old = NULL;
             for (int i = 0; i < TEX_CACHE; i++)
                 if (tcache[i].used && tcache[i].last < frames && (!old || tcache[i].last < old->last)) old = &tcache[i];
@@ -626,10 +764,15 @@ static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float
             C3D_TexDelete(&old->tex); tex_unlink(old); old->used = 0;
             st_evict++;
         }
-        tex_upload(e, m, W, H, pf, tl);
+        e->lv = (u8)lv; e->lk = tex_lk(m); e->gen = tex_gen;
+        tex_upload(e, m, W, H);
         e->img = m->img; e->w = m->w; e->h = m->h; e->fmt = m->fmt; e->hash = hash; e->used = 1; e->vep = ep; e->tlut_n = tln;
         e->pkey = 0;
+        u32 px = 0;   /* ETC1 is 4 bits per texel, ETC1A4 8: what it would take (lossy, so not used) */
+        for (int l = 0; l < lv; l++) px += (W >> l) * (H >> l);
+        e->etc1 = alpha ? px : px / 2;
         tex_link(e);
+        tex_note(m, e);
     }
     e->last = frames;
     e->tlut_addr = tla;
@@ -640,14 +783,24 @@ static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float
 static C3D_Tex *tex_bind_params(TexEntry *e, const TexMap *m, float *su, float *sv) {
     static const GPU_TEXTURE_WRAP_PARAM wrap[4] = {GPU_CLAMP_TO_EDGE, GPU_REPEAT, GPU_MIRRORED_REPEAT, GPU_REPEAT};
     *su = (float)m->w / e->tex.width; *sv = (float)m->h / e->tex.height;
-    u32 pk = (u32)(m->wrap_s & 3) | (u32)(m->wrap_t & 3) << 2 | (u32)m->mag_f << 4 | (u32)m->min_f << 8;
-    if (e->pkey == pk + 1) return &e->tex;   /* wrap/filter already set */
+    u32 pk = (u32)(m->wrap_s & 3) | (u32)(m->wrap_t & 3) << 2 | (u32)m->mag_f << 4 | (u32)m->min_f << 5 |
+             (u32)m->max_lod << 8 | (u32)m->min_lod << 16 | (u32)(u8)m->lod_bias << 24;
+    if (e->pkey == pk + 1) return &e->tex;   /* wrap/filter/LOD already set */
     e->pkey = pk + 1;
-    u32 param = e->tex.param;
+    u32 param = e->tex.param, lodp = e->tex.lodParam;
     C3D_TexSetWrap(&e->tex, wrap[m->wrap_s & 3], wrap[m->wrap_t & 3]);
-    C3D_TexSetFilter(&e->tex, m->mag_f ? GPU_LINEAR : GPU_NEAREST, (m->min_f == 0 || m->min_f == 2 || m->min_f == 3) ? GPU_NEAREST : GPU_LINEAR);
-    if (e->tex.param != param && pend_n) {   /* a pending draw may use the old parameters */
-        u32 nw = e->tex.param; e->tex.param = param; pend_flush(); e->tex.param = nw;
+    /* GXTexFilter: odd = linear texel filter; 2/3 nearest mip, 4/5 linear mip */
+    C3D_TexSetFilter(&e->tex, m->mag_f ? GPU_LINEAR : GPU_NEAREST, (m->min_f & 1) ? GPU_LINEAR : GPU_NEAREST);
+    C3D_TexSetFilterMipmap(&e->tex, m->min_f >= 4 ? GPU_LINEAR : GPU_NEAREST);
+    if (e->lv > 1) {   /* GX min/max LOD (1/16) to whole PICA levels, bias (1/32) as is */
+        int lo = m->min_lod / 16, hi = (m->max_lod + 15) / 16;
+        if (hi > e->lv - 1) hi = e->lv - 1;
+        if (lo > hi) lo = hi;
+        e->tex.minLevel = (u8)lo; e->tex.maxLevel = (u8)hi;
+        C3D_TexSetLodBias(&e->tex, m->lod_bias / 32.0f);
+    }
+    if ((e->tex.param != param || e->tex.lodParam != lodp) && pend_n) {   /* a pending draw may use the old parameters */
+        u32 nw = e->tex.param, nl = e->tex.lodParam; e->tex.param = param; e->tex.lodParam = lodp; pend_flush(); e->tex.param = nw; e->tex.lodParam = nl;
     }
     return &e->tex;
 }
@@ -2210,6 +2363,9 @@ void recomp_gx_start(void) {
     dl_off = flag_file("cr_dlcache_off");
     dl_clean_off = flag_file("cr_dlclean_off");
     cull_off = flag_file("cr_cull_off");
+    recomp_tex_mip_off = flag_file("cr_mip_off");
+    recomp_tex_fmt_off = flag_file("cr_texfmt_off");
+    tex_fliptest = flag_file("cr_tex_fliptest");
     if (flag_file("cr_vcache_small")) {   /* test: rings at 5/8 so that replays evict (ring_alloc) */
         vring.size = VC_VERTS / 8 * 5; iring.size = VC_IXN / 8 * 5;
         recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu vertices, %lu indices\n", (unsigned long)vring.size, (unsigned long)iring.size);
@@ -2225,6 +2381,8 @@ void recomp_gx_start(void) {
     recomp_log("# gx: display-list cache %s\n", dl_off ? "off (cr_dlcache_off.txt)" : "on");
     recomp_log("# gx: display-list write tracking %s\n", dl_clean_off ? "off (cr_dlclean_off.txt)" : "on");
     recomp_log("# gx: cull mode %s\n", cull_off ? "ignored (cr_cull_off.txt)" : "honoured");
+    recomp_log("# gx: texture mipmaps %s, lossless 16-bit formats %s\n", recomp_tex_mip_off ? "off (cr_mip_off.txt)" : "on",
+               recomp_tex_fmt_off ? "off (cr_texfmt_off.txt)" : "on");
     if (fbd) recomp_log("# gx: framebuffer dump at %lu frames\n", (unsigned long)nwant);
     int off = flag_file("cr_gxthread_off");   /* only the starting mode: the thread exists either way */
     gq_fliptest = flag_file("cr_gxthread_fliptest");
@@ -2567,29 +2725,35 @@ void sdk_GXLoadLightObjImm(void) {
 }
 
 /* ---------------------------------------------------------------- textures */
-/* GXTexObj, SDK layout (0x20 bytes, big-endian): +0 mode0 (wrap s/t, mag, min),
- * +8 image0 (w-1, h-1, fmt), +0xc image3 (address >> 5), +0x10 user data,
+/* GXTexObj, SDK layout (0x20 bytes, big-endian): +0 mode0 (wrap s/t, mag, min,
+ * LOD bias s2.5 in bits 9-16), +4 mode1 (min LOD, max LOD u4.4), +8 image0 (w-1, h-1, fmt), +0xc image3 (address >> 5), +0x10 user data,
  * +0x14 fmt, +0x18 tlut name, +0x1f flags (1 mipmap, 2 CI).
  * GXTlutObj (0xc): +0 fmt << 10, +4 address >> 5 | 0x64 << 24, +8 entries. */
 static const u8 min_hw[6] = {0, 4, 1, 5, 2, 6};   /* GXTexFilter -> TX_SETMODE0 encoding */
 static void texobj_init(u32 o, u32 img, u32 w, u32 h, u32 fmt, u32 ws, u32 wt, u32 mip, int ci, u32 tlut) {
-    wr32(o + 0, (ws & 3) | (wt & 3) << 2 | 1 << 4 | (mip ? 6u : 4u) << 5);
-    wr32(o + 4, 0);
+    /* as the SDK's GXInitTexObj: mipmaps = LIN_MIP_LIN (LIN_MIP_NEAR for CI), max LOD log2 of the larger side */
+    u32 lg = 0;
+    for (u32 v = w > h ? w : h; v > 1; v >>= 1) lg++;
+    wr32(o + 0, (ws & 3) | (wt & 3) << 2 | 1 << 4 | (mip ? (fmt >= 8 && fmt <= 10 ? 5u : 6u) : 4u) << 5);
+    wr32(o + 4, mip ? (lg * 16 & 0xff) << 8 : 0);
     wr32(o + 8, ((w - 1) & 0x3ff) | ((h - 1) & 0x3ff) << 10 | (fmt & 15) << 20);
     wr32(o + 0xc, (img & RAM_MASK) >> 5);
     wr32(o + 0x14, fmt);
     wr32(o + 0x18, tlut);
     wr8(o + 0x1f, (mip ? 1 : 0) | (ci ? 2 : 0));
 }
-static void texobj_lod(u32 o, u32 min_f, u32 mag_f) {
-    wr32(o, (rd32(o) & ~0xf0u) | (mag_f & 1) << 4 | min_hw[min_f < 6 ? min_f : 1] << 5);
+static u32 lod16(float v) { return v < 0 ? 0 : v > 10 ? 160 : (u32)(v * 16); }
+static void texobj_lod(u32 o, u32 min_f, u32 mag_f, float min_lod, float max_lod, float bias) {
+    s32 b = bias < -4 ? -128 : bias > 3.99f ? 127 : (s32)(bias * 32);
+    wr32(o, (rd32(o) & ~0x1fff0u) | (mag_f & 1) << 4 | min_hw[min_f < 6 ? min_f : 1] << 5 | ((u32)b & 0xff) << 9);
+    wr32(o + 4, lod16(min_lod) | lod16(max_lod) << 8);
 }
 static TexMap texobj_read(u32 o) {
     u32 m0 = rd32(o), i0 = rd32(o + 8), hw_min = (m0 >> 5) & 7, min_f = 1;
     for (int i = 0; i < 6; i++) if (min_hw[i] == hw_min) min_f = i;
     return (TexMap){0x80000000u | rd32(o + 0xc) << 5, (u16)((i0 & 0x3ff) + 1), (u16)(((i0 >> 10) & 0x3ff) + 1),
                     (u8)((i0 >> 20) & 15), (u8)(m0 & 3), (u8)((m0 >> 2) & 3), (u8)min_f, (u8)((m0 >> 4) & 1),
-                    (u8)((rd8(o + 0x1f) & 2) != 0), rd32(o + 0x18)};
+                    (u8)((rd8(o + 0x1f) & 2) != 0), rd32(o + 0x18), (u8)rd32(o + 4), (u8)(rd32(o + 4) >> 8), (s8)(m0 >> 9)};
 }
 static void tlutobj_init(u32 o, u32 lut, u32 fmt, u32 n) {
     wr32(o, (fmt & 3) << 10);
@@ -2598,7 +2762,7 @@ static void tlutobj_init(u32 o, u32 lut, u32 fmt, u32 n) {
 }
 void sdk_GXInitTexObj(void) { LOG(); texobj_init(R[3], R[4], R[5], R[6], R[7], R[8], R[9], R[10] & 0xff, 0, 0); }
 void sdk_GXInitTexObjCI(void) { LOG(); texobj_init(R[3], R[4], R[5], R[6], R[7], R[8], R[9], R[10] & 0xff, 1, rd32(R[1] + 8)); }
-void sdk_GXInitTexObjLOD(void) { LOG(); texobj_lod(R[3], R[4], R[5]); }
+void sdk_GXInitTexObjLOD(void) { LOG(); texobj_lod(R[3], R[4], R[5], (float)F[1].ps0, (float)F[2].ps0, (float)F[3].ps0); }   /* clamp/edge/aniso not kept */
 static void x_GXLoadTexObj(const u32 *p) { memcpy(&gx.map[p[0]], p + 1, sizeof(TexMap)); }   /* texmap id, the TexMap read at the call */
 void sdk_GXLoadTexObj(void) {
     LOG();
@@ -2627,12 +2791,13 @@ void sdk_GXSetTlutRegionCallback(void) { LOG(); u32 o = tlut_region_cb; tlut_reg
 
 /* TPL helpers (TPL library, SDK): descriptors are {image header*, palette header*};
  * image header: +0 h, +2 w, +4 fmt, +8 data, +0xc/+0x10 wrap s/t, +0x14/+0x18 min/mag,
- * +0x21/+0x22 min/max LOD (mipmap when they differ) */
+ * +0x1c LOD bias (f32), +0x21/+0x22 min/max LOD (mipmap when they differ) */
 void sdk_TPLGet(void) { LOG(); R[3] = rd32(R[3] + 8) + R[4] * 8; }
 static void tpl_texobj(u32 obj, u32 img, int ci, u32 tlut) {
     texobj_init(obj, rd32(img + 8), rd16(img + 2), rd16(img), rd32(img + 4), rd32(img + 0xc), rd32(img + 0x10),
                 rd8(img + 0x21) != rd8(img + 0x22), ci, tlut);
-    texobj_lod(obj, rd32(img + 0x14), rd32(img + 0x18));
+    u32 bb = rd32(img + 0x1c); float bias; memcpy(&bias, &bb, 4);
+    texobj_lod(obj, rd32(img + 0x14), rd32(img + 0x18), rd8(img + 0x21), rd8(img + 0x22), bias);
 }
 void sdk_TPLGetGXTexObjFromPalette(void) {
     LOG();
