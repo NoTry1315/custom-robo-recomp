@@ -12,18 +12,25 @@ libctru and citro3d. No game files are included: bring your own disc.
 Playable on a New 3DS from boot to the title, menus, campaign and Vs. battle,
 with sound, memory card saves, the attract movie and the HOME button.
 
-Frame rates on hardware (New 3DS, averages of the in-game timing log):
+Frame rates on hardware (New 3DS, averages of the in-game timing log, hardware
+run 24 with the GX thread on core 2; before it, in brackets):
 
 | Scene | fps | Game speed |
 |---|---|---|
-| Title, menus | 45-60 | 75-100% |
-| Vs. battle | ~35 | ~58% |
-| Campaign | ~30 | ~50% |
+| Title, menus | 49-60 | 82-100% |
+| Vs. battle | ~48 (~35) | ~80% (~58%) |
+| Campaign | ~42 (~30) | ~71% (~50%) |
 | Attract movie | ~9 | ~30% |
 
-The game runs one logic step per frame, so game speed is fps / 60: at 35 fps a
-battle plays in slow motion at 58% of real time. 100% needs a steady 60 fps.
-The movie is measured against its own 30 fps (3446 frames in ~115 s).
+The game runs one logic step per frame, so game speed is fps / 60: at 48 fps a
+battle plays in slow motion at 80% of real time. 100% needs a steady 60 fps.
+The movie is measured against its own 30 fps (3446 frames in ~115 s); it was
+not played in run 24.
+
+Where the time goes now: Vs. battle is CPU-bound (the translated game code is
+~19 of a ~21 ms frame; the GX work runs in parallel on core 2). Campaign is
+GPU-bound: the GPU needs 16-21 ms per frame there, so the GX thread gains
+little in campaign.
 
 Known problems:
 
