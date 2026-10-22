@@ -274,6 +274,8 @@ static void frame_begin(void) {
 }
 
 static u32 st_draws, st_tris, st_tex, st_evict, st_upload, st_upbytes, st_split;
+volatile u32 recomp_gx_stat[4];
+static RecursiveLock lin_lock;   /* below, at the linearAlloc wrappers */
 static u32 st_dl_calls, st_dl_prims, st_dl_hits, st_dl_misses, st_dl_slow;
 static void fb_dump(void);
 
@@ -299,6 +301,9 @@ static void frame_end(void) {
         recomp_log("# gx dl frame %lu: calls %lu prims %lu (%lu per call) cache hits %lu misses %lu slow %lu\n", (unsigned long)frames,
                    (unsigned long)st_dl_calls, (unsigned long)st_dl_prims, st_dl_calls ? (unsigned long)(st_dl_prims / st_dl_calls) : 0ul,
                    (unsigned long)st_dl_hits, (unsigned long)st_dl_misses, (unsigned long)st_dl_slow);
+    /* running totals for the bottom-screen stats (log.c reads them on the game thread); linear free under lin_lock */
+    recomp_gx_stat[1] += st_draws; recomp_gx_stat[2] += st_tris; __dmb(); recomp_gx_stat[0]++;
+    if (recomp_gx_stat[0] % 60 == 0) { RecursiveLock_Lock(&lin_lock); recomp_gx_stat[3] = linearSpaceFree(); RecursiveLock_Unlock(&lin_lock); }
     vc_hits = vc_misses = 0;
     st_dl_calls = st_dl_prims = st_dl_hits = st_dl_misses = st_dl_slow = 0;
     st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = st_merged = st_kick_cap = 0;
@@ -1971,7 +1976,7 @@ void recomp_gx_stop(void) {
 void *__real_linearAlloc(size_t size);
 void *__real_linearMemAlign(size_t size, size_t alignment);
 void __real_linearFree(void *mem);
-static RecursiveLock lin_lock;   /* zero = unlocked (libctru reads a 0 LightLock as unlocked) */
+/* lin_lock (declared above frame_end): zero = unlocked (libctru reads a 0 LightLock as unlocked) */
 void *__wrap_linearAlloc(size_t size) { RecursiveLock_Lock(&lin_lock); void *p = __real_linearAlloc(size); RecursiveLock_Unlock(&lin_lock); return p; }
 void *__wrap_linearMemAlign(size_t size, size_t alignment) {
     RecursiveLock_Lock(&lin_lock); void *p = __real_linearMemAlign(size, alignment); RecursiveLock_Unlock(&lin_lock); return p;

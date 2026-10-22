@@ -89,6 +89,48 @@ static void sampler_dump(u32 retrace) {
 }
 
 static u64 log_worst;   /* longest single recomp_log write since the last frame */
+static u32 stalls;      /* "# stall" lines so far */
+
+/* bottom-screen stats: the numbers of the # time lines once per 60-retrace window, so a
+ * hardware A/B run can be read on the device (game thread; rows above the toggle line) */
+struct stats { double frame, worst, game, aud, wait, busy, vtx, tex, st, end, sync, gpu, dvd; };
+static void stats_draw(u32 retrace, const struct stats *v) {
+    static u32 gf, gd, gt;
+    static u64 cost, cost_max;
+    u64 t0 = svcGetSystemTick();
+    u32 f = recomp_gx_stat[0]; __dmb();
+    u32 d = recomp_gx_stat[1], t = recomp_gx_stat[2], nf = f - gf;
+    char r[48];
+    snprintf(r, sizeof r, "%5.1f fps  speed %3.0f%%  worst %5.1f ms", 1000.0 / v->frame, 100000.0 / 60 / v->frame, v->worst);
+    recomp_status_row(0, r);
+    snprintf(r, sizeof r, "frame %5.1f  game %5.1f  audio %4.1f", v->frame, v->game, v->aud);
+    recomp_status_row(1, r);
+    if (recomp_gx_thread) {
+        snprintf(r, sizeof r, "gxthr wait %4.1f  busy %4.1f  sync %4.1f", v->wait, v->busy, v->sync);
+        recomp_status_row(2, r);
+        snprintf(r, sizeof r, "vtx %4.1f tex %4.1f state %4.1f gpu %4.1f", v->vtx, v->tex, v->st, v->gpu);
+    } else {
+        snprintf(r, sizeof r, "inline vtx %4.1f  tex %4.1f  state %4.1f", v->vtx, v->tex, v->st);
+        recomp_status_row(2, r);
+        snprintf(r, sizeof r, "end %4.1f  sync %4.1f  gpu %4.1f", v->end, v->sync, v->gpu);
+    }
+    recomp_status_row(3, r);
+    snprintf(r, sizeof r, "scene %lx sub %lx   retrace %lu", (unsigned long)rd32(0x80321d88), (unsigned long)rd32(0x80321d98), (unsigned long)retrace);
+    recomp_status_row(4, r);
+    snprintf(r, sizeof r, "draws %5lu  tris %6lu  lin %5lu KB", nf ? (unsigned long)((d - gd) / nf) : 0ul, nf ? (unsigned long)((t - gt) / nf) : 0ul,
+             (unsigned long)(recomp_gx_stat[3] >> 10));
+    recomp_status_row(5, r);
+    snprintf(r, sizeof r, "dvd wait %4.1f late %lu slow %lu stall %lu", v->dvd, (unsigned long)recomp_dvd_late_n, (unsigned long)recomp_dvd_slow_n, (unsigned long)stalls);
+    recomp_status_row(6, r);
+    gf = f; gd = d; gt = t;
+    u64 c = svcGetSystemTick() - t0;   /* inside "game" of the next window */
+    cost += c; if (c > cost_max) cost_max = c;
+    if (retrace % 300 == 0) {
+        recomp_log("# status r%lu: bottom-screen stats %.2f ms per update (worst %.2f), every 60 retraces\n", (unsigned long)retrace,
+                   cost * 1000.0 / SYSCLOCK_ARM11 / 5, cost_max * 1000.0 / SYSCLOCK_ARM11);
+        cost = cost_max = 0;
+    }
+}
 
 /* the GX thread adds to its buckets while this runs, and a u64 is two stores: read until stable */
 static u64 prof_get(int i) { volatile u64 *p = &recomp_prof[i]; u64 a, b; do { a = *p; b = *p; } while (a != b); return a; }
@@ -108,6 +150,7 @@ void recomp_prof_frame(u32 retrace) {
         u64 dt = now - last;
         if (dt > worst) worst = dt;
         if (dt > SYSCLOCK_ARM11 / 2) {   /* one frame over 0.5 s: where it went */
+            stalls++;
             double m = 1000.0 / SYSCLOCK_ARM11;
             u64 d[PROF_N];
             for (int i = 0; i < PROF_N; i++) d[i] = cur[i] - fsum[i];
@@ -142,6 +185,10 @@ void recomp_prof_frame(u32 retrace) {
                    (unsigned long)retrace, 1000.0 / frame, frame, worst * ms, frame - vtx - tex - st - end - sync - aud, vtx, tex, st, end, sync, aud,
                    (cur[PROF_LOG] - sum[PROF_LOG]) * ms / 60, (cur[PROF_DVD] - sum[PROF_DVD]) * ms / 60);
     double pre = (cur[PROF_PREDRAW] - sum[PROF_PREDRAW]) * ms / 60, gpu = (cur[PROF_GPU] - sum[PROF_GPU]) * ms / 60;
+    struct stats sv = { frame, worst * ms, frame - aud, aud, 0, 0, vtx, tex, st, end, sync, gpu, (cur[PROF_DVD] - sum[PROF_DVD]) * ms / 60 };
+    if (recomp_gx_thread) { sv.wait = (cur[PROF_GX_WAIT] - sum[PROF_GX_WAIT]) * ms / 60; sv.busy = (cur[PROF_GX_BUSY] - sum[PROF_GX_BUSY]) * ms / 60; sv.game -= sv.wait; }
+    else sv.game -= vtx + tex + st + end + sync;
+    stats_draw(retrace, &sv);
     double span = (cur[PROF_GPU_SPAN] - sum[PROF_GPU_SPAN]) * ms / 60;
     static u32 flips, gflips;   /* a window with a ZL toggle (or a bottom-screen tap) in it mixes both modes */
     const char *kick = recomp_gx_kick_flips != flips ? "mixed" : recomp_gx_kick_on ? "on" : "off";

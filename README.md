@@ -80,8 +80,20 @@ sdmc:/custom-robo/files/...     <- the whole data/extracted/files/ tree
 Start it from the Homebrew Launcher. Saves go to `sdmc:/custom-robo/save/`
 (memory card in slot A). Each run writes `sdmc:/cr_autotest.log`, which is
 overwritten at the next start; rename it to keep it. The bottom screen shows
-the build and any flag files present; its last line always shows the two A/B
-toggles as they are now (`ZL gpukick ON   tap gx thread ON`).
+the build and any flag files present. Its last 8 rows are live statistics,
+updated once a second (the same numbers as the log's `# time` lines, in ms
+per frame; example values):
+
+```
+ 34.8 fps  speed  58%  worst  45.2 ms     game speed = fps / 60
+frame  28.7  game  21.8  audio  2.0
+gxthr wait  3.1  busy 18.2  sync 11.2     GX thread on (inline: gx vtx/tex/state)
+vtx  8.7 tex  5.1 state  1.4 gpu 12.3     (inline: end/sync/gpu)
+scene 4 sub 2   retrace 12345
+draws   190  tris  45000  lin 17714 KB    per frame; linear heap free
+dvd wait  0.0 late 0 slow 3 stall 0       DVD late/slow and # stall counts
+ZL gpukick ON   tap gx thread ON          the two A/B toggles as they are now
+```
 
 ## Controls
 

@@ -286,6 +286,10 @@ void recomp_gx_stop(void);             /* at exit: sync, then end the GX thread 
 extern int recomp_gx_thread;           /* GX calls are handled on the GX thread now (else inline on the game thread) */
 extern u32 recomp_gx_thread_flips;     /* GX thread switches so far (for the # time lines) */
 void recomp_status(const char *s);     /* bottom screen's fixed last row (main.c; game thread) */
+#define RECOMP_STATUS_ROWS 8            /* bottom screen's fixed rows: stats (log.c), then the toggle line (gx.c) */
+void recomp_status_row(int row, const char *s);   /* fixed row 0..RECOMP_STATUS_ROWS-1, redrawn only when changed (main.c; game thread) */
+extern volatile u32 recomp_gx_stat[4];  /* GX frames, draws, triangles (running totals), linear heap free (bytes); written by whoever runs GX */
+extern u32 recomp_dvd_slow_n, recomp_dvd_late_n;   /* dvd.c */
 void recomp_gx_kick_toggle(void);      /* ZL: mid-frame GPU submit on/off from the next frame */
 extern int recomp_gx_kick_on;          /* mid-frame GPU submit mode now (for the # time lines) */
 extern u32 recomp_gx_kick_flips;       /* ZL toggles so far */
