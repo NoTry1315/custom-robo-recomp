@@ -90,6 +90,14 @@ static u32 cur_r1;   /* guest r1 recorded with the draw being handled (range_cle
  * hash (the game thread advances it at GXCopyDisp, after a barrier), so every write
  * stamped below it happened before the hash read */
 static u32 epoch_now(void) { u32 e = *(volatile u32 *)&recomp_wr_epoch; __dmb(); return e; }
+/* time buckets of a draw: one tick read per boundary, each closing the interval since the
+ * previous one (svcGetSystemTick is an SVC; Citra adds 150 ticks to every call, its cost
+ * measured on an o3DS). t_start opens a draw's chain; time taken out of it (the texture
+ * cache's slow path, timed on its own) moves t_last forward. */
+static u64 t_last;
+static void t_start(void) { t_last = recomp_ticks(); }
+static void t_mark(int b) { u64 t = recomp_ticks(); recomp_prof[b] += t - t_last; t_last = t; }
+static void t_mark2(int b, int part) { u64 t = recomp_ticks(); recomp_prof[b] += t - t_last; recomp_prof[part] += t - t_last; t_last = t; }
 
 /* ---------------------------------------------------------------- PICA side */
 #define VB_VERTS 0x6000      /* per frame half: immediate draws and display-list draws the vertex cache does not take; u16 indices are relative to vb_base (rebased) */
@@ -498,6 +506,24 @@ static void tex_miss(const char *why, const TexMap *m) {
 }
 
 static int range_clean(const u8 *p, u32 n, u32 vep);
+static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float *su, float *sv);
+static TexEntry *fidx[256];
+/* used entries chained by (img, w, h, fmt), each chain in tcache index order: the lookups below
+ * visit the same candidates in the same order as a scan of the whole cache. Links are index + 1. */
+#define TEX_HASH 256
+static u8 tex_head[TEX_HASH], tex_next[TEX_CACHE];
+static u32 tex_key(u32 img, u32 w, u32 h, u32 fmt) { return (img * 0x9e3779b1u ^ w << 20 ^ h << 8 ^ fmt) >> 24; }
+static void tex_link(TexEntry *e) {
+    u8 i = (u8)(e - tcache + 1), *p = &tex_head[tex_key(e->img, e->w, e->h, e->fmt)];
+    while (*p && *p < i) p = &tex_next[*p - 1];
+    tex_next[i - 1] = *p; *p = i;
+}
+static void tex_unlink(TexEntry *e) {
+    u8 i = (u8)(e - tcache + 1), *p = &tex_head[tex_key(e->img, e->w, e->h, e->fmt)];
+    while (*p != i) p = &tex_next[*p - 1];
+    *p = tex_next[i - 1];
+}
+#define TEX_SAME_KEY(t, m) ((t)->img == (m)->img && (t)->w == (m)->w && (t)->h == (m)->h && (t)->fmt == (m)->fmt)
 static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     if (!m->img) { tex_miss("no image", m); return NULL; }
     if (!tile_w[m->fmt & 15]) { tex_miss("format not decoded", m); return NULL; }
@@ -507,23 +533,30 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     /* hashed once per frame: the title draws one big texture as many strips.
      * Entries used this frame are found through a direct-mapped index (they are
      * not evicted or reused within the frame) */
-    static TexEntry *fidx[256];
     u32 tla = tl ? tl->addr : 0;
     u32 fk = (m->img * 0x9e3779b1u ^ (u32)m->w << 20 ^ (u32)m->h << 8 ^ m->fmt ^ tla * 0x85ebca6bu) >> 24;
     TexEntry *t = fidx[fk];
     if (t && t->used && t->last == frames && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt &&
         t->tlut_addr == tla) return tex_bind_params(t, m, su, sv);
-    for (int i = 0; i < TEX_CACHE; i++) {
-        t = &tcache[i];
-        if (t->used && t->last == frames && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt &&
-            t->tlut_addr == tla) { fidx[fk] = t; return tex_bind_params(t, m, su, sv); }
+    u64 t0 = recomp_ticks();   /* the slow path is the gx tex bucket, taken out of the draw's chain */
+    C3D_Tex *r = tex_find(m, tl, tla, fk, su, sv);
+    u64 d = recomp_ticks() - t0;
+    recomp_prof[PROF_GX_TEX] += d; t_last += d;
+    return r;
+}
+static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float *su, float *sv) {
+    TexEntry *t;
+    u8 chain = tex_head[tex_key(m->img, m->w, m->h, m->fmt)];
+    for (u8 k = chain; k; k = tex_next[k - 1]) {
+        t = &tcache[k - 1];
+        if (t->last == frames && TEX_SAME_KEY(t, m) && t->tlut_addr == tla) { fidx[fk] = t; return tex_bind_params(t, m, su, sv); }
     }
     u32 n = tex_bytes(m->w, m->h, m->fmt), hash;
     /* contents not written since the entry was last hashed (see range_clean): reuse it without hashing */
     u32 tln = tl ? tl->n : 0;
-    for (int i = 0; i < TEX_CACHE; i++) {
-        t = &tcache[i];
-        if (t->used && t->vep && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt && t->tlut_addr == tla &&
+    for (u8 k = chain; k; k = tex_next[k - 1]) {
+        t = &tcache[k - 1];
+        if (t->vep && TEX_SAME_KEY(t, m) && t->tlut_addr == tla &&
             t->tlut_n == tln && range_clean(ram + (m->img & RAM_MASK), n, t->vep) &&
             (!tl || range_clean(ram + (tl->addr & RAM_MASK), tl->n * 2, t->vep))) {
             t->last = frames; fidx[fk] = t;
@@ -534,12 +567,14 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     hash = hash_bytes(m->img, n);
     if (tl) hash ^= hash_bytes(tl->addr, tl->n * 2) * 31 + tl->fmt;
     TexEntry *e = NULL, *victim = NULL, *same = NULL;
-    for (int i = 0; i < TEX_CACHE; i++) {
-        TexEntry *t = &tcache[i];
-        if (t->used && t->img == m->img && t->w == m->w && t->h == m->h && t->fmt == m->fmt) {
-            if (t->hash == hash) { e = t; e->vep = ep; e->tlut_n = tln; break; }
-            if (t->last < frames) same = t;   /* changed contents: reuse its memory (the GPU is done with it) */
-        }
+    for (u8 k = chain; k; k = tex_next[k - 1]) {
+        t = &tcache[k - 1];
+        if (!TEX_SAME_KEY(t, m)) continue;
+        if (t->hash == hash) { e = t; e->vep = ep; e->tlut_n = tln; break; }
+        if (t->last < frames) same = t;   /* changed contents: reuse its memory (the GPU is done with it) */
+    }
+    if (!e) for (int i = 0; i < TEX_CACHE; i++) {   /* a new texture: the least recently used entry */
+        t = &tcache[i];
         if (!t->used) { if (!victim || victim->used) victim = t; }
         else if ((!victim || (victim->used && t->last < victim->last)) && t->last + 2 < frames) victim = t;
     }
@@ -551,7 +586,7 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     } else if (!e) {
         if (!victim) { ONCE("texture cache full\n"); tex_miss("cache full", m); return NULL; }
         e = victim;
-        if (e->used) C3D_TexDelete(&e->tex);
+        if (e->used) { C3D_TexDelete(&e->tex); tex_unlink(e); }
         e->used = 0;
         u32 W = pow2(m->w), H = pow2(m->h);
         GPU_TEXCOLOR pf = pica_fmt(m->fmt);
@@ -560,12 +595,13 @@ static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
             for (int i = 0; i < TEX_CACHE; i++)
                 if (tcache[i].used && tcache[i].last < frames && (!old || tcache[i].last < old->last)) old = &tcache[i];
             if (!old) { ONCE("C3D_TexInit failed with nothing left to evict\n"); tex_miss("C3D_TexInit failed", m); return NULL; }
-            C3D_TexDelete(&old->tex); old->used = 0;
+            C3D_TexDelete(&old->tex); tex_unlink(old); old->used = 0;
             st_evict++;
         }
         tex_upload(e, m, W, H, pf, tl);
         e->img = m->img; e->w = m->w; e->h = m->h; e->fmt = m->fmt; e->hash = hash; e->used = 1; e->vep = ep; e->tlut_n = tln;
         e->pkey = 0;
+        tex_link(e);
     }
     e->last = frames;
     e->tlut_addr = tla;
@@ -1521,9 +1557,7 @@ static int setup_draw_state(int tcoord[3], float tscale[3][2]) {
         const TevStage *t = &gx.tev[si];
         if (t->map >= 8 || unit_of_map[t->map] >= 0) continue;
         if (nunits >= 3) { ONCE("more than 3 texmaps in one draw\n"); tex_miss("4th texmap in a draw", &gx.map[t->map]); continue; }
-        u64 t0 = recomp_ticks();
         C3D_Tex *tex = tex_get(&gx.map[t->map], &tscale[nunits][0], &tscale[nunits][1]);
-        recomp_prof[PROF_GX_TEX] += recomp_ticks() - t0;
         if (!tex) continue;
         static const C3D_Tex *bound[3]; static u32 bound_param[3]; static void *bound_data[3];
         if (bound[nunits] != tex || bound_param[nunits] != tex->param || bound_data[nunits] != tex->data) {
@@ -1534,10 +1568,9 @@ static int setup_draw_state(int tcoord[3], float tscale[3][2]) {
         tcoord[nunits] = t->coord < 8 ? t->coord : -1;
         unit_of_map[t->map] = nunits++;
     }
-    u64 ts = recomp_ticks();
     setup_tev();
     setup_pixel();
-    recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
+    t_mark(PROF_GX_STATE);   /* the caller's t_start: texture binds, TEV and pixel state */
     return nunits;
 }
 
@@ -1559,14 +1592,12 @@ static int gen_ix(int prim, int ntri, u32 v0, u16 *ix) {
 
 /* indices written at ibuf + ib_used: appended to the pending draw or issued */
 static int emit_ix(u16 *ix, int k) {
-    u64 ts = recomp_ticks();
     int merge = last_end == ix && pend_n + k <= 0xfff0;
     if (merge && pend_n) pend_n += k;
     else { pend_issue(); pend_ix = ix; pend_n = k; }
     if (batch_off) pend_issue();
     last_end = ix + k;
     ib_used += k;
-    recomp_prof[PROF_GX_STATE] += recomp_ticks() - ts;
     return merge;
 }
 
@@ -1579,6 +1610,7 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     if (!cmdbuf_room(prim, n)) return;
     int tcoord[3] = {-1, -1, -1};
     float tscale[3][2] = {{1, 1}, {1, 1}, {1, 1}};
+    t_start();
     int nunits = setup_draw_state(tcoord, tscale);
     int ntri = tri_count(prim, n);
     if (!ntri) return;
@@ -1588,17 +1620,16 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
             (unsigned long)frames, (unsigned long)vb_used, n, (unsigned long)ib_used); }
         return;
     }
-    u64 t0 = recomp_ticks();
+    u64 tv = t_last;   /* start of the vertex part (PROF_VX_DL) */
     APlan pl[21];
     int vs, np = make_plan(fmt, pl, &vs);
     s8 tsrc[3];
-    u64 tu = recomp_ticks();
+    t_mark(PROF_GX_VTX);
     set_clip();
     int lit = set_lighting();
     set_mtx(lit);
     set_texgen(tscale, tcoord, tsrc, data, pl, np);
-    u64 td = recomp_ticks();
-    recomp_prof[PROF_VX_UNIF] += td - tu;
+    t_mark2(PROF_GX_VTX, PROF_VX_UNIF);
     np = trim_plan(pl, np, tsrc);
     PVtx tm;
     plan_finish(pl, np, &tm);
@@ -1615,7 +1646,7 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
         for (int i = 0; i < n; i++) decode_vtx(data + i * vs, pl, np, &tm, &o[i]);
         v0 = vb_used - vb_base; vadd = n;
     }
-    recomp_prof[PROF_VX_DEC] += recomp_ticks() - td;
+    t_mark2(PROF_GX_VTX, PROF_VX_DEC);
     u16 *ix = ibuf[vb_half] + ib_used;
     int k = 0;
     VCache *ve = co != VC_NONE ? vc_last : NULL;
@@ -1626,12 +1657,11 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
         memcpy(vc_ix + vc_ixtop, ix, k * 2); ve->ixoff = vc_ixtop; ve->ixn = k; ve->prim = prim; vc_ixtop += k;
     }
     ntri = k / 3;
-    t0 = recomp_ticks() - t0;
-    recomp_prof[PROF_GX_VTX] += t0;
-    if (in_dl) recomp_prof[PROF_VX_DL] += t0;
     st_draws++; st_tris += ntri; if (nunits) st_tex++;
     if (emit_ix(ix, k)) st_merged++;
     vb_used += vadd;
+    t_mark(PROF_GX_VTX);
+    if (in_dl) recomp_prof[PROF_VX_DL] += t_last - tv;
 }
 
 /* ---------------------------------------------------------------- display-list cache
@@ -1707,19 +1737,18 @@ static int dl_draw(const u8 *list, u32 len) {
     if (!cmdbuf_room(op0 & 0xf8, 0)) return 1;
     int tcoord[3] = {-1, -1, -1};
     float tscale[3][2] = {{1, 1}, {1, 1}, {1, 1}};
+    t_start();
     int nunits = setup_draw_state(tcoord, tscale);
     for (int u = 0; u < 3; u++) if (tcoord[u] >= 0 && tcoord[u] < 8 && gx.desc[1 + tcoord[u]]) return 0;   /* per-vertex texture matrix */
-    u64 tp = recomp_ticks();
-    APlan pl[21];
-    int vs, np = make_plan(fmt, pl, &vs);
+    u64 tp = t_last;   /* start of the vertex part (PROF_VX_DL) */
     s8 tsrc[3];
-    u64 tu = recomp_ticks();
     set_clip();
     int lit = set_lighting();
     set_mtx(lit);
-    set_texgen(tscale, tcoord, tsrc, list + p0 + 3, pl, np);
-    u64 td = recomp_ticks();
-    recomp_prof[PROF_VX_UNIF] += td - tu;
+    set_texgen(tscale, tcoord, tsrc, NULL, NULL, 0);   /* no per-vertex texture matrix here: the plan is not read */
+    t_mark2(PROF_GX_VTX, PROF_VX_UNIF);
+    APlan pl[21];
+    int vs, np = make_plan(fmt, pl, &vs);
     np = trim_plan(pl, np, tsrc);
     PVtx tm;
     plan_finish(pl, np, &tm);
@@ -1745,7 +1774,7 @@ static int dl_draw(const u8 *list, u32 len) {
     u32 w;
     if (!why) {   /* hit */
         e->used = frames;
-        if (e->slow) { recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; st_dl_slow++; return 0; }
+        if (e->slow) { t_mark(PROF_GX_VTX); st_dl_slow++; return 0; }
         st_dl_hits++;
     } else {
         st_dl_misses++;
@@ -1766,12 +1795,12 @@ static int dl_draw(const u8 *list, u32 len) {
         if (nv > 0x8000) slow = 1;
         e->list = list; e->n = len; e->sig = sig; e->used = frames; e->checked = frames + 1;
         e->lhash = hash_mem(list, len, 0x811c9dc5u); e->vep = ep;
-        if (slow) { e->slow = 1; e->gen = vc_gen; recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; st_dl_slow++; return 0; }
-        if (vc_top + nv > VC_VERTS || vc_ixtop + nix > VC_IX) { vc_full = 1; recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; return 0; }
+        if (slow) { e->slow = 1; e->gen = vc_gen; t_mark(PROF_GX_VTX); st_dl_slow++; return 0; }
+        if (vc_top + nv > VC_VERTS || vc_ixtop + nix > VC_IX) { vc_full = 1; t_mark(PROF_GX_VTX); return 0; }
         u32 off = vc_top;
         vc_top += nv;
         w = off & ~0x7fffu;
-        u64 tdec = recomp_ticks();
+        t_mark(PROF_GX_VTX);
         PVtx *o = vc_arena + off;
         u16 *ix = vc_ix + vc_ixtop;
         u32 v = 0, k = 0, prims = 0;
@@ -1786,7 +1815,7 @@ static int dl_draw(const u8 *list, u32 len) {
             v += n;
             pos += 3 + n * vs;
         }
-        recomp_prof[PROF_VX_DEC] += recomp_ticks() - tdec;
+        t_mark2(PROF_GX_VTX, PROF_VX_DEC);
         if (off < vc_dlo) vc_dlo = off;
         if (vc_top > vc_dhi) vc_dhi = vc_top;
         u32 narr = 0;
@@ -1802,7 +1831,7 @@ static int dl_draw(const u8 *list, u32 len) {
         if (narr <= DL_ARR) { e->narr = narr; e->ahash = dl_arrays_hash(e, 1); e->gen = vc_gen; }   /* else drawn once, not kept */
     }
     w = e->off & ~0x7fffu;
-    if (!e->ixn) { recomp_prof[PROF_GX_VTX] += recomp_ticks() - tp; return 1; }
+    if (!e->ixn) { t_mark(PROF_GX_VTX); return 1; }
     static u32 full_logged;
     if (ib_used + e->ixn > IB_INDICES) {
         if (full_logged < 8) { full_logged++; recomp_log("# gx: index buffer full at frame %lu (display list %lu indices, used %lu)\n",
@@ -1813,10 +1842,10 @@ static int dl_draw(const u8 *list, u32 len) {
     u16 *ix = ibuf[vb_half] + ib_used;
     memcpy(ix, vc_ix + e->ixoff, e->ixn * 2);
     u32 prims = e->prims, tris = e->tris;
-    u64 dt = recomp_ticks() - tp;
-    recomp_prof[PROF_GX_VTX] += dt; recomp_prof[PROF_VX_DL] += dt;
     st_dl_prims += prims; st_draws += prims; st_tris += tris; if (nunits) st_tex += prims;
     st_merged += prims - 1 + emit_ix(ix, e->ixn);
+    t_mark(PROF_GX_VTX);
+    recomp_prof[PROF_VX_DL] += t_last - tp;
     return 1;
 }
 
