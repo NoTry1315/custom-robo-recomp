@@ -7,41 +7,50 @@ translator in `tools/recomp/`. The GameCube SDK layer (graphics, disc, pad, OS,
 audio, memory card, video) is rewritten by hand for the 3DS in `runtime/`, on
 libctru and citro3d. No game files are included: bring your own disc.
 
-## Status (2026-10-21)
+## Status (2026-10-22)
 
 Playable on a New 3DS from boot to the title, menus, campaign and Vs. battle,
 with sound, memory card saves, the attract movie and the HOME button.
 
-Frame rates on hardware (New 3DS, averages of the in-game timing log, hardware
-run 24 with the GX thread on core 2; before it, in brackets):
+Frame rates on hardware (New 3DS, averages of the in-game `# time` windows from
+`tools/time_avg.py`). Each run was played by hand, so the scenes differ from run to run:
 
-| Scene | fps | Game speed |
-|---|---|---|
-| Title, menus | 49-60 | 82-100% |
-| Vs. battle | ~48 (~35) | ~80% (~58%) |
-| Campaign | ~42 (~30) | ~71% (~50%) |
-| Attract movie | ~9 | ~30% |
+| Scene | Run 24 (10-21) | Run 25 (10-22) | Run 27 (10-22, current main) | Game speed now |
+|---|---|---|---|---|
+| Title, menus (2.x, 5.0) | 49-60 | ~60 | 58-60 | 97-100% |
+| Campaign (8.3) | 42.4 | 44.4 | **51.2** (210 windows) | 85% |
+| Vs. battle (4.2) | 47.9 | 54.2 | 45.3 (103 windows) | 76% |
+| Battle other phases (4.0-4.9) | - | - | 53-60 | 89-100% |
+| Pause (c.0) | 40.1 | 55.8 | 59.1 | 99% |
+| Scenes 6 / 7 | - / 49.3 | - / 56.4 | 53.9 / 57.4 | 90 / 96% |
+| Attract movie | ~9 | 13.9 | not played | ~46% |
 
 The game runs one logic step per frame, so game speed is fps / 60: at 48 fps a
 battle plays in slow motion at 80% of real time. 100% needs a steady 60 fps.
-The movie is measured against its own 30 fps (3446 frames in ~115 s); it was
-not played in run 24.
+The movie is measured against its own 30 fps.
 
-Where the time goes now: Vs. battle is CPU-bound (the translated game code is
-~19 of a ~21 ms frame; the GX work runs in parallel on core 2). Campaign is
-GPU-bound: the GPU needs 16-21 ms per frame there, so the GX thread gains
-little in campaign.
+Where the time goes now (run 27, ms per frame):
+
+| Scene | frame | game CPU | gx wait | GPU | bound by |
+|---|---|---|---|---|---|
+| Campaign 8.3 | 19.5 | 8.7 | 10.1 | 12.2 | GPU / GX thread (busy 18.0) |
+| Vs. battle 4.2 | 22.1 | 18.1 | 2.6 | 9.3 | game CPU |
+
+Back-face culling (2026-10-22) cut campaign GPU time: run 26 measured 15.6 ms GPU
+with culling vs 19.9 without it. Vs. battle in run 27 is slower than in run 25,
+with more game CPU time (18.1 vs 16.1 ms). Different battles were played, so it
+is not yet known whether this build caused it. Battle draw calls rose from about 123
+to 165 per frame with culling (Citra). Per-run details: `docs/recomp_unknowns.md`
+("Hardware runs 26-27") and `CLAUDE.md` Status.
 
 Known problems:
 
-- Audio stutters whenever the game runs below 60 fps: audio is produced per game
-  frame instead of in real time (fix in progress).
 - Music can repeat a 1-2 s segment when the SD card stalls for several seconds
   (under investigation).
 - The attract movie is slow: its JPEG frames are decoded on the CPU.
-- Missing graphics features: EFB-to-texture copies, back-face culling,
-  lines/points, specular (COLOR1) lighting, post-transform texture matrices,
-  anti-aliasing. See the GX sections of `docs/recomp_unknowns.md`.
+- Missing graphics features: EFB-to-texture copies, lines/points, specular
+  (COLOR1) lighting, post-transform texture matrices, anti-aliasing. See the GX
+  sections of `docs/recomp_unknowns.md`.
 - Old 3DS models are untested; the build targets the New 3DS's 804 MHz mode.
 
 ## What you need
@@ -87,20 +96,23 @@ sdmc:/custom-robo/files/...     <- the whole data/extracted/files/ tree
 Start it from the Homebrew Launcher. Saves go to `sdmc:/custom-robo/save/`
 (memory card in slot A). Each run writes `sdmc:/cr_autotest.log`, which is
 overwritten at the next start; rename it to keep it. The bottom screen shows
-the build and any flag files present. Its last 8 rows are live statistics,
-updated once a second (the same numbers as the log's `# time` lines, in ms
-per frame; example values):
+the build id and any flag files present, then a fixed stats table, one metric per
+row, updated once a second (the same numbers as the log's `# time` lines, in ms per
+frame), then a 3-row message area. Example values:
 
 ```
- 34.8 fps  speed  58%  worst  45.2 ms     game speed = fps / 60
-frame  28.7  game  21.8  audio  2.0
-gxthr wait  3.1  busy 18.2  sync 11.2     GX thread on (inline: gx vtx/tex/state)
-vtx  8.7 tex  5.1 state  1.4 gpu 12.3     (inline: end/sync/gpu)
-scene 4 sub 2   retrace 12345
-draws   190  tris  45000  lin 17714 KB    per frame; linear heap free
-dvd wait  0.0 late 0 slow 3 stall 0       DVD late/slow and # stall counts
-ZL gpukick ON   tap gx thread ON          the two A/B toggles as they are now
+fps         51.2  speed  85%
+frame ms    19.5  worst  37.2
+game ms      8.7
+gx wait     10.1  thread busy 18.0
+  parts   vtx  1.7 tex  1.3 state  0.8
+gpu ms      12.2  draws   60 tris  18000
+audio ms     0.7  dvd wait  0.0
+scene          8  sub 3  r12345
+io  late 0 slow 3 stall 0 lin 17714K
 ```
+
+There are no touch controls.
 
 ## Controls
 
@@ -111,8 +123,6 @@ ZL gpukick ON   tap gx thread ON          the two A/B toggles as they are now
 | D-pad, A, B, X, Y, L, R, Start | same |
 | ZR | Z |
 | Hold SELECT | input goes to controller 2 (Vs. mode) |
-| ZL | toggles mid-frame GPU submit (A/B testing) |
-| Tap the bottom screen | toggles the GX thread (A/B testing; New 3DS only) |
 
 ## Test flags
 
@@ -121,9 +131,9 @@ can be compared with a feature on and off:
 
 | File | Effect |
 |---|---|
-| `cr_gxthread_off.txt` | start with the GX thread off: GX work on the game thread (a tap toggles it) |
+| `cr_gxthread_off.txt` | GX thread off: GX work on the game thread |
 | `cr_gxthread_fliptest.txt` | switch the GX thread on/off every 300 retraces (tests the switch) |
-| `cr_gpukick_off.txt` | start with mid-frame GPU submit off (ZL toggles it) |
+| `cr_gpukick_off.txt` | mid-frame GPU submit off |
 | `cr_batch_off.txt` | no draw batching |
 | `cr_dlcache_off.txt` | no display-list cache |
 | `cr_dlclean_off.txt` | always re-hash display lists and textures (no write tracking) |
