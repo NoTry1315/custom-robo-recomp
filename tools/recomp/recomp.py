@@ -517,9 +517,8 @@ def emit_op(p, a, w, d):
     elif d in ('fcmpu', 'fcmpo'):
         o(f'cr{crfD(w)} = fcmp_v(F[{A}].ps0, F[{B}].ps0);')
     elif d in ('fmr', 'fneg', 'fabs', 'fnabs'):
-        e = {'fmr': f'F[{B}].ps0', 'fneg': f'u2d(d2u(F[{B}].ps0) ^ 0x8000000000000000ull)',
-             'fabs': f'u2d(d2u(F[{B}].ps0) & ~0x8000000000000000ull)',
-             'fnabs': f'u2d(d2u(F[{B}].ps0) | 0x8000000000000000ull)'}[d]
+        e = {'fmr': f'F[{B}].ps0', 'fneg': f'fneg_d(F[{B}].ps0)', 'fabs': f'fabs_d(F[{B}].ps0)',
+             'fnabs': f'fnabs_d(F[{B}].ps0)'}[d]
         o(f'F[{D}].ps0 = {e};')
         if rec: fpu_note()
     elif d == 'frsp':
@@ -570,9 +569,8 @@ def emit_op(p, a, w, d):
         elif d == 'ps_mr':
             two = (b0, b1)
         elif d in ('ps_neg', 'ps_abs', 'ps_nabs'):
-            fx = {'ps_neg': '^ 0x8000000000000000ull', 'ps_abs': '& ~0x8000000000000000ull',
-                  'ps_nabs': '| 0x8000000000000000ull'}[d]
-            two = (f'u2d(d2u({b0}) {fx})', f'u2d(d2u({b1}) {fx})')
+            fx = {'ps_neg': 'fneg_d', 'ps_abs': 'fabs_d', 'ps_nabs': 'fnabs_d'}[d]
+            two = (f'{fx}({b0})', f'{fx}({b1})')
         elif d == 'ps_sel':
             two = (f'fsel({a0}, {c0}, {b0})', f'fsel({a1}, {c1}, {b1})')
         elif d in ('ps_res', 'ps_rsqrte'):

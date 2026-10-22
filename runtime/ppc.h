@@ -46,6 +46,10 @@ extern u32 ram_wr[(RAM_MASK + 1) >> WR_PAGE_SHIFT];
 extern u32 recomp_wr_epoch;
 #define WR_MARK(a) (ram_wr[((a) & RAM_MASK) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
 void recomp_mark_ram(u32 a, u32 n);   /* bulk writers */
+void recomp_gx_fifo_write(u32 v, int size); /* WGPIPE 0xCC008000 */
+/* hw_write for an address GCC knows: WGPIPE stores (GXPosition3f32 & co. inlined in game code, lis
+ * 0xCC01 / -0x8000) call the FIFO directly, as hw_write would */
+#define HW_WRITE(a, v, n) ((__builtin_constant_p(a) && ((a) & ~7u) == 0xCC008000u) ? recomp_gx_fifo_write(v, n) : hw_write(a, v, n))
 
 /* forced inline: in gen/'s large functions GCC stopped inlining these (37.5k out-of-line calls) */
 #define RI static inline __attribute__((always_inline))
@@ -53,9 +57,9 @@ RI u8  rd8 (u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,1); retur
 RI u16 rd16(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,2); u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
 RI u32 rd32(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,4); u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
 RI u64 rd64(u32 a){ return ((u64)rd32(a) << 32) | rd32(a + 4); }
-RI void wr8 (u32 a, u8 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,1); return; } WR_MARK(a); ram[a & RAM_MASK] = v; }
-RI void wr16(u32 a, u16 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,2); return; } WR_MARK(a); v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
-RI void wr32(u32 a, u32 v){ if (__builtin_expect(IS_HW(a),0)) { hw_write(a,v,4); return; } WR_MARK(a); v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
+RI void wr8 (u32 a, u8 v){ if (__builtin_expect(IS_HW(a),0)) { HW_WRITE(a,v,1); return; } WR_MARK(a); ram[a & RAM_MASK] = v; }
+RI void wr16(u32 a, u16 v){ if (__builtin_expect(IS_HW(a),0)) { HW_WRITE(a,v,2); return; } WR_MARK(a); v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
+RI void wr32(u32 a, u32 v){ if (__builtin_expect(IS_HW(a),0)) { HW_WRITE(a,v,4); return; } WR_MARK(a); v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
 RI void wr64(u32 a, u64 v){ wr32(a, (u32)(v >> 32)); wr32(a + 4, (u32)v); }
 
 /* r1-relative (stack) accesses never reach hardware registers: no IS_HW check */
@@ -141,6 +145,12 @@ static inline void set_xer(u32 v){ cpu.xer_so = v >> 31; cpu.xer_ov = (v >> 30) 
 static inline double fsgl(double d){ return (double)(float)d; }
 static inline double f25(double d){ u64 b = d2u(d); b = (b & 0xFFFFFFFFF8000000ull) + (b & 0x8000000ull); return u2d(b); }
 static inline double fnoneg(double d){ return isnan(d) ? d : -d; }
+/* fneg/fabs/fnabs (and ps_): the sign bit only. -d and fabs() are VNEG/VABS on ARM, which change only
+ * the sign bit (no NaN processing, no flush-to-zero), and stay in VFP registers; the integer form
+ * (d2u ^ sign) went through core registers and the C stack. */
+RI double fneg_d(double d){ return -d; }
+RI double fabs_d(double d){ return __builtin_fabs(d); }
+RI double fnabs_d(double d){ return -__builtin_fabs(d); }
 /* fctiw/fctiwz result bits (Dolphin): saturated to s32, NaN -> 0x80000000, -0 quirk in the upper
  * word. ARM: vcvt (toward zero) / vcvtr (FPSCR mode, nearest like rint) saturate the same way and
  * give 0 for NaN, so only NaN is special-cased; was libm trunc + an out-of-line call per site. */
