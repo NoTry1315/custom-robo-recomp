@@ -256,6 +256,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   51.2 fps (85%, gpu 12.2 ms, GX thread busy 18.0 of 19.5); Vs. battle 4.2 45.3 fps (76%, game CPU 18.1 ms,
   CPU-bound; mostly campaign battles, which have more models/pods/effects than run 25's 1-v-1 Vs. arena; the user
   saw the 1-v-1 arena run better); menus/pause ~60. Next: battle game CPU.
+- -O3 / LTO (2026-10-22): Makefile `GENOPT=-O3` (gen/ only) and `LTO=1`, both off by default. Citra battle 4.2
+  game 19.96 ms at -O2; -O3 19.94 (+9% code), LTO 19.66 (-1.5%, +2% code), -O3 + LTO 19.66 (+35% code), LTO +
+  -fipa-pta 19.76; logs and fb dumps identical. Below the 2% bar, so not default; LTO is a hardware A/B candidate.
+  Details: unknowns "-O3 and LTO".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
