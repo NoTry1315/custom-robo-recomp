@@ -774,6 +774,8 @@ reader). Design:
 
 ## Bottom-screen menu (2026-10-22)
 
+**Buttons removed** (clean build 2026-10-22, user request): no touch input and no ZL toggle; the build id, flags, stats and messages layout stays.
+
 - Replaces the scrolling console + "tap a half" toggles (`runtime/menu.c`; the "Bottom-screen stats"
   section above is the old layout). 40x30 cells of 8x8 px:
   row 0 build id; rows 1-2 sdmc flag files present at boot (cr_ dropped); rows 4-12 stats, one metric
@@ -1258,6 +1260,8 @@ Not done (by the counts above):
 
 ## Cull mode (2026-10-22)
 
+**Now always on** (clean build 2026-10-22): cr_cull_off.txt and the runtime toggle were removed after hardware run 26.
+
 GXSetCullMode was ignored (C3D_CullFace(GPU_CULL_NONE) always, "cull mode 2 drawn without
 culling" in every run). `setup_pixel` now maps GX 2 (back) -> GPU_CULL_FRONT_CCW and GX 1 (front)
 -> GPU_CULL_BACK_CCW. The opposite pairing (the first try) culled the visible faces, which blanked
@@ -1277,6 +1281,8 @@ culling would do. This has not yet been checked against Dolphin. Battle draw cal
 Campaign draw calls are about the same (82 -> 83). Not yet on hardware.
 
 ## Texture mipmaps and lossless formats (2026-10-22)
+
+**Now always on** (clean build 2026-10-22): cr_mip_off.txt, cr_texfmt_off.txt, cr_tex_fliptest.txt and the toggles were removed.
 
 `runtime/gx.c` texture path: mip chains are uploaded when the GX texmap asks for them (min filter
 NEAR/LIN_MIP_*, levels = (max_lod + 15) / 16 + 1 as Dolphin, capped at 1x1 on the GX side and 8x8 on

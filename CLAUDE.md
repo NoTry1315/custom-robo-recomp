@@ -246,6 +246,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   42.4 -> 44.4 fps (game 12.3 -> 5.5 ms, gx wait 10.7 -> 16.5, gpu ~19 ms: now GPU-bound); pause 40 -> 56 fps;
   movie 9 -> 13.9 fps. Merged to main 2026-10-22 with audio pacing (touch: right half GX thread, left half audio);
   that merged build is not yet on hardware. Next: campaign GPU (fill vs vertex), battle game CPU.
+- Campaign GPU (2026-10-22): GXSetCullMode honoured (was always off; P1/P2 marker hexagons now show their
+  emblem), texture mip chains (inert: the game uses none) and lossless 16-bit PICA texture formats, all always on.
+  Vertex shader variants were tried and reverted (GPU hang at the first draw on New 3DS; fine in Citra). Bottom
+  screen: build id, flags, fixed stats rows, messages; no touch buttons, no ZL toggle. Hardware run 26 (vsh single):
+  campaign 8.3 44.4 -> 52.1 fps (74 -> 87%), gpu 18.9 -> 15.6 ms; cull off in the same run 46.6 fps (2 windows).
+  Log logs/cr_autotest_2026-10-22_hw-run26-campaign-gpu-vsh-single.log. Details: unknowns "Cull mode", "Texture mipmaps".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
