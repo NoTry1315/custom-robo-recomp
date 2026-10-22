@@ -306,7 +306,7 @@ static void frame_begin(void) {
 static u32 st_draws, st_tris, st_tex, st_evict, st_upload, st_upbytes, st_split;
 volatile u32 recomp_gx_stat[4];
 static RecursiveLock lin_lock;   /* below, at the linearAlloc wrappers */
-static u32 st_dl_calls, st_dl_prims, st_dl_hits, st_dl_misses, st_dl_slow;
+static u32 st_dl_calls, st_dl_prims, st_dl_hits, st_dl_misses, st_dl_slow, pm_hits, pm_misses;
 static void fb_dump(void);
 
 static int in_draw;
@@ -329,14 +329,14 @@ static void frame_end(void) {
                    (unsigned long)vring.evicted, (unsigned long)iring.evicted, (unsigned long)vring.fails, (unsigned long)iring.fails, (unsigned long)(linearSpaceFree() >> 10));
     }
     if (frames % 300 == 0)
-        recomp_log("# gx dl frame %lu: calls %lu prims %lu (%lu per call) cache hits %lu misses %lu slow %lu\n", (unsigned long)frames,
+        recomp_log("# gx dl frame %lu: calls %lu prims %lu (%lu per call) cache hits %lu misses %lu slow %lu, plan memo hits %lu misses %lu\n", (unsigned long)frames,
                    (unsigned long)st_dl_calls, (unsigned long)st_dl_prims, st_dl_calls ? (unsigned long)(st_dl_prims / st_dl_calls) : 0ul,
-                   (unsigned long)st_dl_hits, (unsigned long)st_dl_misses, (unsigned long)st_dl_slow);
+                   (unsigned long)st_dl_hits, (unsigned long)st_dl_misses, (unsigned long)st_dl_slow, (unsigned long)pm_hits, (unsigned long)pm_misses);
     /* running totals for the bottom-screen stats (log.c reads them on the game thread); linear free under lin_lock */
     recomp_gx_stat[1] += st_draws; recomp_gx_stat[2] += st_tris; __dmb(); recomp_gx_stat[0]++;
     if (recomp_gx_stat[0] % 60 == 0) { RecursiveLock_Lock(&lin_lock); recomp_gx_stat[3] = linearSpaceFree(); RecursiveLock_Unlock(&lin_lock); }
     vc_hits = vc_misses = 0;
-    st_dl_calls = st_dl_prims = st_dl_hits = st_dl_misses = st_dl_slow = 0;
+    st_dl_calls = st_dl_prims = st_dl_hits = st_dl_misses = st_dl_slow = pm_hits = pm_misses = 0;
     st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = st_merged = st_kick_cap = 0;
     /* a frame with no draws still shows the clear color (frame_begin above) */
     pend_flush();
@@ -1378,6 +1378,46 @@ static u32 plan_sig(const APlan *pl, int np, int vs, const PVtx *tm) {
     return h;
 }
 
+/* Display-list draws: the trimmed, finished plan, template vertex and signature memoised on
+ * everything make_plan, trim_plan, plan_finish and the signature read (vertex format of the
+ * attributes present, array base/stride of the indexed ones, current matrix, material sources,
+ * texgen sources), compared in full on a hit. A position matrix row that is not a PNMTXn is
+ * never memoised (plan_finish logs it per call). */
+typedef struct {
+    u8 desc[21], fmt; s8 tsrc[3]; u8 mv[4], mr[4]; VtxFmt vat[12];
+    u32 cur_mtx, base[12], stride[12];
+} PlanKey;
+#define PM_N 256
+#define PM_MAX 8   /* trimmed plans hold PNMTXIDX, POS, NRM, CLR0 and texcoords feeding 3 units */
+typedef struct { PlanKey k; u32 valid, sig, vs, np; APlan pl[PM_MAX]; PVtx tm; } PlanMemo;
+static PlanMemo pmemo[PM_N];
+/* NULL: build it per call (not memoised) */
+static const PlanMemo *plan_get(int fmt, const s8 tsrc[3]) {
+    if (gx.cur_mtx % 3 || gx.cur_mtx >= 30) return NULL;
+    PlanKey k;
+    memset(&k, 0, sizeof k);
+    memcpy(k.desc, gx.desc, 21); k.fmt = (u8)fmt; memcpy(k.tsrc, tsrc, 3);
+    memcpy(k.mv, mat_vtx, 4); memcpy(k.mr, mat_reg, 4); k.cur_mtx = gx.cur_mtx;
+    for (int a = A_POS; a <= 20; a++) {
+        if (!gx.desc[a]) continue;
+        k.vat[a - A_POS] = gx.vat[fmt][a];
+        if (gx.desc[a] >= 2) { k.base[a - A_POS] = gx.array_base[a - A_POS]; k.stride[a - A_POS] = gx.array_stride[a - A_POS]; }
+    }
+    PlanMemo *m = &pmemo[hash_mem((const u8 *)&k, sizeof k, 0x811c9dc5u) & (PM_N - 1)];
+    if (m->valid && !memcmp(&m->k, &k, sizeof k)) { pm_hits++; return m; }
+    pm_misses++;
+    APlan pl[21];
+    int vs, np = make_plan(fmt, pl, &vs);
+    np = trim_plan(pl, np, tsrc);
+    if (np > PM_MAX) return NULL;
+    m->valid = 0;
+    plan_finish(pl, np, &m->tm);
+    m->sig = plan_sig(pl, np, vs, &m->tm) ^ ((u32)fmt << 28 | (u32)mat_vtx[0] | (u32)mat_vtx[3] << 1) * 0x85ebca6bu;
+    memcpy(m->pl, pl, np * sizeof *pl);
+    m->np = np; m->vs = vs; m->k = k; m->valid = 1;
+    return m;
+}
+
 /* Each vertex array (base address) is hashed once per frame over the extent
  * any cached draw read from it (a larger extent rehashes, invalidating older
  * entries once). Assumes the game does not rewrite a vertex array between
@@ -1502,6 +1542,7 @@ static void set_clip(void) {
 }
 
 static u32 xf_gen = 1;   /* bumped on every XF matrix write */
+static u32 xf_row_gen[0x180];   /* xf_gen of the last write per XF row (4 floats; load_mtx) */
 static u32 light_gen = 1;   /* bumped on every GXLoadLightObjImm */
 
 /* rows of the posm / nrmm uniforms written since their last upload (load_mtx,
@@ -1527,13 +1568,19 @@ static void set_mtx(int lit) {
 
 /* texgen for PICA unit u: rows R0, R1, R2 with (s, t) = (R0.x / R2.x, R1.x / R2.x) */
 static void set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3], const u8 *v0, const APlan *pl, int np) {
-    struct { float tscale[3][2]; int tcoord[3]; u32 n, xf; TexGen g[8]; } key;
+    struct { float tscale[3][2]; int tcoord[3]; u32 n, xf[3][3]; TexGen g[8]; } key;
     static u8 last[sizeof key]; static int valid; static s8 last_src[3];
     int per_vtx = 0;
     for (int u = 0; u < 3; u++) if (tcoord[u] >= 0 && tcoord[u] < 8 && gx.desc[1 + tcoord[u]]) per_vtx = 1;
     memset(&key, 0, sizeof key);
     memcpy(key.tscale, tscale, sizeof key.tscale); memcpy(key.tcoord, tcoord, sizeof key.tcoord);
-    key.n = gx.n_texgens; key.xf = xf_gen;
+    key.n = gx.n_texgens;
+    for (int u = 0; u < 3; u++) {   /* the matrix rows read below (was: any matrix write since) */
+        int tci = tcoord[u];
+        if (tci < 0 || tci >= (int)gx.n_texgens) continue;
+        const TexGen *g = &gx.texgen[tci];
+        if (g->func <= 1 && g->mtx != 60) for (int r = 0; r < 3; r++) key.xf[u][r] = xf_row_gen[(g->mtx & 63) + r];
+    }
     for (int i = 0; i < 8; i++) { key.g[i].func = gx.texgen[i].func; key.g[i].src = gx.texgen[i].src; key.g[i].normalize = gx.texgen[i].normalize; key.g[i].mtx = gx.texgen[i].mtx; }
     if (per_vtx) valid = 0;   /* reads the first vertex */
     else if (same_inputs(last, &valid, &key, sizeof key)) { memcpy(tsrc, last_src, 3); return; }
@@ -1843,11 +1890,17 @@ static int dl_draw(const u8 *list, u32 len) {
     set_texgen(tscale, tcoord, tsrc, NULL, NULL, 0);   /* no per-vertex texture matrix here: the plan is not read */
     t_mark2(PROF_GX_VTX, PROF_VX_UNIF);
     APlan pl[21];
-    int vs, np = make_plan(fmt, pl, &vs);
-    np = trim_plan(pl, np, tsrc);
     PVtx tm;
-    plan_finish(pl, np, &tm);
-    u32 sig = plan_sig(pl, np, vs, &tm) ^ ((u32)fmt << 28 | (u32)mat_vtx[0] | (u32)mat_vtx[3] << 1) * 0x85ebca6bu;
+    int vs, np;
+    u32 sig;
+    const PlanMemo *pm = plan_get(fmt, tsrc);
+    if (pm) { vs = pm->vs; np = pm->np; sig = pm->sig; }   /* pl and tm are copied on a miss (decode) */
+    else {
+        np = make_plan(fmt, pl, &vs);
+        np = trim_plan(pl, np, tsrc);
+        plan_finish(pl, np, &tm);
+        sig = plan_sig(pl, np, vs, &tm) ^ ((u32)fmt << 28 | (u32)mat_vtx[0] | (u32)mat_vtx[3] << 1) * 0x85ebca6bu;
+    }
     u32 slot = (gofs(list) * 0x9e3779b1u ^ sig ^ len * 0x85ebca6bu) >> 19 & (DL_N - 1);
     DlCache *set = &dlcache[slot & ~(CACHE_WAYS - 1u)], *e = NULL, *v = set;
     for (int i = 0; i < CACHE_WAYS; i++) {
@@ -1877,6 +1930,7 @@ static int dl_draw(const u8 *list, u32 len) {
         dl_log_miss(list, len, why, same ? e : NULL);
         e->gen = 0;
         ring_detach(&vring, &e->vrec); ring_detach(&iring, &e->irec);
+        if (pm) { memcpy(pl, pm->pl, np * sizeof *pl); tm = pm->tm; }   /* decode updates imax: a copy (memoised at 0) */
         u32 ep = epoch_now();   /* before the list and arrays are read for the entry */
         /* walk: one vertex format, triangle primitives and NOPs only */
         u32 pos = p0, nv = 0, nix = 0, slow = 0;
@@ -2341,6 +2395,7 @@ static void x_load_mtx(const u32 *p) {
     u32 addr = p[0]; int rows = p[1], cols = p[2];
     xf_gen++;
     for (u32 r = addr / 4; r <= (addr + rows * cols - 1) / 4 && r < 30; r++) pos_dirty |= 1u << r;
+    for (u32 r = addr / 4; r <= (addr + rows * cols - 1) / 4 && r < 0x180; r++) xf_row_gen[r] = xf_gen;
     for (int r = 0; r < rows; r++) for (int c = 0; c < cols; c++)
         if (addr + r * cols + c < 0x600) gx.xf[addr + r * cols + c] = u2f(p[3 + r * cols + c]);
 }
