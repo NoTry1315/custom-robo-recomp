@@ -256,6 +256,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   51.2 fps (85%, gpu 12.2 ms, GX thread busy 18.0 of 19.5); Vs. battle 4.2 45.3 fps (76%, game CPU 18.1 ms,
   CPU-bound; mostly campaign battles, which have more models/pods/effects than run 25's 1-v-1 Vs. arena; the user
   saw the 1-v-1 arena run better); menus/pause ~60. Next: battle game CPU.
+- FPSCR (2026-10-22): boot log `# fpscr:` shows 03000000 (FZ+DN = RunFast, nearest, no traps) on game and
+  GX threads in Citra, so flush-to-zero was already on; sdmc:/cr_runfast.txt (sets FZ+DN) is a no-op there,
+  logs identical, game ms unchanged. The game never sets FPSCR[NI], so flushing deviates from Dolphin (open,
+  unknowns top). Flag file only (no bottom-screen buttons). Hardware boot value not yet read.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

@@ -2228,6 +2228,7 @@ static void gq_regs(GqFn fn, u32 n) { u32 *p = gq_begin(fn, n, GQ_REGS); memcpy(
 static void gx_thread(void *arg) {
     (void)arg;
     recomp_thread_crash_log();
+    recomp_log("# fpscr: gx thread %08lx\n", recomp_fpscr());
     u32 r = 0;
     while (!gq_quit) {
         u32 w = gq_w;
