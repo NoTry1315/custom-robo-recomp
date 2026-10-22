@@ -1217,6 +1217,43 @@ Not done (by the counts above):
 - Title/menus unchanged at ~60 fps.
 - Not covered: the main merge with audio pacing (8edc577) has not been run on hardware.
 
+## Vertex shader variants (2026-10-22)
+
+- One PICA program ran every path (`runtime/vshader.v.pica`: lighting behind `ifu blit`, three
+  projective texgens always). Now 14 variants (`tools/gen_vsh.py` -> `runtime/vsh/*.v.pica`, generated,
+  committed): lit or unlit x 0-3 texture units, all affine (`dp4` s/t only) or all projective. picasso
+  links them with the single shader into one SHBIN (Makefile rule for vshader.shbin), so a switch resends
+  operand descriptors / entry point, not the code. Chosen per draw in gx.c (`vsh_variant`: lit from
+  set_lighting, units from setup_draw_state, projective = a texm q row other than (0, 0, 0, 1), from
+  set_texgen); a switch flushes the pending draw, so batching never merges across programs.
+- picasso 2.7.2 limits: uniform and `.constf` registers are allocated across all linked files (past 96 it
+  fails, or segfaults), names stay per file, procs are global. So variants declare no uniforms: they read
+  the single shader's registers (`.alias u c0` + offsets, `k` = c95, loop count i0); gx.c checks the
+  locations at init (mismatch -> logged, single shader only) and keeps k loaded at c95 from the single
+  DVLE's constant bits. libctru returns int uniform locations as register - 0x10 (iloop = 0x60).
+- Executed instructions per vertex (single -> variant): position 11 -> 8 (`dph` instead of mov w=1 + dp4);
+  colour unlit 4+2 (mov amb, ifu) -> 2 (clamp of amb dropped: amb is in [0, 1]); per affine texture unit
+  5 -> 2, unused units 5 -> 0. Totals: unlit no texture 33 -> 11, unlit 1 unit 33 -> 13, unlit 2 units
+  projective 33 -> 21; lit with n lights 40 + 23n -> 22 + 23n plus 2 per affine unit (1 light, 1 unit:
+  63 -> 47). Lit stays dominated by the light loop (23 per light).
+- Draw mix (draws / indices per frame, Citra replays): campaign 8.3 (pause-ok r1500-2100): l1t1 924/47844,
+  l0t0 233/10233, l0t1 100/4482 = 77% of indices lit + 1 affine unit; 7 program switches per frame,
+  81 draw calls (82 single). Battle (r3000-3300): l0t0 1123/41556, l1t2 938/21744, l1t2p 7/8862, l0t1
+  78/2550, l1t0 16/3600, others small; 15 switches per frame. Light counts per draw not logged.
+- Attributes: still 68 bytes and 6 attributes per vertex for every program (pos f32x4, colour u8x4, normal
+  f32x3, 3 x tc f32x3); unlit/untextured programs ignore normal/tc but the loader still fetches them. No
+  smaller type is exact for positions/normals/tc. A per-program loader (BufInfo padding) is not done.
+- Check (Citra, `tools/citra/replay.ps1`, variants vs `cr_vsh_single.txt`): SDK lines (minus
+  OSTicksToCalendarTime) and scene/pad lines identical for campaign (2232 / 546 lines) and battle
+  (2371 / 152); framebuffer dumps campaign r1500/1980/2300 and battle r2100/2700/3300 byte-identical.
+  Citra fps unchanged (host GPU: no signal). Logs not in git (logs/vsh/ in the worktree). Not yet on
+  hardware; hardware rcp(1.0) may not be exactly 1, so affine texcoords can differ from the single
+  shader's by ~1 ulp there (GX does not divide 2x4 texgen either).
+- Flag: sdmc:/cr_vsh_single.txt = start value; `recomp_vsh_single_req` (0/1, any thread) switches at the
+  next GX frame, logged "# gx r<n>: vsh single on|off"; `# time .. split` says "vsh variants|single|mixed,
+  N program switches per frame"; `# gx vsh frame N` (every 300) gives draws/indices per program. Runtime
+  toggle not exercised yet.
+
 <!-- generated -->
 ## Cull mode (2026-10-22)
 
