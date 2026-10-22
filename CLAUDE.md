@@ -240,6 +240,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   checked against Dolphin). `# time .. split` ends with draw calls / indices per frame (Citra: campaign
   60 / 55.7k, battle 69 / 63.4k). sdmc:/cr_gpu_quarter.txt clips drawing to the centre quarter: if gpu ms
   drops ~4x on hardware the frame is fill-bound, else vertex-bound. Not yet on hardware.
+- Hardware run 25 (2026-10-22, task/2026-10-22-perf-test@bcd754a = codegen-inline, model-scaling, gx-dl-path,
+  call-glue; log logs/cr_autotest_2026-10-22_hw-run25-perf-branches.log; vs run 24 GX thread, `tools/time_avg.py`,
+  hand-played so noisy): battle 47.9 -> 54.2 fps (80 -> 90% speed, game 19.1 -> 16.1 ms, still CPU-bound); campaign
+  42.4 -> 44.4 fps (game 12.3 -> 5.5 ms, gx wait 10.7 -> 16.5, gpu ~19 ms: now GPU-bound); pause 40 -> 56 fps;
+  movie 9 -> 13.9 fps. Merged to main 2026-10-22 with audio pacing (touch: right half GX thread, left half audio);
+  that merged build is not yet on hardware. Next: campaign GPU (fill vs vertex), battle game CPU.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
