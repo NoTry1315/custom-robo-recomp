@@ -52,7 +52,7 @@ int main(void) {
         printf("build %s\n", RECOMP_BUILD);
         recomp_log("# build %s\n", RECOMP_BUILD);
         /* sdmc flag files present at boot, so a hardware run shows what it tested */
-        static const char *const flags[] = { "cr_gxthread_off", "cr_gxthread_fliptest", "cr_batch_off", "cr_dlcache_off", "cr_dlclean_off", "cr_gpukick_off",
+        static const char *const flags[] = { "cr_gxthread_off", "cr_gxthread_fliptest", "cr_batch_off", "cr_dlcache_off", "cr_dlclean_off", "cr_gpukick_off", "cr_cull_off",
             "cr_mtx_off", "cr_vsync_on", "cr_dvdasync_off", "cr_dvd_stalltest", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_audio_rt_off", "cr_audio_rt_on", "cr_pad_script", "cr_pad_replay" };
         int nf = 0;
         printf("flags:");

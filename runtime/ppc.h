@@ -353,6 +353,9 @@ void recomp_status_row(int row, const char *s);   /* fixed row 0..RECOMP_STATUS_
 extern volatile u32 recomp_gx_stat[4];  /* GX frames, draws, triangles (running totals), linear heap free (bytes); written by whoever runs GX */
 extern u32 recomp_dvd_slow_n, recomp_dvd_late_n;   /* dvd.c */
 void recomp_gx_kick_toggle(void);      /* ZL: mid-frame GPU submit on/off from the next frame */
+extern int recomp_gx_cull_off;         /* sdmc:/cr_cull_off.txt: GXSetCullMode ignored */
+void recomp_gx_cull_toggle(void);      /* flips recomp_gx_cull_off at the next frame start */
+extern u32 recomp_gx_cull_flips;
 extern int recomp_gx_kick_on;          /* mid-frame GPU submit mode now (for the # time lines) */
 extern u32 recomp_gx_kick_flips;       /* ZL toggles so far */
 extern u32 recomp_gx_dbg[3];           /* last draw: gpucmd offset at entry, prim, vertex count */

@@ -143,6 +143,11 @@ static int scissor_lost = 1;   /* C3D_FrameDrawOn -> C3D_SetViewport disables th
 static u16 *pend_ix;
 static u16 *last_end;   /* end of the previous draw's indices; NULL after a state change */
 static u32 pend_n, st_merged, batch_off;   /* batch_off: read in recomp_gx_start */
+int recomp_gx_cull_off;   /* sdmc:/cr_cull_off.txt (setup_pixel), read in recomp_gx_start */
+#define cull_off recomp_gx_cull_off
+static volatile int cull_req;   /* recomp_gx_cull_toggle (bottom-screen menu), applied by frame_begin */
+void recomp_gx_cull_toggle(void) { cull_req = 1; }
+u32 recomp_gx_cull_flips;
 static void pend_issue(void) {
     if (!pend_n) return;
     C3D_DrawElements(GPU_TRIANGLES, pend_n, C3D_UNSIGNED_SHORT, pend_ix);
@@ -278,6 +283,8 @@ static void frame_begin(void) {
     recomp_gx_kick_on = !kick_off;
     if (kick_req) { kick_req = 0; kick_off ^= 1; recomp_gx_kick_on = !kick_off; recomp_gx_kick_flips++;   /* ZL (runtime/pad.c), applied between frames */
         recomp_log("# gx r%lu: mid-frame GPU submit %s (ZL)\n", (unsigned long)recomp_retrace_count(), kick_off ? "off" : "on"); }   /* bottom screen: status_draw */
+    if (cull_req) { cull_req = 0; cull_off ^= 1; recomp_gx_cull_flips++;
+        recomp_log("# gx r%lu: cull %s\n", (unsigned long)recomp_retrace_count(), cull_off ? "off" : "on"); }
     u64 ts = recomp_ticks();
     if (!vsync_on && C3D_FrameCounter(0) == last_vbl) C3D_FrameSync();
     if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
@@ -1030,8 +1037,15 @@ static void setup_pixel(void) {
     else if (ac[3] != 7) { af = test_func(ac[3]); ar = ac[4]; }
     else at = 0;
     SET_IF_CHANGED(C3D_AlphaTest(at, (GPU_TESTFUNC)af, ar), at, af, ar);
-    SET_IF_CHANGED(C3D_CullFace(GPU_CULL_NONE), 0);
-    if (gx.cull) ONCE("cull mode %d drawn without culling\n", gx.cull);
+    /* GX cull 1 front / 2 back, front = clockwise in window space (y down). set_clip
+     * maps window space to PICA clip space with a mirror (det < 0); the mapping below
+     * was checked with framebuffer dumps (unknowns "Cull mode"). 3 (all) has no PICA
+     * mode: drawn unculled, logged. sdmc:/cr_cull_off.txt = never cull (old behaviour). */
+    GPU_CULLMODE cm = GPU_CULL_NONE;
+    if (!cull_off && gx.cull == 1) cm = GPU_CULL_BACK_CCW;
+    else if (!cull_off && gx.cull == 2) cm = GPU_CULL_FRONT_CCW;
+    else if (gx.cull == 3) ONCE("cull mode 3 (all) drawn without culling\n");
+    SET_IF_CHANGED(C3D_CullFace(cm), cm);
     /* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated) */
     static s32 sk[8]; static int sk_valid;
     const s32 cur[8] = {(s32)gx.sc[0], (s32)gx.sc[1], (s32)gx.sc[2], (s32)gx.sc[3], (s32)gx.sc_off[0], (s32)gx.sc_off[1], (s32)gx.efb_w, (s32)gx.efb_h};
@@ -2195,6 +2209,7 @@ void recomp_gx_start(void) {
     batch_off = flag_file("cr_batch_off");
     dl_off = flag_file("cr_dlcache_off");
     dl_clean_off = flag_file("cr_dlclean_off");
+    cull_off = flag_file("cr_cull_off");
     if (flag_file("cr_vcache_small")) {   /* test: rings at 5/8 so that replays evict (ring_alloc) */
         vring.size = VC_VERTS / 8 * 5; iring.size = VC_IXN / 8 * 5;
         recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu vertices, %lu indices\n", (unsigned long)vring.size, (unsigned long)iring.size);
@@ -2209,6 +2224,7 @@ void recomp_gx_start(void) {
     recomp_log("# gx: draw batching %s\n", batch_off ? "off (cr_batch_off.txt)" : "on");
     recomp_log("# gx: display-list cache %s\n", dl_off ? "off (cr_dlcache_off.txt)" : "on");
     recomp_log("# gx: display-list write tracking %s\n", dl_clean_off ? "off (cr_dlclean_off.txt)" : "on");
+    recomp_log("# gx: cull mode %s\n", cull_off ? "ignored (cr_cull_off.txt)" : "honoured");
     if (fbd) recomp_log("# gx: framebuffer dump at %lu frames\n", (unsigned long)nwant);
     int off = flag_file("cr_gxthread_off");   /* only the starting mode: the thread exists either way */
     gq_fliptest = flag_file("cr_gxthread_fliptest");
