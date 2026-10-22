@@ -75,6 +75,12 @@ $(OFILES_SRC)	:	$(HFILES)
 # 3dsx format cannot relocate (tools/check_3dsx.py, run after every build)
 recomp_%.o	:	CFLAGS += -fno-ivopts
 # vertex shaders: picasso, then embedded with bin2s (symbols <name>_shbin, _shbin_size)
+# vshader: the single shader (DVLE 0) plus the variants of tools/gen_vsh.py in one SHBIN
+VSH_VARIANTS := $(sort $(wildcard $(TOPDIR)/runtime/vsh/*.v.pica))
+vshader.shbin.o vshader_shbin.h &: vshader.v.pica $(VSH_VARIANTS)
+	@echo vshader.v.pica + $(words $(VSH_VARIANTS)) variants
+	@picasso -o vshader.shbin $^
+	@bin2s -a 4 -H vshader_shbin.h vshader.shbin | $(AS) -o vshader.shbin.o
 %.shbin.o %_shbin.h : %.v.pica
 	@echo $(notdir $<)
 	@picasso -o $*.shbin $<
