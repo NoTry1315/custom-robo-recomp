@@ -16,23 +16,84 @@
 #define MTX_K0    0x80451cb4u   /* 0.0f at r2-25836 (PSMTXIdentity/Trans/Scale/Transpose) */
 
 static inline double L(u32 a) { return u2f(rd32_ram(a)); }
-static inline void wrm(u32 a, u32 v) { WR_MARK(a); wr32_ram(a, v); }   /* matrices can live anywhere */
-static inline void S(u32 a, double v) { wrm(a, f2u((float)v)); }
+static inline float LF(u32 a) { return u2f(rd32_ram(a)); }
+static inline void wrm(u32 a, u32 v) { WR_MARK(a); wr32_ram(a, v); }   /* bench fills */
+#define S(a, v) wr32_ram((a), f2u((float)(v)))   /* no write mark: see MARK */
+/* write marks of the n-byte destination at a (n <= 1 KB, one page): its first and last word
+ * cover the pages of every word in it, the same marks as one WR_MARK per store */
+#define MARK(a, n) (WR_MARK(a), WR_MARK((a) + (n) - 4))
 
-/* selected mode: exactly the translated code's ops */
+/* selected mode: exactly the translated code's ops. With FLOATOPS every op is a float op
+ * whose double result is exact, so values stay float (no double round trips): add/sub of
+ * floats in double then rounded to float equals the float op (53 >= 2 * 24 + 2 bits). */
 #define MX(n) nat_##n
+#ifdef RECOMP_FLOATOPS
+static inline float F_ADD(float a, float b) { return a + b; }
+static inline float F_SUB(float a, float b) { return a - b; }
+static inline float F_MUL(float a, float c) { return a * c; }
+static inline float F_MADD(float a, float c, float b) { return a * c + b; }
+static inline float F_MSUB(float a, float c, float b) { return a * c - b; }
+#define MT float
+#define LD LF
+#define LDK LF
+#define ADD F_ADD
+#define SUB F_SUB
+#define MUL F_MUL
+#define MADD F_MADD
+#define MSUB F_MSUB
+#else
+#define MT double
+#define LD L
+#define LDK L
 #define ADD SADD
 #define SUB SSUB
 #define MUL SMUL
 #define MADD SMADD
 #define MSUB SMSUB
+#endif
 #include "mtx_impl.h"
 #undef MX
+#undef LD
+#undef S
+
+/* flat variant fp_: the same bodies on addresses already masked into ram[] (constants
+ * excepted, LDK) whose whole range lies inside it, so no mask per word. The wrappers below
+ * pick it when every range is flat (always, in practice: the game's matrices live in the
+ * 24 MB of real RAM), else nat_ (a range wrapping the end of the mirror). */
+#define MX(n) fp_##n
+#define LD(x) LF_FLAT(x)
+#define S(x, v) ({ u32 v_ = __builtin_bswap32(f2u((float)(v))); memcpy(ram + (x), &v_, 4); })
+static inline MT LF_FLAT(u32 x) { u32 v; memcpy(&v, ram + x, 4); return u2f(__builtin_bswap32(v)); }
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-function"
+#include "mtx_impl.h"
+#pragma GCC diagnostic pop
+#undef MX
+#undef LD
+#undef S
+#define S(a, v) wr32_ram((a), f2u((float)(v)))
+#undef MT
+#undef LDK
 #undef ADD
 #undef SUB
 #undef MUL
 #undef MADD
 #undef MSUB
+
+/* guest range [a, a+n) as one block of ram[] (no wrap at the end of the mirror) */
+static inline int flat(u32 a, u32 n) { return (a & RAM_MASK) <= RAM_MASK + 1 - n; }
+#define FL(a) ((a) & RAM_MASK)
+static void d_concat(u32 a, u32 b, u32 ab) {
+    if (flat(a, 48) && flat(b, 48) && flat(ab, 48)) fp_concat(FL(a), FL(b), FL(ab)); else nat_concat(a, b, ab);
+}
+static void d_multvec(u32 m, u32 s, u32 d) {
+    if (flat(m, 48) && flat(s, 12) && flat(d, 12)) fp_multvec(FL(m), FL(s), FL(d)); else nat_multvec(m, s, d);
+}
+static void d_multvecsr(u32 m, u32 s, u32 d) {
+    if (flat(m, 48) && flat(s, 12) && flat(d, 12)) fp_multvecsr(FL(m), FL(s), FL(d)); else nat_multvecsr(m, s, d);
+}
+static u32 d_invxpose(u32 m, u32 d) { return flat(m, 48) && flat(d, 48) ? fp_invxpose(FL(m), FL(d)) : nat_invxpose(m, d); }
+static u32 d_inverse(u32 m, u32 d) { return flat(m, 48) && flat(d, 48) ? fp_inverse(FL(m), FL(d)) : nat_inverse(m, d); }
 #ifdef RECOMP_FLOATOPS
 /* reference for the bench: default (double + fsgl/f25) rounding */
 static inline double E_ADD(double a, double b) { return fsgl(a + b); }
@@ -41,6 +102,9 @@ static inline double E_MUL(double a, double c) { return fsgl(a * f25(c)); }
 static inline double E_MADD(double a, double c, double b) { return fsgl(fmadd_s(a, f25(c), b)); }
 static inline double E_MSUB(double a, double c, double b) { return fsgl(fmadd_s(a, f25(c), -b)); }
 #define MX(n) ex_##n
+#define MT double
+#define LD L
+#define LDK L
 #define ADD E_ADD
 #define SUB E_SUB
 #define MUL E_MUL
@@ -53,6 +117,9 @@ static inline double E_MSUB(double a, double c, double b) { return fsgl(fmadd_s(
 #undef MUL
 #undef MADD
 #undef MSUB
+#undef MT
+#undef LD
+#undef LDK
 #endif
 
 static int mtx_off;
@@ -67,44 +134,55 @@ void f_8001e134(void);  /* gmtx_mul (game, scalar fmuls/fmadds): bench only */
 /* no arithmetic: stores of .sdata2 constants and arguments */
 static void nat_identity(u32 m) {
     u32 z = rd32_ram(MTX_K0), o = rd32_ram(MTX_K1);
-    for (int i = 0; i < 12; i++) wrm(m + 4 * i, (i % 5) ? z : o);
+    for (int i = 0; i < 12; i++) wr32_ram(m + 4 * i, (i % 5) ? z : o);
+    MARK(m, 48);
 }
 static void nat_copy(u32 s, u32 d) {
     if (s == d) return;
     u32 t[12];
     for (int i = 0; i < 12; i++) t[i] = rd32_ram(s + 4 * i);
-    for (int i = 0; i < 12; i++) wrm(d + 4 * i, t[i]);
+    for (int i = 0; i < 12; i++) wr32_ram(d + 4 * i, t[i]);
+    MARK(d, 48);
 }
 static void nat_transpose(u32 s, u32 d) {
     u32 t[9], z = rd32_ram(MTX_K0);
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++) t[3 * i + j] = rd32_ram(s + 16 * j + 4 * i);
     for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) wrm(d + 16 * i + 4 * j, t[3 * i + j]);
-        wrm(d + 16 * i + 12, z);
+        for (int j = 0; j < 3; j++) wr32_ram(d + 16 * i + 4 * j, t[3 * i + j]);
+        wr32_ram(d + 16 * i + 12, z);
     }
+    MARK(d, 48);
 }
 static void nat_trans(u32 m, double x, double y, double z) {
     u32 k0 = rd32_ram(MTX_K0), k1 = rd32_ram(MTX_K1);
-    for (int i = 0; i < 12; i++) wrm(m + 4 * i, (i % 5) ? k0 : k1);
+    for (int i = 0; i < 12; i++) wr32_ram(m + 4 * i, (i % 5) ? k0 : k1);
     S(m + 12, x); S(m + 28, y); S(m + 44, z);
+    MARK(m, 48);
 }
 static void nat_scale(u32 m, double x, double y, double z) {
     u32 k0 = rd32_ram(MTX_K0);
-    for (int i = 0; i < 12; i++) wrm(m + 4 * i, k0);
+    for (int i = 0; i < 12; i++) wr32_ram(m + 4 * i, k0);
     S(m, x); S(m + 20, y); S(m + 40, z);
+    MARK(m, 48);
 }
 
-#define WRAP(name, fn, body) void sdk_##name(void) { if (mtx_off) { fn(); return; } body; }
+#ifdef RECOMP_FNPROF
+void recomp_fnprof_native(const char *name);
+#define NATIVE_PROF(name) recomp_fnprof_native(name)
+#else
+#define NATIVE_PROF(name) ((void)0)
+#endif
+#define WRAP(name, fn, body) void sdk_##name(void) { NATIVE_PROF(#name); if (mtx_off) { fn(); return; } body; }
 WRAP(PSMTXIdentity, f_801394c4, nat_identity(R[3]))
 WRAP(PSMTXCopy, f_801394f0, nat_copy(R[3], R[4]))
-WRAP(PSMTXConcat, f_80139524, nat_concat(R[3], R[4], R[5]); R[6] = MTX_K01)  /* r6 as the guest leaves it (SDK logs) */
+WRAP(PSMTXConcat, f_80139524, d_concat(R[3], R[4], R[5]); R[6] = MTX_K01)  /* r6 as the guest leaves it (SDK logs) */
 WRAP(PSMTXTranspose, f_801395f0, nat_transpose(R[3], R[4]))
-WRAP(PSMTXInverse, f_80139640, R[3] = nat_inverse(R[3], R[4]))
-WRAP(PSMTXInvXpose, f_80139738, R[3] = nat_invxpose(R[3], R[4]))
+WRAP(PSMTXInverse, f_80139640, R[3] = d_inverse(R[3], R[4]))
+WRAP(PSMTXInvXpose, f_80139738, R[3] = d_invxpose(R[3], R[4]))
 WRAP(PSMTXTrans, f_80139a40, nat_trans(R[3], F[1].ps0, F[2].ps0, F[3].ps0))
 WRAP(PSMTXScale, f_80139a74, nat_scale(R[3], F[1].ps0, F[2].ps0, F[3].ps0))
-WRAP(PSMTXMultVec, f_80139eb4, nat_multvec(R[3], R[4], R[5]))
-WRAP(PSMTXMultVecSR, f_80139f08, nat_multvecsr(R[3], R[4], R[5]))
+WRAP(PSMTXMultVec, f_80139eb4, d_multvec(R[3], R[4], R[5]))
+WRAP(PSMTXMultVecSR, f_80139f08, d_multvecsr(R[3], R[4], R[5]))
 WRAP(PSVECAdd, f_8013a160, nat_vecadd(R[3], R[4], R[5]))
 WRAP(PSVECSubtract, f_8013a184, nat_vecsub(R[3], R[4], R[5]))
 WRAP(PSVECScale, f_8013a1a8, nat_vecscale(R[3], R[4], F[1].ps0))
@@ -162,16 +240,18 @@ static u32 run(int t, int mode) {
     }
 #ifdef RECOMP_FLOATOPS
 #define CALL(n, ...) (mode == 2 ? ex_##n(__VA_ARGS__) : nat_##n(__VA_ARGS__))
+#define CALLD(n, ...) (mode == 2 ? ex_##n(__VA_ARGS__) : d_##n(__VA_ARGS__))   /* as the game calls it */
 #else
 #define CALL(n, ...) nat_##n(__VA_ARGS__)
+#define CALLD(n, ...) d_##n(__VA_ARGS__)
 #endif
     u32 r = 0;
     switch (t) {
-    case T_CONCAT: CALL(concat, B_A, B_B, o); break;
-    case T_MULTVEC: CALL(multvec, B_A, B_B, o); break;
-    case T_MULTVECSR: CALL(multvecsr, B_A, B_B, o); break;
-    case T_INVXPOSE: r = CALL(invxpose, B_A, o); break;
-    case T_INVERSE: r = CALL(inverse, B_A, o); break;
+    case T_CONCAT: CALLD(concat, B_A, B_B, o); break;
+    case T_MULTVEC: CALLD(multvec, B_A, B_B, o); break;
+    case T_MULTVECSR: CALLD(multvecsr, B_A, B_B, o); break;
+    case T_INVXPOSE: r = CALLD(invxpose, B_A, o); break;
+    case T_INVERSE: r = CALLD(inverse, B_A, o); break;
     case T_NORM: CALL(vecnormalize, B_A, o); break;
     case T_DOT: CALL(vecdot, B_A, B_B); r = f2u((float)F[1].ps0); break;
     case T_CROSS: CALL(veccross, B_A, B_B, o); break;
