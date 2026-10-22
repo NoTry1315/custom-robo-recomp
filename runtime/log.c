@@ -126,8 +126,12 @@ void recomp_prof_frame(u32 retrace) {
     static u32 flips;   /* a window with a ZL toggle in it mixes both modes */
     const char *kick = recomp_gx_kick_flips != flips ? "mixed" : recomp_gx_kick_on ? "on" : "off";
     flips = recomp_gx_kick_flips;
-    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s\n",
-               (unsigned long)retrace, pre, frame - pre, gpu, span, kick);
+    static u32 aflips, aund, askip;   /* audio pacing: same for touch toggles */
+    const char *audio = recomp_ax_flips != aflips ? "mixed" : recomp_ax_rt ? "rt" : "retrace";
+    u32 und = recomp_ax_underruns - aund, skip = recomp_ax_skipped - askip;
+    aflips = recomp_ax_flips; aund = recomp_ax_underruns; askip = recomp_ax_skipped;
+    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s; audio %s (underruns %lu, skipped %lu)\n",
+               (unsigned long)retrace, pre, frame - pre, gpu, span, kick, audio, (unsigned long)und, (unsigned long)skip);
     if (retrace % 300 == 0) {
         double un = (recomp_prof[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (recomp_prof[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
         double dl = (recomp_prof[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;

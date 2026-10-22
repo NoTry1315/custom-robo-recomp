@@ -16,8 +16,13 @@ static u32 retrace, pre_cb, post_cb;
  * always writes one), which must end by itself: keep RUN_FRAMES or the script's
  * "<n> 0 0". Neither file = the user playing on hardware: no run length. */
 static int file_exists(const char *path) { FILE *f = fopen(path, "r"); if (f) fclose(f); return f != 0; }
+int recomp_autotest_run(void) {
+    static int at = -1;
+    if (at < 0) at = file_exists("sdmc:/cr_pad_script.txt") || file_exists("sdmc:/cr_pad_replay.txt");
+    return at;
+}
 static void run_length_init(void) {
-    if (!file_exists("sdmc:/cr_pad_script.txt") && !file_exists("sdmc:/cr_pad_replay.txt")) {
+    if (!recomp_autotest_run()) {
         recomp_run_frames = 0xffffffff;
         recomp_log("# run length: unlimited (no pad script or replay)\n");
     }

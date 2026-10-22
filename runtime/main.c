@@ -30,7 +30,7 @@ int main(void) {
         recomp_log("# build %s\n", RECOMP_BUILD);
         /* sdmc flag files present at boot, so a hardware run shows what it tested */
         static const char *const flags[] = { "cr_batch_off", "cr_dlcache_off", "cr_dlclean_off", "cr_gpukick_off",
-            "cr_mtx_off", "cr_vsync_on", "cr_dvdasync_off", "cr_dvd_stalltest", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_pad_script", "cr_pad_replay" };
+            "cr_mtx_off", "cr_vsync_on", "cr_dvdasync_off", "cr_dvd_stalltest", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_audio_rt_off", "cr_audio_rt_on", "cr_pad_script", "cr_pad_replay" };
         int nf = 0;
         printf("flags:");
         for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; i++) {
@@ -39,6 +39,7 @@ int main(void) {
             if (f) { fclose(f); printf(" %s", flags[i]); nf++; }
         }
         printf(nf ? "\n" : " none\n");
+        recomp_ax_pacing_init();   /* "audio real-time|per retrace" line */
         if (!setjmp(recomp_exit_jmp)) {
             f_80003154();
             recomp_done("__start returned");
