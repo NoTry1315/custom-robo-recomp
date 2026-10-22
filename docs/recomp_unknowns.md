@@ -772,6 +772,35 @@ reader). Design:
 - Citra replay of rec-to-battle (no card): SDK/pad/retrace lines and summary counts identical to the
   base build (only OSTicksToCalendarTime's wall-clock r4 differs, as before). Screenshot checked.
 
+## Bottom-screen menu (2026-10-22)
+
+**Buttons removed** (clean build 2026-10-22, user request): no touch input and no ZL toggle; the build id, flags, stats and messages layout stays.
+
+- Replaces the scrolling console + "tap a half" toggles (`runtime/menu.c`; the "Bottom-screen stats"
+  section above is the old layout). 40x30 cells of 8x8 px:
+  row 0 build id; rows 1-2 sdmc flag files present at boot (cr_ dropped); rows 4-12 stats, one metric
+  per row (fps+speed, frame ms+worst, game, gx wait+thread busy or gx inline+sync, vtx/tex/state parts,
+  gpu+draws/tris, audio+dvd wait, scene/sub/retrace, io counts + linear free), from log.c every
+  60-retrace `# time` window; rows 15-17 printf messages (libctru draws a console window one row above
+  its y, so the window is set at y 15 to land on 14-16); rows 18-29 a 2x4 grid of buttons, 19x2 cells
+  each: name, then ON (black on green) / OFF (white on red) / -- (unavailable or not bound).
+- Touch: PADRead hands a new touch (KEY_TOUCH down only) to `recomp_menu_touch`; it acts only inside
+  a button's cells, never in the gaps. ZL still toggles gpukick.
+- Adding a button: one line in `btn[]` (menu.c). Either get/toggle functions (the toggle is a request
+  the owner applies at a safe point: GX thread at recomp_gx_retrace, audio in recomp_ax_service,
+  gpukick in frame_begin; their own `# gx`/`# AX` log lines and # time "mixed" fields as before), or a
+  flag variable: the owner calls `recomp_menu_bind("cull", &cull_off, NULL)` once its flag file was
+  read (e.g. in recomp_gx_start). The menu flips the int at recomp_menu_retrace, which recomp_gx_retrace
+  calls after the GX-thread sync (no GX record in flight), logs `# menu r<n>: <name> on|off (touch)`,
+  then calls the optional `changed` callback (e.g. to drop a texture cache). `inv` = 1 in the table for
+  `_off` flags (button ON while the int is 0). Placeholders already in btn[]: cull (cr_cull_off),
+  mipmaps (cr_mip_off), tex formats (cr_texfmt_off), vsh single (cr_vsh_single); main.c's flags[] lists
+  those four flag files too. tools/time_avg.py drops a window with a `# menu` line in it.
+- Cost (Citra -Fast, rec-to-battle): `# status` 0.8-1.25 ms per stats update (worst 1.31), once a
+  second = ~0.02 ms per frame; buttons redraw only on a state change (a compare per button per
+  retrace). Replay vs main 9719c55: SDK/pad/scene lines, # time line count and fb dumps
+  (r2100/2700/3300) identical. Not yet on hardware.
+
 ## Codegen per guest instruction (2026-10-21)
 
 Battle is CPU-bound on the game thread with a flat profile, so these change what every translated
@@ -1189,6 +1218,104 @@ Not done (by the counts above):
   Whether the gpu increase vs run 24 is the build or the play is not checked.
 - Title/menus unchanged at ~60 fps.
 - Not covered: the main merge with audio pacing (8edc577) has not been run on hardware.
+
+## Vertex shader variants (2026-10-22, reverted)
+
+**Reverted:** on New 3DS hardware (run 26) the variants hang the GPU at the first draw that uses them (boot froze at frame 12; switching to them in campaign froze too). Citra did not show it. Cause not found; the single shader is the only path again. Notes kept for a later retry.
+
+- One PICA program ran every path (`runtime/vshader.v.pica`: lighting behind `ifu blit`, three
+  projective texgens always). Now 14 variants (`tools/gen_vsh.py` -> `runtime/vsh/*.v.pica`, generated,
+  committed): lit or unlit x 0-3 texture units, all affine (`dp4` s/t only) or all projective. picasso
+  links them with the single shader into one SHBIN (Makefile rule for vshader.shbin), so a switch resends
+  operand descriptors / entry point, not the code. Chosen per draw in gx.c (`vsh_variant`: lit from
+  set_lighting, units from setup_draw_state, projective = a texm q row other than (0, 0, 0, 1), from
+  set_texgen); a switch flushes the pending draw, so batching never merges across programs.
+- picasso 2.7.2 limits: uniform and `.constf` registers are allocated across all linked files (past 96 it
+  fails, or segfaults), names stay per file, procs are global. So variants declare no uniforms: they read
+  the single shader's registers (`.alias u c0` + offsets, `k` = c95, loop count i0); gx.c checks the
+  locations at init (mismatch -> logged, single shader only) and keeps k loaded at c95 from the single
+  DVLE's constant bits. libctru returns int uniform locations as register - 0x10 (iloop = 0x60).
+- Executed instructions per vertex (single -> variant): position 11 -> 8 (`dph` instead of mov w=1 + dp4);
+  colour unlit 4+2 (mov amb, ifu) -> 2 (clamp of amb dropped: amb is in [0, 1]); per affine texture unit
+  5 -> 2, unused units 5 -> 0. Totals: unlit no texture 33 -> 11, unlit 1 unit 33 -> 13, unlit 2 units
+  projective 33 -> 21; lit with n lights 40 + 23n -> 22 + 23n plus 2 per affine unit (1 light, 1 unit:
+  63 -> 47). Lit stays dominated by the light loop (23 per light).
+- Draw mix (draws / indices per frame, Citra replays): campaign 8.3 (pause-ok r1500-2100): l1t1 924/47844,
+  l0t0 233/10233, l0t1 100/4482 = 77% of indices lit + 1 affine unit; 7 program switches per frame,
+  81 draw calls (82 single). Battle (r3000-3300): l0t0 1123/41556, l1t2 938/21744, l1t2p 7/8862, l0t1
+  78/2550, l1t0 16/3600, others small; 15 switches per frame. Light counts per draw not logged.
+- Attributes: still 68 bytes and 6 attributes per vertex for every program (pos f32x4, colour u8x4, normal
+  f32x3, 3 x tc f32x3); unlit/untextured programs ignore normal/tc but the loader still fetches them. No
+  smaller type is exact for positions/normals/tc. A per-program loader (BufInfo padding) is not done.
+- Check (Citra, `tools/citra/replay.ps1`, variants vs `cr_vsh_single.txt`): SDK lines (minus
+  OSTicksToCalendarTime) and scene/pad lines identical for campaign (2232 / 546 lines) and battle
+  (2371 / 152); framebuffer dumps campaign r1500/1980/2300 and battle r2100/2700/3300 byte-identical.
+  Citra fps unchanged (host GPU: no signal). Logs not in git (logs/vsh/ in the worktree). Not yet on
+  hardware; hardware rcp(1.0) may not be exactly 1, so affine texcoords can differ from the single
+  shader's by ~1 ulp there (GX does not divide 2x4 texgen either).
+- Flag: sdmc:/cr_vsh_single.txt = start value; `recomp_vsh_single_req` (0/1, any thread) switches at the
+  next GX frame, logged "# gx r<n>: vsh single on|off"; `# time .. split` says "vsh variants|single|mixed,
+  N program switches per frame"; `# gx vsh frame N` (every 300) gives draws/indices per program. Runtime
+  toggle not exercised yet.
+
+## Cull mode (2026-10-22)
+
+**Now always on** (clean build 2026-10-22): cr_cull_off.txt and the runtime toggle were removed after hardware run 26.
+
+GXSetCullMode was ignored (C3D_CullFace(GPU_CULL_NONE) always, "cull mode 2 drawn without
+culling" in every run). `setup_pixel` now maps GX 2 (back) -> GPU_CULL_FRONT_CCW and GX 1 (front)
+-> GPU_CULL_BACK_CCW. The opposite pairing (the first try) culled the visible faces, which blanked
+most of the battle arena in the framebuffer dumps. That happens because set_clip mirrors window
+space. GX 3 (all) has no PICA mode, so it is drawn unculled with a ONCE log line; it has not shown up in
+the replays. sdmc:/cr_cull_off.txt = the old behaviour, as the start value. `recomp_gx_cull_toggle()`
+(ppc.h) flips it at the next frame start and logs "# gx r<n>: cull on|off"; the `# time .. split` line
+says "cull on|off|mixed".
+
+Citra replays (logs/cull, not committed), cull on vs cr_cull_off, and vs the pre-fix build: SDK, pad
+and scene lines are identical. The campaign fb dumps (r1500/1980/2300) are pixel-identical. The battle
+dumps (r2100/2700/3300) differ in 1.2k-8.5k pixels. With culling off, the P1/P2 marker hexagons are
+drawn as solid blue/red back faces over their emblem, and the back faces of the translucent arena
+cubes are blended in. With culling on, the emblems show and those back faces are gone, as GX
+culling would do. This has not yet been checked against Dolphin. Battle draw calls go up from 123 to
+165 per frame (indices are unchanged at 89.5k), because cull state changes split the merged batches.
+Campaign draw calls are about the same (82 -> 83). Not yet on hardware.
+
+## Texture mipmaps and lossless formats (2026-10-22)
+
+**Now always on** (clean build 2026-10-22): cr_mip_off.txt, cr_texfmt_off.txt, cr_tex_fliptest.txt and the toggles were removed.
+
+`runtime/gx.c` texture path: mip chains are uploaded when the GX texmap asks for them (min filter
+NEAR/LIN_MIP_*, levels = (max_lod + 15) / 16 + 1 as Dolphin, capped at 1x1 on the GX side and 8x8 on
+the PICA side; min/max LOD to whole PICA levels, bias as is). TexObj now keeps LOD fields like the SDK
+(mode1 min/max LOD u4.4, mode0 bits 9-16 bias): GXInitTexObj with mipmap sets max LOD = log2 of the
+larger side and LIN_MIP_LIN (LIN_MIP_NEAR for CI), as the SDK (0x801560c8); GXInitTexObjLOD and the TPL
+helpers pass min/max LOD and bias (bias clamp, edge LOD, anisotropy not kept). Formats decoded to RGBA8
+(RGB5A3, RGBA8, CI, CMPR) are put in the smallest PICA format that holds every texel exactly: LA4,
+RGB565, RGBA5551, LA8, RGBA4, else RGBA8. ETC1 is lossy and not used; its size is only reported.
+Also fixed: RGB5A3 expands by bit replication (Dolphin Convert5To8/3To8; was x*255/31, 1 LSB off for
+some values), min filter texel/mip bits read from the GXTexFilter value (LIN_MIP_NEAR was nearest).
+
+Flags (start value; `recomp_tex_mip_toggle()` / `recomp_tex_fmt_toggle()` flip at the next frame
+boundary, logged "# gx r<n>: texture mipmaps|lossless 16-bit texture formats on|off", cache invalidated
+by a generation in the entry key): sdmc:/cr_mip_off.txt, sdmc:/cr_texfmt_off.txt; test
+sdmc:/cr_tex_fliptest.txt flips formats every 300 retraces. Shown in "# gx: texture mipmaps" at start,
+"# time .. split" (mipmaps/tex 16-bit on|off|mixed), "# gx tex frame" every 300 frames (resident KB,
+ETC1 estimate) and "# gx tex new:" once per texture (inventory).
+
+Citra results (pause-ok campaign and rec-to-battle replays, fb dumps 1500/1980/2100):
+- Inventory: the game uses **no mipmaps**. Every texture (campaign 57, battle 45 distinct) has min
+  LINEAR (4 RGBA8 are NEAR), LOD 0..0. So the mip path is inert in this game and min filters are already
+  plain LINEAR; the "minified textures thrash the cache" idea has nothing to act on here. (Assumes no
+  game code edits TexObj bits without the SDK calls, which are hand-written.)
+- Formats (campaign): CI8 46, CMPR 24, RGBA8 23, RGB5A3 8, I4 2. Lossless pick: LA4 3, LA8 11,
+  RGBA5551 4, RGBA8 39. CMPR almost never fits 565 (interpolated colours are not 5/6/5 values).
+- Resident texture memory at frame 2100: campaign 9995 -> 9809 KB (-1.9%), battle 7751 -> 7547 KB
+  (-2.6%). As ETC1/ETC1A4 it would be ~2201 / 1872 KB (-78% / -76%), lossy.
+- SDK/scene/pad lines identical to main in all runs; fb dumps flags on vs off identical (campaign and
+  battle), on vs flip test identical. Main vs this branch: campaign identical, battle 9-1101 pixels
+  differ by 1-2 (the RGB5A3 expansion fix).
+- Citra gpu ms is not a signal (0.3 everywhere). Expected hardware gain is small (~2% fewer texture
+  bytes); not yet on hardware. The remaining campaign fill lever would be ETC1 (lossy, needs a decision).
 
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py

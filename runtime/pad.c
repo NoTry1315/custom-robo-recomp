@@ -95,11 +95,6 @@ void sdk_PADRead(void) {
     if (!irrst) irrst = irrstInit() == 0 ? 1 : -1;   /* C-stick: New 3DS */
     hidScanInput();
     u32 held = hidKeysHeld();
-    if (hidKeysDown() & KEY_ZL) recomp_gx_kick_toggle();   /* not a game button: A/B mid-frame GPU submit */
-    if (hidKeysDown() & KEY_TOUCH) {   /* not game inputs: right half A/B GX thread, left half A/B audio pacing (runtime/ax.c) */
-        touchPosition t; hidTouchRead(&t);
-        if (t.px >= 160) recomp_gx_thread_toggle(); else recomp_ax_pacing_toggle();
-    }
     u16 b = 0;
     for (unsigned i = 0; i < sizeof map / sizeof map[0]; i++) if (held & map[i].key) b |= map[i].pad;
     b |= script_buttons();
