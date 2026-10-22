@@ -290,11 +290,12 @@ interprocedural register summaries and emits each call's stores/reloads separate
   it and a later read or store needs it; otherwise its value stays in `cpu` and the stale
   local counts as clean, so it is never stored back (this keeps a callee's r3 return value
   on paths like `li r3,0; beq 1f; bl G; 1: blr`). Stores count as reads for that decision
-  (iterated per function until stable). Exception: ctr, ca, cr0, cr5-7 are still reloaded
-  after every call, as before. Keeping them in locals when the callee cannot change them
-  made the campaign replay rebuild 4 GX display lists every frame from r1500 (dl cache
-  misses; SDK calls and scenes unchanged). Bisected to that class (FPRs and GPRs are fine),
-  the reading code was not found.
+  (iterated per function until stable). Exception (until 2026-10-22): ctr, ca, cr0, cr5-7
+  were still reloaded after every call. Keeping them in locals when the callee cannot change
+  them made the campaign replay rebuild 4 GX display lists every frame from r1500 (dl cache
+  misses; SDK calls and scenes unchanged). Cause found 2026-10-22: no guest code reads them
+  after a call; the misses were the build-dependent DL cache set conflict (see "Call-boundary
+  glue (2026-10-22)").
 - Returns store only dirty RETU registers; tail branches every dirty register (a tail
   target can be shared code of the same function, e.g. 0x8009d5ec, a common epilogue
   reached from several functions); recomp_bad/sc/trap/rfi/mtmsr store every dirty register
@@ -1007,10 +1008,139 @@ draw's C3D_DrawElements through pend_flush), state 3.4 (TEV compare, pixel state
 rest 2.7 (lookup, validation, emit). Next for the GX thread: fewer C3D_DrawElements (~20 us each
 in citro3d) or a cheaper path to it.
 
+## Call-boundary glue (2026-10-22)
+
+Task: the game thread's cost at translated call boundaries ("Per-model cost" item 1, FNPROF glue
+4.8 / 2.2 ms) and the zero fill 0x80023394 (item 2). recomp.py, runtime/libc.c and runtime/vi.c
+only. Every step was checked with Citra replays (replay.ps1 battle / campaign) against the base
+14d19e7: compare_logs.py exit 0 (SDK calls with r3-r6 and lr, pad, scenes, summary counts,
+byte-identical framebuffer dumps), and no `# call_indirect` guard line (step 6) in either log.
+
+Measuring:
+- `RECOMP_SITEPROF=1 python tools/recomp/recomp.py` (then a normal make): every call site,
+  return and function entry counts its executions (`SITEC(k)`), gen/sites.tsv lists each site's
+  caller, callee and store/reload masks, and vi.c logs `# site <retrace> <k> <n>` (counts since
+  the last dump) every 300 retraces. A normal gen/ has none of it.
+- Per frame (battle 4.2 r2460 (after: r2400) to r3600, campaign 8.3 r1470 (after: r1500) to
+  r2400; one register = one u32 or one PS; entry loads = registers live at entry, the others are
+  dead loads GCC drops):
+
+  | per frame | battle before | battle after | campaign before | campaign after |
+  |---|---|---|---|---|
+  | calls (to SDK / natives / call_indirect) | 16553 (6693) | 14899 (6856) | 7450 (3474) | 6849 (3652) |
+  | translated function entries | 11140 | 9308 | 4368 | 3593 |
+  | call_indirect | 1272 | 1257 | 386 | 390 |
+  | registers stored before calls | 65047 | 57682 | 25565 | 23025 |
+  | registers reloaded after calls | 62146 | 34843 | 27395 | 14640 |
+  | registers stored at returns | 38844 | 26549 | 13915 | 8923 |
+  | registers loaded at entry | 84658 | 72920 | 31507 | 26140 |
+
+- Calibration: the old call_indirect (binary search, ~12 probes over 3975 entries) cost ~180
+  instructions per call; 1.3k calls were 0.84 ms of battle game time, so Citra charges ~270
+  instructions per us on the game thread (an instruction count at 268 MHz).
+- FNPROF of the final code: 00000000 is 15.2% of battle r3300 (~3.6 ms of the FNPROF frame) and
+  11.9% of campaign r2100 (~2.0 ms). That bucket is now mostly the C call itself (prologue and
+  epilogue, the caller's live values spilled around the call, the call and return) rather than
+  guest-register traffic. No FNPROF build of the base was made, so there is no before/after for it.
+
+Steps, game-thread ms (time_avg windows, battle 4.2 from r2460, campaign 8.3), cumulative:
+
+| step | battle game | campaign game |
+|---|---|---|
+| base 14d19e7 | 21.80 | 10.79 |
+| 1 0x80023394 native | 21.06 | 10.36 |
+| 2 so = 0 | 21.04 | 10.33 |
+| 3 use/def per statement | 21.00 | 10.31 |
+| 4 ctr/ca/cr0/cr5-7 kept in locals | 21.04 | 10.31 |
+| 5 call_indirect hash table | 20.20 | 10.07 |
+| 6 out(): return stores | 20.08 | 10.02 |
+| 7 native and call_indirect in-sets | 20.06 | 9.97 |
+| 8 leaf inlining | 19.86 | 9.93 |
+
+Battle frame 24.17 -> 22.61 ms (GX thread busy 18.7, unchanged); campaign frame 17.16 (paced,
+unchanged).
+
+1. 0x80023394 (game code, 88 callers) as `sdk_mem_zero` (recomp.py NATIVE, runtime/libc.c): `stb
+   0` per byte while i < n (cmplw, so n is unsigned), r3/r4 unchanged, r0 = 0 when n > 0
+   (`dol.py dis 0x80023394 0x10`). NATIVE_REGS: reads r3/r4, writes r0 (NATIVE_WRITE_EXTRA lets
+   libc.c write R[0]); write tracking through recomp_mark_ram. Not reproduced, as for memset: its
+   16-byte frame below r1 (back chain, saved r30/r31) and the back-edge polls. Its body now shows
+   in the generated "valid code not reached" list.
+2. XER[SO] is never set by translated code (OE forms are not modelled and none is listed; no
+   mtxer) and runtime/ never writes cpu.xer_* (check_native_writes), so `fold_so()` drops `| so`
+   from 21054 compares and the `so` local disappears (its entry load and reloads: ~11k per battle
+   frame). A translated mtxer (set_xer) would turn it off with a note.
+3. usedef() works statement by statement: a record form (`rlwinm. r0,..` = `r0 = ..; cr0 =
+   cmp_s(r0..)`) no longer reads the old r0. Liveness shrinks only where the old value was dead
+   (r0 looked live after 774 calls through this alone).
+4. ctr, ca, cr0, cr5-7 are kept across a call unless the callee may change them, like the other
+   registers. Cause of the 2026-10-19 symptom ("Register spills per call site"): with
+   pure-read liveness over all translated code, no call is followed by a read of ctr, ca or cr0
+   before a write. cr5-7 are read after 357 calls (270 after step 8), all by an mfcr whose value
+   feeds a cr0 single-bit extract (srwi/rlwinm .., 31, 31), in 5 functions (8003dd38, 8003fe98,
+   80041358, 8004b0a0, 801a5f10; the first four run in the battle replay); only f_801ae9b4, an
+   assert-path register dump that does not run, reads them at entry. Keeping them changes no
+   guest value. With the DL cache keyed on guest offsets ("Per-model cost", 4-way) the campaign
+   replay shows `cache hits 97 misses 0` in every window and both replays are identical, so the
+   2026-10-19 misses were most likely the host-pointer-keyed DL cache conflict that changed with
+   every build. No time change: the forced reloads were dead loads GCC already removed.
+   `check_call_reads()` prints the mfcr count and lists any call followed by a ctr/ca/cr0 read
+   (none).
+5. call_indirect looks the address up in a generated open-addressing hash table (8192 slots,
+   multiplicative hash, linear probing; 1.5 probes on average, longest 15) instead of a binary
+   search. MTX bodies are no longer in the table: indirect calls reach their natives, as direct
+   calls do (before, the table had both and the binary search picked one).
+6. out(F) (`solve_out()`): a return stores only the dirty RETU registers some reader may see
+   (was all of RETU). Least fixpoint: a direct call s in C adds (live after s | reaches C's return
+   unwritten & out(C)) & RETU, where live includes later callees' in-sets (so SDK calls keep their
+   logged r3-r6) and later stores; a tail call adds out(C); every call_indirect site adds the same
+   to all address-taken functions; functions runtime/ calls directly (MTX bodies for cr_mtx_off,
+   the mtx.c bench) keep all of RETU, __start none (main.c reads nothing after it). New
+   assumption, guarded: a function that is not address-taken (`Program.taken`: data pointers,
+   lis/addi constants, prologue-scan starts that no bl reaches, EXTRA_STARTS, the DOL entry, doc
+   names no bl reaches) is entered only by translated bl/b, so its callers are known. functable.c
+   sends call_indirect to any other start through a wrapper that logs `# call_indirect <addr>: no
+   pointer to it seen by recomp.py` (16 at most): none in either replay. Static: 39042 of 49374
+   return registers kept; r0 (mflr r0 in every prologue) is now rarely stored at a return.
+7. In-sets: SDK natives were assumed to read all of CALLU; `native_reads()` scans runtime/*.c for
+   R[k]/F[k]/cpu.gpr/fpr/cr reads, plus r1 (recomp_call_guest's stack) and r3-r6 (LOG()):
+   r1, r3-r10, f1-f8, so not r0, r11, r12, cr1. A computed index must be listed in INDEX_READS
+   (os.c R[gpr] gpr <= 10 and F[fpr] fpr <= 8, gx.c F[1 + i] taken as f1-f8) or the run fails.
+   Callbacks that natives run through recomp_call_guest get r1/r3/r4 and are assumed to read no
+   other register at entry, as for callbacks delivered at polls (which store only r1).
+   call_indirect's in-set is the native in-set plus the in-sets of all address-taken functions
+   (grown inside Summaries.solve; was all of CALLU).
+8. Leaf inlining (`inline_leaves()`, a first translation pass picks them): straight-line leaves
+   (one blr, no other event, no `cpu.` access, no ctr/ca write, at most 16 instructions, or 64 with
+   at most 4 call sites, not MTX bodies) whose entry reads only CALLU registers are emitted at each
+   bl to them. Their RETU writes go to the caller's locals, which the caller's own events store
+   where something reads them (same EABI assumption as for calls); their other writes (f0, cr0,
+   r1 ..) go to block-local `pv_` copies, which the caller never saw before either. `cpu.lr` is set
+   only when lr can be read before the next write (`lr_read_after()`: mflr, blrl, return, tail,
+   recomp_bad/skipped): 939 of 985 sites drop it, so the normal-build `# prof` (cpu.lr samples)
+   counts an inlined leaf under the caller's previous call site, FNPROF under the caller. 985 calls
+   to 258 functions; the hottest is 0x8001e5e4 (vec3 dot product, 508 calls per battle frame, 73
+   sites). Code: f_ functions 6.55 -> 6.73 MB (+2.7%; the inlined copies +189 KB, the other steps
+   -12 KB), most copies at sites that are cold in these replays. I-cache effect on hardware unknown.
+
+Not done (by the counts above):
+- Per battle frame there remain 58k stores before calls (mostly r3, r4, r5, r1, r6: arguments and
+  the stack pointer), 73k entry loads (r1, r3, and r14-r31 / f14-f31 loaded only to save stale
+  copies in prologues, see "Translator performance") and 27k return stores (r3, r4, f1-f4 that
+  callers read, often through SDK in-sets). Removing most of that means passing argument registers
+  as C arguments instead of through `cpu`, which is a redesign.
+- MTX summaries: callers still store/reload what the translated MTX body may change (r5, r7, r11,
+  r12, f2-f4, ctr: ~8k reloads per battle frame), because cr_mtx_off runs that body. Narrowing it
+  to the natives' effect (MTX_REGS) changes which stale values later SDK log lines print (r5, r6).
+- Per-native in-sets instead of the union over runtime/, no r1 store before natives that never
+  call back, no cpu.lr store before calls to translated leaves: ~0.05 ms or less each.
+- Inlining leaves with branches or loops (labels inside one Func instruction are not modelled).
+- Not yet on hardware.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
-Functions translated: 2744. SDK stubs: 1047. MetroTRK entries skipped: 184. Jump tables as switch: 52.
+Functions translated: 2743. SDK stubs: 1048. MetroTRK entries skipped: 184. Jump tables as switch: 52.
 
 ### flow into non-translated code that is not a known entry (1)
 
@@ -1048,7 +1178,7 @@ Functions translated: 2744. SDK stubs: 1047. MetroTRK entries skipped: 184. Jump
 
 0x80003408 mtmsr
 
-### valid code not reached from any function start (606)
+### valid code not reached from any function start (621)
 
 0x800034b0, 0x800034b4, 0x800034b8, 0x800034bc, 0x800034c0, 0x800034c4, 0x800034c8, 0x800034cc, 0x800034d0, 0x800034d4, 0x800034d8, 0x800035ac, 0x800036ac, 0x800036b0, 0x800036b4, 0x800036b8, 0x800036bc, 0x800036c0, 0x800036c4, 0x800036c8, 0x800036cc, 0x800036d0, 0x800036d4, 0x800036d8, 0x800036dc, 0x800036e0, 0x800036e4, 0x800036e8, 0x800036ec, 0x800036f0, 0x800036f4, 0x800037ac, 0x800037b0, 0x800037b4, 0x800037b8, 0x800037bc, 0x800037c0, 0x800037c4, 0x800037c8, 0x800037cc, 0x800037d0, 0x800037d4, 0x800037d8, 0x800037dc, 0x800038ac, 0x800038b0, 0x800038b4, 0x800038b8, 0x800038bc, 0x800038c0, 0x800038c4, 0x800038c8, 0x800038cc, 0x800038d0, 0x800038d4, 0x800038d8, 0x800038dc, 0x800039ac, 0x800039b0, 0x800039b4, 0x800039b8, 0x800039bc, 0x800039c0, 0x800039c4, 0x800039c8, 0x800039cc, 0x800039d0, 0x800039d4, 0x800039d8, 0x800039dc, 0x80003aac, 0x80003ab0, 0x80003ab4, 0x80003ab8, 0x80003abc, 0x80003ac0, 0x80003ac4, 0x80003ac8, 0x80003acc, 0x80003ad0, 0x80003ad4, 0x80003ad8, 0x80003adc, 0x80003bac, 0x80003bb0, 0x80003bb4, 0x80003bb8, 0x80003bbc, 0x80003bc0, 0x80003bc4, 0x80003bc8, 0x80003bcc, 0x80003bd0, 0x80003bd4, 0x80003bd8, 0x80003bdc, 0x80003cac, 0x80003cb0, 0x80003cb4, 0x80003cb8, 0x80003cbc, 0x80003cc0, 0x80003cc4, 0x80003cc8, 0x80003ccc, 0x80003cd0, 0x80003cd4, 0x80003cd8, 0x80003cdc, 0x80003dac, 0x80003db0, 0x80003db4, 0x80003db8, 0x80003dbc, 0x80003dc0, 0x80003dc4, 0x80003dc8, 0x80003dcc, 0x80003dd0, 0x80003dd4, 0x80003dd8, 0x80003ddc, 0x800040ac, 0x800040b0, 0x800040b4, 0x800040b8, 0x800040bc, 0x800040c0, 0x800040c4, 0x800040c8, 0x800040cc, 0x800040d0, 0x800040d4, 0x800040d8, 0x800040dc, 0x800041ac, 0x800041b0, 0x800041b4, 0x800041b8, 0x800041bc, 0x800041c0, 0x800041c4, 0x800041c8, 0x800041cc, 0x800041d0, 0x800041d4, 0x800041d8, 0x800041dc, 0x800042ac, 0x800042b0, 0x800042b4, 0x800042b8, 0x800042bc, 0x800042c0, 0x800042c4, 0x800042c8, 0x800042cc, 0x800042d0, 0x800042d4, 0x800042d8, 0x800042dc, 0x800043ac, 0x800043cc, 0x800043d0, 0x800043d4, 0x800043d8, 0x800043dc, 0x800043e0, 0x800043e4, 0x800043e8, 0x800043ec, 0x800043f0, 0x800043f4, 0x800043f8, 0x800043fc, 0x80004400, 0x80004404, 0x80004408, 0x8000440c, 0x80004410, 0x80004414, 0x80004418, 0x8000441c, 0x80004420, 0x80004424, 0x80004428, 0x8000442c, 0x80004430, 0x800044ac, 0x800044b0, 0x800044b4, 0x800044b8, 0x800044bc, 0x800044c0, 0x800044c4, 0x800044c8, 0x800044cc, 0x800044d0, 0x800044d4, 0x800044d8 ...
 

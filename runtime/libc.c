@@ -36,6 +36,19 @@ void sdk_memset(void) {
     for (u32 i = 0; i < n; i++) wr8(d + i, c);
 }
 
+/* 0x80023394 (game code, 88 callers) mem_zero(dst r3, n r4): stb 0 per byte while
+ * i < n (cmplw, so n is unsigned); r3/r4 unchanged, r0 = 0 when n > 0 (recomp.py
+ * NATIVE_REGS). Not written: its 16-byte frame below r1 (back chain, saved r30/r31)
+ * and the back-edge polls, as for memset. */
+void sdk_mem_zero(void) {
+    NATIVE_PROF("mem_zero");
+    u32 d = R[3], n = R[4];
+    if (!n) return;
+    R[0] = 0;
+    if (ram_range(d, n)) { recomp_mark_ram(d, n); memset(ram + (d & RAM_MASK), 0, n); return; }
+    for (u32 i = 0; i < n; i++) wr8(d + i, 0);
+}
+
 /* 0x80169168 sqrt(f1) -> f1, correctly rounded like the guest's software
  * sqrt. Guest special cases: +-0 -> x; x < 0 -> errno = EDOM (33) and the
  * NaN constant at 0x8044eea8; inf/NaN -> x*x+x and errno = EDOM too. */
