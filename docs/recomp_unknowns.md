@@ -917,6 +917,96 @@ Implemented (runtime/mtx.c, mtx_impl.h, gx.c):
   1.7 -> 2.7). Menus unchanged. compare_logs.py exit 0 for both (SDK, pad, scene and summary
   lines; framebuffer dumps byte-identical). Not yet on hardware.
 
+## GX thread per display-list cost (2026-10-22)
+
+Why: after the translator work the GX thread was close to being the battle bottleneck (Citra battle
+4.2: game thread 21.8 ms, GX thread busy 18.7; campaign 8.3: the game thread waited 5.2 ms per
+frame for it). Almost all of its time is in dl_draw (247 GXCallDisplayList hits per battle frame).
+Citra only (tools/citra/replay.ps1 battle / campaign; Citra time is an instruction-count proxy).
+
+Where a hit's ~75 us went (temporary per-step tick marks in dl_draw, battle r3000-3300, ms per
+frame; each mark adds 0.56 us): texture/TEV/pixel setup 4.6 (TEV rebuilds 0.8 for 23 per frame,
+unchanged-TEV checks 1.0 for 225), index memcpy + emit 4.9, matrix uniforms 2.4, texgen 1.9, plan
+(make_plan 1.5, trim/finish 1.0, plan_sig 1.0), lighting 0.7, clip 0.5, lookup/validation 0.7,
+frame_begin/cmdbuf_room 0.7. C3D_DrawElements: 2.7 ms for 133 calls (~20 us each), spread over
+the buckets that call pend_flush first (mostly the uniform setters); that is citro3d's own cost.
+
+Changes, each measured alone (GX busy, ms per frame, time_avg windows; battle --from 2460,
+campaign --from 1500):
+
+| step | battle 4.2 busy | battle vertex / tex / state | campaign 8.3 vertex | campaign busy - sync |
+|---|---|---|---|---|
+| base (14d19e7) | 18.7 | 10.6 / 1.1 / 2.6 | 7.8 | 11.4 |
+| 1. fewer tick reads | 17.9 | 10.6 / 0.7 / 3.4 | 7.8 | 11.1 |
+| 2. texture cache hash chains | 17.4 | 10.6 / 0.2 / 3.4 | 7.8 | 11.1 |
+| 3. index lists in place, rings with eviction | 13.5 | 6.7 / 0.2 / 3.4 | 3.9 | 7.0 |
+| 4. plan memo, texgen key | 12.6 | 5.9 / 0.2 / 3.4 | 3.4 | 6.5 |
+
+1. Timing: svcGetSystemTick is an SVC. Citra adds 150 ticks to every call (its kernel, as
+   recalled from its source: "measured on an o3DS", i.e. ~0.56 us at 268 MHz); on hardware an SVC
+   round trip is a few hundred cycles as well (not measured here). A display-list hit read it
+   10-12 times (dl_draw 4, 2 per texture unit, 2 for state, 2 in emit_ix), ~2700 reads per battle
+   frame. Now a chain of marks (t_start / t_mark / t_mark2: each read closes the interval since
+   the previous one): 4 per hit, 6 per per-primitive draw. Bucket meanings changed slightly: gx tex
+   is only the texture cache's slow path (timed alone and taken out of the chain), a hit through
+   the per-frame index counts as state; emit_ix is the caller's vertex part (was state);
+   dl_draw's make_plan now runs after the uniform setters (set_texgen does not read the plan
+   there: per-vertex texture matrices take the per-primitive path).
+2. tex_get: a texture's first use per frame scanned all 192 entries twice. Used entries are now
+   chained by (image, size, format) in tcache index order (the same candidates in the same order
+   as the scans); the LRU victim scan only runs for a new texture.
+3. Index lists in place and rings:
+   - Cached index lists (display-list and vertex cache) live in vc_ixa, a linear-memory ring of
+     0x30000 indices, and are drawn from there (was: a memcpy into ibuf per hit, ~170 KB per battle
+     frame). Lists of one frame are allocated in draw order, so consecutive hits stay adjacent
+     and still merge into one C3D_DrawElements. ibuf (immediate draws, fallbacks) 0x48000 ->
+     0x30000 indices per half, so linear memory use is unchanged; the static vc_ix is gone.
+   - vc_arena and vc_ixa are rings (ring_alloc). Each allocation has a record; live records are
+     queued in arena order from the ring's pointer, so the next allocation in the way is the
+     queue front. Allocations in the way are evicted (owner entry dropped: it misses and decodes
+     again) unless drawn in this GX frame (the GPU may not have read them; the previous frame's
+     are done, C3D_FrameBegin waits for its queue). Second chance: allocations drawn in the last
+     3 frames are passed over until a lap found no room. A plain ring evicted entries drawn every
+     frame; they decoded again the next frame and evicted the next ones (a 76 ms frame at r2952
+     in the test below, gone with second chance). An entry that gets a new allocation leaves the
+     old one unowned (reused once the pointer passes it). Replaces the whole-arena flush at 3/4
+     full. Flushes: each ring flushes its written range at kicks and frame end, and at once when
+     a new allocation is not contiguous with it.
+   - sdmc:/cr_vcache_small.txt: rings at 5/8, so that replays evict (battle 59 + 3 evictions,
+     campaign 2 + 23). In a test build at 3/8 the battle working set no longer fits: 25k+ failed
+     allocations, every frame falls back per primitive / to vbuf (~80 ms frames); logs and
+     framebuffers still identical. Normal size, end of the battle replay: arena 4657 KB of 5440,
+     index ring 317 KB of 384, no evictions yet.
+   - "# gx vcache" line: live arena and index ring KB, evictions and failed allocations since
+     start.
+4. Plan memo and texgen key:
+   - plan_get: dl_draw's trimmed, finished plan, template vertex and signature from a 256-entry
+     memo keyed on everything they read (vertex format of the present attributes, base/stride of
+     the indexed arrays, current matrix, material sources, texgen sources), the whole key
+     compared on a hit. A current matrix that is not a PNMTXn is not memoised (plan_finish logs
+     it). Battle: 245 of 247 calls per frame hit ("# gx dl" line: plan memo hits / misses).
+   - set_texgen's key held xf_gen, bumped by every matrix load (~2.4 per call in battle), so it
+     recomputed nearly every call; it now holds the write generation of the 3 XF rows each used
+     texgen reads (xf_row_gen, set by x_load_mtx).
+5. Tried and dropped: a TEV generation counter (every TEV/channel setter compares before it
+   writes, tev_changed skips its compare while the generation is unchanged) plus a light reload
+   compare: state 3.4 -> 3.0 ms but busy 12.6 -> 12.8 (the compares moved into the setters).
+
+Results (Citra): battle 4.2 GX busy 18.7 -> 12.6 ms (-33%); the frame stays 24.1-24.2 ms (game
+thread 21.8, gx wait 0.7 -> 0.6). Campaign 8.3 GX work (busy - sync) 11.4 -> 6.5 ms, frame
+17.2 -> 17.0 (60 Hz cap; the GX thread now waits on the cap: sync 4.0 -> 8.8). Battle 4.2 window
+worst 36.3 -> 35.0; the r2820 window 112.8 -> 87.6 ms (the arena flush was in it). The 87 ms
+frame left there (r2772) is the GX thread uploading new textures (that window's gx tex is 1.4 ms
+vs 0.2) and decoding new display lists when new content appears; next if hitches matter:
+texture upload cost. compare_logs.py exit 0 at every step, battle and campaign (SDK, pad, scene,
+summary lines; framebuffer dumps r2100/2700/3300 and r1500/1980/2300 byte-identical), also with
+cr_vcache_small. Not yet on hardware.
+
+Remaining per hit (battle, after): uniforms 4.5 ms per frame (set_mtx uploads, and the pending
+draw's C3D_DrawElements through pend_flush), state 3.4 (TEV compare, pixel state, binds), vertex
+rest 2.7 (lookup, validation, emit). Next for the GX thread: fewer C3D_DrawElements (~20 us each
+in citro3d) or a cheaper path to it.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
