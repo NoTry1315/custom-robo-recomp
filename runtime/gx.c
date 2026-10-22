@@ -1183,7 +1183,10 @@ static void decode_vtx(const u8 *p, APlan *pl, int np, const PVtx *tm, PVtx *o) 
  * linear-memory arena the GPU reads directly (no copy into vbuf); the arena
  * is bump-allocated and emptied at a frame start once it filled up (with
  * C3D_FRAME_SYNCDRAW the previous frame is done with it by then). */
-#define VC_N 16384   /* 2-way: sets of slots 2k, 2k+1 */
+#define VC_N 16384
+#define CACHE_WAYS 4   /* both caches: sets of 4 slots, least recently used way replaced. 2-way
+                        * thrashed: ~250 display-list keys a battle frame in 2048 sets put 3 in
+                        * one set about every other build (all of them missing every frame) */
 #define VC_ARR 6
 #define VC_NONE 0xffffffffu
 typedef struct {
@@ -1214,13 +1217,18 @@ static u32 hash_mem(const u8 *p, u32 n, u32 h) {
     return h;
 }
 
+/* Cache keys use guest offsets, never host pointers (ram[] and the rd_ functions move with
+ * every build, which moved entries between sets: per-build conflict misses). rd follows from
+ * type and n, which are hashed. */
+static inline u32 gofs(const u8 *p) { return (u32)(p - ram); }
+
 static u32 plan_sig(const APlan *pl, int np, int vs, const PVtx *tm) {
     u32 h = hash_mem((const u8 *)tm, sizeof *tm, (u32)vs * 0x85ebca6bu + (u32)np);
     for (int i = 0; i < np; i++) {
         const APlan *a = &pl[i];
         u32 f[8] = {(u32)a->attr | (u32)(u8)a->d << 8 | (u32)(u8)a->type << 16 | (u32)(u8)a->n << 24,
                     (u32)a->off | (u32)a->size << 8 | (u32)a->dst << 16 | (u32)a->dpos << 24,
-                    fbits(a->scale), (u32)(uintptr_t)a->base, a->stride, (u32)(uintptr_t)a->rd, (u32)a->kind, 0};
+                    fbits(a->scale), a->base ? gofs(a->base) : 0, a->stride, 0, (u32)a->kind, 0};
         h = hash_mem((const u8 *)f, sizeof f, h);
     }
     return h;
@@ -1256,14 +1264,15 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
     vc_last = NULL;
     if (!vc_arena || n > 0x8000) return VC_NONE;
     u32 sig = plan_sig(pl, np, vs, tm);
-    u32 slot = ((u32)(uintptr_t)data * 0x9e3779b1u ^ sig ^ (u32)n * 0x85ebca6bu) >> 18 & (VC_N - 1);
-    VCache *e = &vcache[slot & ~1u], *f = e + 1;
-    if (e->gen != vc_gen) e->gen = 0;
-    if (f->gen != vc_gen) f->gen = 0;
-    if (!(e->gen && e->data == data && e->n == (u32)n && e->sig == sig)) {
-        if (f->gen && f->data == data && f->n == (u32)n && f->sig == sig) e = f;
-        else if (e->gen && (!f->gen || f->used < e->used)) e = f;   /* replace the empty or least recently used way */
+    u32 slot = (gofs(data) * 0x9e3779b1u ^ sig ^ (u32)n * 0x85ebca6bu) >> 18 & (VC_N - 1);
+    VCache *set = &vcache[slot & ~(CACHE_WAYS - 1u)], *e = NULL, *v = set;
+    for (int i = 0; i < CACHE_WAYS; i++) {
+        VCache *c = set + i;
+        if (c->gen != vc_gen) c->gen = 0;
+        if (c->gen && c->data == data && c->n == (u32)n && c->sig == sig) { e = c; break; }
+        if (v->gen && (!c->gen || c->used < v->used)) v = c;   /* replace the empty or least recently used way */
     }
+    if (!e) e = v;
     /* the list bytes and arrays are checked once per frame per entry (same
      * assumption as arr_hash: not rewritten between two draws of a frame) */
     int same = e->gen && e->data == data && e->n == (u32)n && e->sig == sig;
@@ -1636,7 +1645,7 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
  * vertex cache) match. Lists with nested calls, other commands, mixed vertex
  * formats, lines/points or per-vertex texture matrices take the per-primitive
  * path (entry marked slow). sdmc:/cr_dlcache_off.txt disables it. */
-#define DL_N 4096   /* 2-way */
+#define DL_N 4096   /* CACHE_WAYS-way */
 #define DL_ARR 12
 typedef struct {
     const u8 *list; u32 n, sig, gen, slow, lhash, ahash, checked, used, narr, off, ixoff, ixn, prims, tris, vep;
@@ -1715,14 +1724,15 @@ static int dl_draw(const u8 *list, u32 len) {
     PVtx tm;
     plan_finish(pl, np, &tm);
     u32 sig = plan_sig(pl, np, vs, &tm) ^ ((u32)fmt << 28 | (u32)mat_vtx[0] | (u32)mat_vtx[3] << 1) * 0x85ebca6bu;
-    u32 slot = ((u32)(uintptr_t)list * 0x9e3779b1u ^ sig ^ len * 0x85ebca6bu) >> 19 & (DL_N - 1);
-    DlCache *e = &dlcache[slot & ~1u], *f = e + 1;
-    if (e->gen != vc_gen) e->gen = 0;
-    if (f->gen != vc_gen) f->gen = 0;
-    if (!(e->gen && e->list == list && e->n == len && e->sig == sig)) {
-        if (f->gen && f->list == list && f->n == len && f->sig == sig) e = f;
-        else if (e->gen && (!f->gen || f->used < e->used)) e = f;
+    u32 slot = (gofs(list) * 0x9e3779b1u ^ sig ^ len * 0x85ebca6bu) >> 19 & (DL_N - 1);
+    DlCache *set = &dlcache[slot & ~(CACHE_WAYS - 1u)], *e = NULL, *v = set;
+    for (int i = 0; i < CACHE_WAYS; i++) {
+        DlCache *c = set + i;
+        if (c->gen != vc_gen) c->gen = 0;
+        if (c->gen && c->list == list && c->n == len && c->sig == sig) { e = c; break; }
+        if (v->gen && (!c->gen || c->used < v->used)) v = c;
     }
+    if (!e) e = v;
     int same = e->gen && e->list == list && e->n == len && e->sig == sig;
     const char *why = same ? NULL : "new";
     if (same && e->checked != frames + 1) {

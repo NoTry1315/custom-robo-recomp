@@ -260,6 +260,8 @@ logged once when first hit.
 - Profiling: `make FNPROF=1` (after `make clean`) makes gen/ store the running function
   in `recomp_cur_fn` and `# prof` lists functions (00000000 = SDK/runtime). Battle: 80%
   of samples outside game code, the game part flat (top function 2.4%, PSMTX-style code).
+  Since 2026-10-21 SDK and native functions show under their names and 00000000 is the
+  call-boundary glue only (see "Per-model cost (2026-10-21)").
 - Results, `# time` at r3600 / r3000:
   battle game 118.4 -> 75.4 (locals) -> 69.5 (EABI calls) -> 58.7 ms (fmadd_s, stack);
   campaign 4.6 -> 5.4-5.7 fps (game 38-45 ms); title 15 fps, game 21.7 ms.
@@ -738,6 +740,116 @@ reader). Design:
   printing "\r" first works.
 - Citra replay of rec-to-battle (no card): SDK/pad/retrace lines and summary counts identical to the
   base build (only OSTicksToCalendarTime's wall-clock r4 differs, as before). Screenshot checked.
+
+## Per-model cost (2026-10-21)
+
+Question (user): the more models in a scene, the lower the frame rate. What grows per model, on
+which thread, and what part of it the runtime can remove. Citra only (replay.ps1 battle /
+campaign; Citra time is an instruction-count proxy, not hardware ms).
+
+Profiling added (FNPROF builds only; normal builds and their logs are unchanged):
+- `# prof` lists SDK and native functions by name: recomp_sdk_log (every LOG()), mtx.c and
+  libc.c natives tag `recomp_cur_fn` with their name. 00000000 is then only the call-boundary
+  glue of translated code: gen/ sets FNPROF(entry) after a function's entry reload and after
+  each post-call reload, and FNPROF(0) at each spill, so those register loads/stores and
+  call_indirect count as 0 (translator side). Top 60 entries instead of 25.
+- `# sdk r<n>`: SDK and native calls per frame over the last 300 retraces (natives are counted
+  in FNPROF builds only, and then also appear in the summary).
+
+Per 300-retrace window (FNPROF build of the base code, logs/perf/fnprof4-*; ms = sampler share x
+frame time, so the five parts add up to the frame; GX SDK = every GX/OS/PAD/VI call that LOGs):
+
+| window | DL calls/f | draws/f | GX SDK calls/f | pos+nrm mtx loads/f | PSMTXConcat/f | game thread | game code | glue (0) | GX SDK | MTX natives | waits | GX thread busy |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| battle 4.2 r2700 | 102 | 1143 | 3974 | 130 | 51 | 25.0 | 18.6 | 5.3 | 1.5 | 0.6 | 1.9 | 13.1 |
+| battle 4.2 r3300 | 247 | 2165 | 3409 | 594 | 508 | 32.5 | 24.8 | 4.8 | 1.4 | 1.8 | 1.5 | 21.1 |
+| campaign 8.3 r2100 | 97 | 1257 | 1379 | 637 | 1087 | 15.7 | 9.3 | 2.2 | 1.1 | 3.0 | 2.1 | 13.0 |
+| Vs. menu 7.0 r1800 | 0 | 199 | 2049 | 8 | 8 | 12.2 | 8.9 | 2.4 | 1.3 | 0.1 | 6.6 | 15.2 |
+| menu 5.0 r1500 | 0 | 197 | 623 | 13 | 32 | 5.8 | 3.9 | 1.3 | 0.3 | 0.1 | 13.5 | 16.6 |
+
+Unit costs (Citra):
+- GX SDK call on the game thread (LOG + record into the ring): 0.3-0.5 us per call.
+- PSMTXConcat native: 2.6 us per call (startup `# bench`; translated 7.0 us). Campaign: 1087 per
+  frame, 3.4 per position-matrix load (envelope skinning), 2.5-2.8 ms. InvXpose 1.7 us x 315.
+- GX thread: busy / DL calls = 76-130 us per display-list call in battle and campaign (all of the
+  thread: draw setup, uniforms, plan, signature, validation, index copy).
+- Battle r2700 -> r3300 (+145 DL calls, +464 matrix loads, +457 concats per frame): game thread
+  +7.5 ms = ~52 us per added DL call (game code +6.2, MTX natives +1.2, GX SDK and glue flat;
+  collision code grows too, so the play differs as well: an upper bound per model), GX thread
+  +8.0 ms = ~55 us per added DL call.
+
+What grows with models, largest first (battle r3300 / campaign 8.3, ms per frame):
+1. Translated game code, 24.8 / 9.3: spread over many functions (none above 1.8 ms).
+   Battle r3300: 80060fa4 1.8, 8006eef8 1.2, motion_eval_keyframes 8001eb48 1.1, 80023394 1.0,
+   8001b544 1.0, 8019fc14 0.8, 80090710 0.8, coll_test_faces 8005e270 0.75, gmtx_mul 8001e134
+   0.7; campaign: 8001eb48 1.0, 801958d0 0.8, 801a0098 0.7, gmtx_mul 0.55, 8019eb5c 0.5.
+   gmtx_mul (game code, scalar fmuls, a 3x4 multiply like PSMTXConcat) is 8.3 us per call
+   translated, PSMTXConcat native 1.6 us. MSL sin/cos (801689d0 / 80168f38): 0.5 / 0.1 ms.
+   Roles (Sonnet sweep of gen/ and the disassembly; guesses unless noted): 80023394 is a byte-wise
+   zero fill (r3 dst, r4 count; checked in the disassembly), 88 callers, 1.0 / 0.45 ms; 80060fa4
+   a call-free float loop (physics/collision pass); 8006eef8 an immediate-mode GX draw (GXBegin
+   x6, PSMTXMultVec x8; hit volumes or shadows); 8001b544 a vec3 distance check; 8019fc14 angles
+   -> rotation (sin/cos x3); 80090710 a 2D/TLUT screen draw; 801958d0 HSD matrix setup before a
+   draw (PSMTXConcat x4, InvXpose, Load Pos/Nrm/TexMtx); 801a0098 12-float scaled add (skinning
+   blend); 8019eb5c local matrix from SRT; 80195ee4 PObj draw (SetArray/VtxDesc, CallDisplayList);
+   80189058 TObj texture bind; 801aa74c MObj/TEV setup. gmtx_mul's 9 callers and
+   motion_eval_keyframes' 2 are all in 0x80052000-0x8005b000 (motion/skeleton code).
+2. Call-boundary glue (00000000), 4.8 / 2.2: grows with the number of calls.
+3. MTX natives, 1.8 / 3.0 (PSMTXConcat 508 / 1087 calls).
+4. GX SDK call path, 1.4 / 1.1: about flat in calls between battle windows (3400-4100).
+5. GX thread, 21.1 / 13.0 busy: in parallel and below the game thread here and on hardware
+   (run 24: busy 12.9 vs game 19.1); it decides the frame only once the game thread is faster.
+6. A cliff, not a slope: the display-list cache (2-way, DL_N 4096) keyed on host pointers (the
+   rd_ function pointer and ram + offset in plan_sig, the list pointer in the slot). Which keys
+   share a set changed with every build; ~250 keys per battle frame in 2048 sets put 3 in one
+   set in about every other build (expected triples 0.6), and those lists then missed every
+   frame, re-decoded into the arena, filled it and forced the full flush (vc_gen++) about once
+   per 60-frame window: a ~107 ms frame each time. Seen in this session's MTX-only build (5 lists
+   "new" every frame from r3000, worst frame 107 ms in each window from r3000, GX vertex +2.5 ms)
+   but not in the base build: this was the "battle vcache arena line varies by build" item.
+   More models = more keys = likelier.
+
+Fixes ranked by ms per frame (Citra game thread unless noted; estimates marked ~):
+1. Translator (not this session, ppc.h / recomp.py): call-boundary glue, up to 4.8 / 2.2 ms;
+   ~half of it if the callee's entry and the post-call reload load only what is read.
+2. Translator (recomp.py NATIVE + a runtime sdk_ function, like memset): the byte-wise zero fill
+   80023394 as a native, ~-0.9 / -0.4 ms (one wr8 with a write mark and a back-edge poll per byte
+   today). It is game code, but only a memzero; polls in its loop go away as with memset.
+3. Translator: float codegen of the hot game functions (gmtx_mul 8.3 us vs 1.6 us native for the
+   same arithmetic suggests ~2-4x headroom in that kind of code); spread, size unknown.
+4. Runtime, done: native MTX in float with flat pointers: campaign game -1.0 ms, battle -0.3/-0.5.
+5. Runtime, done: display-list / vertex cache 4-way with build-independent keys: removes the
+   per-build thrash (above); battle 4.2 vs the MTX-only build: frame 30.8 -> 30.1, worst 77 ->
+   42 ms.
+6. Runtime: cheaper SDK call path (a per-function static counter pointer in LOG() instead of
+   count_of's hash probe; record writes inline): ~-0.3 to -0.5 ms of 1.4 (battle), ~-0.3 campaign.
+7. Runtime: native MSL sin/cos, only if bit-identical: ~-0.3 ms battle, ~0 campaign.
+8. Runtime: vertex-cache arena eviction (LRU or compaction) instead of the full flush at 3/4: the
+   remaining flush (battle r2820 window, 113 ms frame) comes from slow growth of new keys. A
+   hitch every ~600-900 frames in battle, not the average.
+9. GX thread: memoise make_plan/trim_plan/plan_sig/texgen keys per display-list call on a GX
+   state generation counter, and draw cached index lists without the memcpy into ibuf: ~30-50%
+   of the ~55 us per DL call (~-3 to -5 ms GX busy in battle r3300). No frame-time gain until the
+   game thread drops below the GX thread's busy time.
+
+Implemented (runtime/mtx.c, mtx_impl.h, gx.c):
+- MTX natives: mtx_impl.h is generic in the value type MT and loads LD / LDK. With FLOATOPS
+  every single op is a float op whose double result is exact, so the native values stay float
+  (F_ADD..F_MSUB; float add/sub equal the double op rounded to float, 53 >= 2 * 24 + 2 bits);
+  without FLOATOPS nothing changes. A flat variant fp_ runs the same bodies on addresses masked
+  once, used when every range lies inside ram[] (else nat_). One write mark per destination
+  (MARK: first and last word, the same pages as one WR_MARK per store). Concat is fully
+  unrolled (inputs stay in VFP registers). `# bench` per call: PSMTXConcat 2607 -> 1563 ns,
+  MultVec 1280 -> 1052, InvXpose 1716 -> 1425; 0 ulp native vs translated for all 18.
+- Caches: plan_sig hashes the array's guest offset and not rd (it follows from type and n); the
+  DL and vertex cache slots use the list/data guest offset; both caches are CACHE_WAYS = 4-way
+  (LRU way replaced). The arena lines are now the same in a normal and an FNPROF build
+  (2100: 3887 KB in both; before: 3592 vs 2141 KB).
+- Before -> after (logs/perf base-* / new-*, time_avg, Citra): battle 4.2 frame 30.5 -> 30.1 ms,
+  game 28.2 -> 27.7, worst 48.2 -> 42.2, GX busy 18.3 -> 18.5; 4.0 frame 27.3 -> 26.8; 4.1 24.3
+  -> 24.2. Campaign 8.3 game 14.4 -> 13.4 ms, frame 17.3 -> 17.2 (at the 60 Hz cap: gx wait
+  1.7 -> 2.7). Menus unchanged. compare_logs.py exit 0 for both (SDK, pad, scene and summary
+  lines; framebuffer dumps byte-identical). Not yet on hardware.
 
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
