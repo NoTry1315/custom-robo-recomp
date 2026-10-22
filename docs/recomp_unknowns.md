@@ -620,6 +620,36 @@ Profile (Citra battle replay r3600, `make FNPROF=1`): game-side top 0x801a4558 1
   signed registers are now part of the TEV change check).
 - Not timed on hardware: 640x480 JPEG decode at 30 fps on the ARM11 is the likely cost.
 
+## Hardware run 23 (2026-10-21, main a9cb4f7)
+
+- Build main@a9cb4f7: mid-frame GPU submit on, DVD reader thread, THP movie. Interactive: boot,
+  title, idle into the movie (scene 1, r2970-r3690, Start pressed), menus, Vs. battle, menus. Log:
+  logs/cr_autotest_2026-10-21_hw-run23-dvd-thread-movie.log (same name on the SD card). Also kept:
+  hw-run22-gpukick-long (13:00 gpukick build, ~24000 retraces, title/campaign/battle, ZL toggles).
+- User report: no freezes; music sometimes repeats a 1-2 s segment 2-3 times; the movie plays and
+  returns to the menu without a crash but is extremely laggy; audio is stereo.
+- The repeats are the reader's late path. 9 reads finished late (`# DVD late`), 8 of them after
+  4.6-5.7 s; each time the game went on after 33-57 ms. The .hps ones (cubog39.hps r1173, r1747,
+  r3886; v_cubog09.hps r5170) are music stream refills: while the read is out, the voice loops its
+  old ARAM buffer (as the Citra stall test showed), so a ~5.7 s gap over a ~2 s buffer replays it
+  2-3 times. Before the reader thread the same reads froze the game instead.
+- SD stalls: 9 `# log write slow` lines, each 5.6-6.0 s (median 5.8 s), the first one at r0 (105
+  bytes at 0 KB). Every DVD read over 1 s (8 of 8) started while the log writer was inside one of
+  these writes; reads with the writer idle took at most 160 ms. So the SD is unavailable for ~5.8 s
+  at a time and a log write is in every such stall. Not yet shown whether the writes cause it
+  (fflush, FAT/directory update) or only wait in it like the reads. Next check: one run with the
+  log kept in RAM (no SD writes until exit); if the `# DVD slow` lines over 1 s go away, the log
+  writer is the cause.
+- Movie (scene 1): 9 fps while playing (r3480-r3660: frame 111 ms = game 98 + gx tex 12). Game is
+  the translated THP decoder (one 640x480 JPEG per frame); gx tex is the Y/U/V upload each frame.
+  Before that, r3060-r3420 ran at ~120 fps with game 0.2 ms: the player waited ~4 s for the late
+  opening_a.thp read (r2981, 5.7 s), and with no GX draws the 60 Hz cap (in frame_begin) does not
+  apply. ndsp dropped 480 + 286 AX frames in that span: AX frames are made per retrace (10/3 per
+  retrace, ax.c), so above 60 Hz the output overruns and at 9 fps it runs short.
+- Battle (scene 4.2, 32 windows): 28.6 ms = 34.9 fps (game 19.5, gx vertex 5.3, tex 1.0, state
+  1.6, sync 0.2, audio 0.8). CPU-bound, as in runs 20-22.
+- Boot: snr_map.BIN open took 5168 ms (log writer busy); the logo scene waited ~300 retraces for it.
+
 ## GX thread (2026-10-21)
 
 Why: battle and campaign are CPU-bound and the GX host work is the one concentrated cost (hw run 23
