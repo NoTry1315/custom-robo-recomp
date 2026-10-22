@@ -1,5 +1,6 @@
 #include <3ds.h>
 #include <stdio.h>
+#include <string.h>
 #include <setjmp.h>
 #include "ppc.h"
 #include "buildinfo.h"   /* RECOMP_BUILD, written by tools/buildinfo.sh every make */
@@ -10,22 +11,30 @@ void f_80003154(void); /* __start (DOL entry) */
 extern jmp_buf recomp_exit_jmp;
 u32 __stacksize__ = 1024 * 1024;  /* translated code nests one host frame per guest call */
 
-/* bottom screen: rows 0-28 scroll (boot info, run end); row 29 is a fixed status line.
- * Game thread only (consoleSelect is not thread-safe). */
+/* bottom screen: rows 0-21 scroll (boot info, run end); rows 22-29 are fixed status rows
+ * (stats from log.c, then gx.c's toggle line). Game thread only (consoleSelect is not
+ * thread-safe). A row is redrawn only when its text changed: the console draws glyphs on the CPU. */
 static PrintConsole *con_main, con_status;
-void recomp_status(const char *s) {
-    if (!con_main) return;
+static char shown[RECOMP_STATUS_ROWS][40];
+void recomp_status_row(int row, const char *s) {
+    char t[40];
+    if (!con_main || row < 0 || row >= RECOMP_STATUS_ROWS) return;
+    snprintf(t, sizeof t, "%-39.39s", s);   /* 39: a 40th character would wrap to the next row (and scroll at the last one) */
+    if (!strcmp(t, shown[row])) return;
+    strcpy(shown[row], t);
     consoleSelect(&con_status);
-    printf("\r%-39.39s", s);   /* 39: a 40th character would wrap and scroll the one-row window */
+    con_status.cursorY = row;   /* window-relative; "\r" sets the column (writing cursorX directly lost each row's first character) */
+    printf("\r%s", t);
     consoleSelect(con_main);
 }
+void recomp_status(const char *s) { recomp_status_row(RECOMP_STATUS_ROWS - 1, s); }
 
 int main(void) {
     gfxInitDefault();
     con_main = consoleInit(GFX_BOTTOM, NULL);
     con_status = *con_main;
-    consoleSetWindow(&con_status, 0, 29, 40, 1);
-    consoleSetWindow(con_main, 0, 0, 40, 29);
+    consoleSetWindow(&con_status, 0, 30 - RECOMP_STATUS_ROWS, 40, RECOMP_STATUS_ROWS);
+    consoleSetWindow(con_main, 0, 0, 40, 30 - RECOMP_STATUS_ROWS);
     cpu_init();
     recomp_gx_init();
     recomp_log_open();

@@ -24,6 +24,7 @@
 
 static u32 fst, nentries, strings, curdir;
 static char **paths;    /* host path per entry (files only) */
+u32 recomp_dvd_slow_n, recomp_dvd_late_n;   /* "# DVD slow" / "# DVD late" lines so far (bottom-screen stats) */
 static void reader_start(void);
 
 static int  e_isdir(u32 e) { return rd8(fst + 12 * e) != 0; }
@@ -327,13 +328,13 @@ static void deliver(struct req *r) {
         const char *nm = paths[r->e] + sizeof DISC_DIR + 5;
         double ms = 1000.0 / SYSCLOCK_ARM11;
         if (dt > 268111856 / 20 || (sum > 268111856 / 5 && nreads % 16 == 0))
-            recomp_log("# DVD slow r%lu: %s off %lx len %lx %.0f ms (frame: %lu reads, %.0f ms); open %.0f, seek %.0f, read %.0f; "
+            recomp_dvd_slow_n++, recomp_log("# DVD slow r%lu: %s off %lx len %lx %.0f ms (frame: %lu reads, %.0f ms); open %.0f, seek %.0f, read %.0f; "
                        "log writer: busy %.0f ms at start, %lu writes done during, %s at end\n", (unsigned long)r->r_issue,
                        nm, (unsigned long)r->off, (unsigned long)r->len, dt / 268111.856,
                        (unsigned long)nreads, sum / 268111.856, r->t_open * ms, r->t_seek * ms, r->t_read * ms,
                        r->logw_busy * ms, (unsigned long)r->logw_n, r->logw_end ? "busy" : "idle");
         if (r->late)
-            recomp_log("# DVD late r%lu: %s off %lx len %lx: game waited %.0f ms, went on at r%lu, callback at r%lu\n",
+            recomp_dvd_late_n++, recomp_log("# DVD late r%lu: %s off %lx len %lx: game waited %.0f ms, went on at r%lu, callback at r%lu\n",
                        (unsigned long)r->r_issue, nm, (unsigned long)r->off, (unsigned long)r->len, r->waited * ms,
                        (unsigned long)r->r_late, (unsigned long)recomp_retrace_count());
     }
