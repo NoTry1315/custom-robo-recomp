@@ -32,12 +32,16 @@ Stay in each state for about 30 s of campaign play (at least 10 `# time` windows
 Look at: no missing geometry with cull ON (holes in walls/robots = wrong winding; note where), and
 no texture colour changes with tex formats ON.
 
-Known open item (Citra): in the battle framebuffer dumps (r2100/2700/3300), the combined build differs
-from both the vsh-only and the cull-only builds. The hexagon markers over the robots (e.g. the "TM" one)
-show a textured face where those builds showed a solid colour, and some edge lines differ. The cause is not
-found yet (an interaction of cull with the texture changes is the guess, unverified), and it has not been
-checked against Dolphin. In battle, toggle cull and tex formats and say which state matches Dolphin/your
-memory of the game. Campaign dumps are byte-identical to the vsh build.
+Battle framebuffer difference (resolved, 2026-10-22): it comes from the cull branch alone. In Citra,
+the cull-off, vsh-single and vsh-variants dumps are byte-identical, and cull on differs in 11.6k pixels
+(the remaining 1.9k in the combined build are the texture branch's RGB5A3 rounding fix). With culling off, the P1/P2
+marker hexagons are drawn as solid colour, because their back faces cover the emblem. With culling on, the emblem
+("TM" etc.) shows through a translucent hexagon. The game only ever calls GXSetCullMode(2) (all 40 logged calls,
+campaign and battle), and the mapping for mode 2 is the same one that keeps the arena and robots visible, so
+culling on is what GX does. Not yet checked against a Dolphin screenshot. While in battle, look at a
+marker hexagon: emblem visible = correct (same as Dolphin/real hardware).
+Cost to watch: cull state changes split merged batches, so battle draw calls go 123 -> 165 per frame
+(indices unchanged). If battle gets slower with cull ON while campaign gets faster, that is why.
 
 ## Afterwards
 
