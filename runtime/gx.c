@@ -798,7 +798,7 @@ static int vt_nfree;
 static int tex_in_vram(const TexEntry *e) { return (u32)e->tex.data - OS_VRAM_VADDR < OS_VRAM_SIZE; }
 static void tex_to_vram(TexEntry *e) {
     if (vramtex_off || !frame_open || tex_in_vram(e) || frames - e->upf < 2) return;
-    const gxCmdQueue_s *q = &__C3D_Context;
+    const gxCmdQueue_s *q = &__C3D_Context.q;
     if (vt_nfree == VT_COPIES || q->numEntries + 8 + KICK_MAX - kicks >= q->maxEntries) { st_vt_cap++; return; }
     u32 size = C3D_TexCalcTotalSize(e->tex.size, e->lv - 1);
     void *v = NULL;
