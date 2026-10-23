@@ -1065,6 +1065,147 @@ def fold_so(fns, quiet=False):
     return fns
 
 
+NV_SAVE = [   # prologue saves of a non-volatile register (MWCC stw/stmw/stfd/psq_st, _savegpr/_savefpr inline)
+    ('g', re.compile(r'wr32_sp\((?P<b>R\[1?1\]), (?P<k>-?\d+), R\[(?P<n>\d+)\]\);')),
+    ('d', re.compile(r'wr64_sp\((?P<b>R\[1?1\]), (?P<k>-?\d+), d2u\(F\[(?P<n>\d+)\]\.ps0\)\);')),
+    ('q', re.compile(r'psq_st0_sp\(F\[(?P<n>\d+)\], (?P<b>R\[1?1\]), (?P<k>-?\d+), 0\);'))]
+NV_RESTORE = {'g': r'R\[{n}\] = rd32_sp\({b}, {k}\);', 'd': r'F\[{n}\]\.ps0 = u2d\(rd64_sp\({b}, {k}\)\);',
+              'q': r'F\[{n}\] = psq_ld0_sp\({b}, {k}, 0\);'}
+SP_ACCESS = re.compile(r'\b(?:rd|wr)(?P<w>8|16|32|64)_sp\((?P<b>R\[1?1\]), (?P<k>-?\d+)'
+                       r'|\bpsq_(?:ld0_sp\(|st0_sp\(F\[\d+\], )(?P<qb>R\[1?1\]), (?P<qk>-?\d+)')
+
+
+def drop_nv_saves(fns):
+    """MWCC prologues save r14-r31/f14-f31 to the frame and epilogues load them back. Translated
+    callers keep their non-volatile registers in C locals and never reload them from `cpu` after a
+    call (EABI, see "Translator performance"), so a prologue saves the possibly stale `cpu` copy it
+    loaded at entry, and the restore loads it into a local that is dead at the return. Both are
+    dropped where the slot is provably used for nothing else: the frame is one stwu at the entry, r1
+    is otherwise only written by `addi r1, r1, size` followed by no stack access before the return,
+    no address is derived from r1 (indexed/update forms, mr, a pointer at or above the save area),
+    the register still holds its entry value at the save, and every other access to the slot (via r1,
+    or r11 = r1 + N) in the function is a restore of the same register. The guest stack keeps older
+    contents in those slots (a reader of uninitialized stack would see that; the saved values were
+    already the stale `cpu` copies). RECOMP_KEEP_NV_SAVES=1 keeps every save."""
+    if os.environ.get('RECOMP_KEEP_NV_SAVES') == '1':
+        print('note: non-volatile saves kept (RECOMP_KEEP_NV_SAVES=1)')
+        return fns
+    stat = defaultdict(int)
+    for i, fn in enumerate(fns):
+        if fn.order[0] != fn.entry:
+            continue
+        m = re.fullmatch(r'\{ u32 ea = R\[1\] - (\d+); wr32_ram\(ea, R\[1\]\); R\[1\] = ea; \}', ' '.join(fn.body[fn.entry]))
+        if not m:
+            continue
+        size = int(m[1])
+        # prologue: straight-line from the entry to the first label, branch, event or r1 write
+        cands, written, r11, prev = {}, 0, None, fn.entry   # slot offset -> (kind, reg, bytes, statement, address)
+        for a in fn.order[1:]:
+            x = ' '.join(fn.body[a])
+            if a != prev + 4 or a in fn.labels or re.search(
+                    r'goto |return;|\bif \(|switch|recomp_|\bf_[0-9a-f]{8}\(|\bsdk_\w+\(|call_indirect|R\[1\] = ', x):
+                break
+            prev = a
+            for kind, rx in NV_SAVE:
+                for s in rx.finditer(x):
+                    n, k, b = int(s['n']), int(s['k']), s['b']
+                    if n < 14 or written & (GB(n) if kind == 'g' else FB(n)) or (b == 'R[11]' and r11 is None):
+                        continue
+                    cands[k + (r11 if b == 'R[11]' else 0)] = (kind, n, 4 if kind == 'g' else 8, s[0], a)
+            mm = re.search(r'R\[11\] = R\[1\] \+ (\d+);', x)
+            r11 = int(mm[1]) if mm else None if re.search(r'R\[11\] = ', x) else r11
+            written |= fn.write[a]
+        if not cands:
+            continue
+        lo = min(cands)
+        bad, keep, rest, r11 = None, set(), defaultdict(list), None
+        for a in fn.order[1:]:
+            x = ' '.join(fn.body[a])
+            if re.search(r'R\[1\] = ', x):
+                if x.strip() != f'R[1] = R[1] + {size};':
+                    bad = 'r1 write'
+                    break
+                seen, todo = set(), list(fn.succ[a])
+                while todo:
+                    t = todo.pop()
+                    if t in seen or t not in fn.body:
+                        continue
+                    seen.add(t)
+                    y = ' '.join(fn.body[t])
+                    if SP_ACCESS.search(y) or re.search(r'R\[1\]', y):
+                        bad = 'stack access after the epilogue'
+                    if 'return;' not in y:
+                        todo += list(fn.succ[t])
+                if bad:
+                    break
+                continue
+            if re.search(r'ea = R\[1?1\]\b|R\[\d+\] = R\[1\];|R\[1\] [-*&|^]|[-+*&|^] R\[1\]', x):
+                bad = 'address derived from r1'
+                break
+            if any(int(mm[1]) != 11 and int(mm[2]) >= lo for mm in re.finditer(r'R\[(\d+)\] = R\[1\] \+ (\d+);', x)):
+                bad = 'pointer into the save area'
+                break
+            mm = re.search(r'R\[11\] = R\[1\] \+ (\d+);', x)
+            r11 = int(mm[1]) if mm else None if re.search(r'R\[11\] = ', x) else r11
+            for s in SP_ACCESS.finditer(x):
+                b, k = (s['b'], s['k']) if s['b'] else (s['qb'], s['qk'])
+                if b == 'R[11]' and r11 is None:
+                    bad = 'r11 access, base unknown'
+                    break
+                off, width = int(k) + (r11 if b == 'R[11]' else 0), SP_SIZE[s['w']] if s['w'] else 8
+                for c, (kind, n, sz, st, ca) in cands.items():
+                    if not (off < c + sz and c < off + width) or (ca == a and s[0] in st):
+                        continue
+                    r = re.search(NV_RESTORE[kind].format(n=n, b=re.escape(b), k=re.escape(k)), x)
+                    if r and off == c:
+                        rest[c].append((a, r[0]))
+                    else:
+                        keep.add(c)
+            if bad:
+                break
+        if bad:
+            stat['skipped'] += 1
+            continue
+        for c, (kind, n, sz, st, ca) in cands.items():   # a restored register must be dead until the exit
+            nb = GB(n) if kind == 'g' else FB(n)
+            same = {ra for c2, v in cands.items() if v[1] == n and (v[0] == 'g') == (kind == 'g') for ra, _ in rest[c2]}
+            for ra, rs in rest[c]:
+                seen, todo = set(), list(fn.succ[ra])
+                while todo and c not in keep:
+                    t = todo.pop()
+                    if t in seen or t not in fn.body:
+                        continue
+                    seen.add(t)
+                    if t in same:   # the other half's restore (lfd after psq_l): dropped with it
+                        todo += list(fn.succ[t])
+                    elif fn.use[t] & nb:
+                        keep.add(c)
+                    elif not fn.kill[t] & nb and 'return;' not in ' '.join(fn.body[t]):
+                        todo += list(fn.succ[t])
+            if c not in keep and any(len(re.findall(rf'\b(?:R|F)\[{n}\]', ' '.join(fn.body[ra]))) > 1 for ra, _ in rest[c]):
+                keep.add(c)   # the restoring instruction itself reads the register again
+        stat['kept'] += len(keep)
+        drop = {c: v for c, v in cands.items() if c not in keep}
+        if not drop:
+            continue
+        body = {a: list(v) for a, v in fn.body.items()}
+        for c, (kind, n, sz, st, a) in drop.items():
+            body[a] = [y.replace(st, '', 1) for y in body[a]]
+            for ra, rs in rest[c]:
+                body[ra] = [y.replace(rs, '', 1) for y in body[ra]]
+            stat[kind] += 1
+            stat['restores'] += len(rest[c])
+        stat['functions'] += 1
+        fns[i] = Func(fn.entry, fn.order, body, fn.labels, fn.gotos)
+    print(f"non-volatile saves dropped in {stat['functions']} functions: {stat['g']} stw, {stat['d']} stfd, {stat['q']} "
+          f"psq_st, {stat['restores']} restores; {stat['skipped']} functions with saves left as they are (frame use), "
+          f"{stat['kept']} slots kept (other access or read after the restore)")
+    return fns
+
+
+SP_SIZE = {'8': 1, '16': 2, '32': 4, '64': 8}
+
+
 def check_gqr_writes():
     """psq_ld0/psq_st0 (ppc.h) assume GQR0 = 0: runtime/*.c may only write 0 to cpu.gqr[0], and a
     computed index only where listed (GQR_INDEX_OK: thp.c sets GQR2-5)."""
@@ -1524,6 +1665,7 @@ def main():
     fns = [translate_function(p, a) for a in tr]
     fns = fold_base_regs(fns)
     fns = fold_so(fns)
+    fns = drop_nv_saves(fns)
     n = sum(len(re.findall(r'/\* inlined f_', x)) for fn in fns for v in fn.body.values() for x in v)
     print(f'{n} calls to {len(p.inline)} leaf functions inlined')
     for fn in fns:
