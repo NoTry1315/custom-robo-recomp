@@ -262,6 +262,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   button "VRAM textures" (touch grid back in menu.c) toggles it. Citra: logs + fb dumps identical, battle gx tex
   0.2 -> 0.3 ms, linear free +4.5 MB. Default on. Not yet on hardware: A/B campaign 8.3 gpu ms (run 27: 12.2).
   Details: unknowns "VRAM textures".
+- Stereo 3D (2026-10-22, merged to main with VRAM textures): the top screen draws in
+  stereo while the 3D slider is above 0. The right eye replays the left eye's GPU command words (the mw3ds technique),
+  so it costs almost no CPU. The vertex shader has an `eye` uniform that only gx.c writes, raw: perspective draws
+  shift by sep * max(1 - conv/w, -1) per eye, and orthographic (HUD) draws do not shift. sdmc:/cr_stereo_force.txt
+  = "slider [sep] [conv]" forces it in Citra. Slider 0 is the mono path: battle and campaign SDK logs and fb dumps
+  are identical to main. Citra battle 4.2: 0 fallbacks, ~16k words (64 KB) replayed per frame, cmdbuf 2%, GX
+  thread busy 13.6 -> 13.9 ms. Citra's gpu ms does not measure the real GPU, so the stereo cost is not yet
+  measured on hardware. Details: unknowns "Stereo 3D".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
