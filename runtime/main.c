@@ -7,6 +7,7 @@
 
 void cpu_init(void);
 void recomp_mtx_init(void);
+void recomp_libm_init(void);
 void f_80003154(void); /* __start (DOL entry) */
 extern jmp_buf recomp_exit_jmp;
 u32 __stacksize__ = 1024 * 1024;  /* translated code nests one host frame per guest call */
@@ -32,6 +33,7 @@ int main(void) {
     recomp_log("# system: %s, speedup requested\n", n3ds ? "New 3DS" : "old 3DS (or emulator reporting old)");
     if (recomp_load_dol() == 0) {
         recomp_mtx_init();
+        recomp_libm_init();
         printf("main.dol loaded, running __start\n");
         recomp_log("# build %s\n", RECOMP_BUILD);
         /* sdmc:/cr_runfast.txt: FZ+DN on the game thread (VFP11 traps to support code on
@@ -42,7 +44,7 @@ int main(void) {
         recomp_log("# fpscr: game thread at boot %08lx, now %08lx (sdmc:/cr_runfast.txt)\n", fp0, recomp_fpscr());
         /* sdmc flag files present at boot, so a hardware run shows what it tested */
         static const char *const flags[] = { "cr_gxthread_off", "cr_gxthread_fliptest", "cr_batch_off", "cr_dlcache_off", "cr_dlclean_off", "cr_gpukick_off",
-            "cr_mtx_off", "cr_runfast", "cr_vsync_on", "cr_dvdasync_off", "cr_dvd_stalltest", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_audio_rt_off", "cr_audio_rt_on", "cr_pad_script", "cr_pad_replay",
+            "cr_mtx_off", "cr_libm_off", "cr_runfast", "cr_vsync_on", "cr_dvdasync_off", "cr_dvd_stalltest", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_audio_rt_off", "cr_audio_rt_on", "cr_pad_script", "cr_pad_replay",
             "cr_vramtex_off", "cr_stereo_force" };
         char on[256] = "";
         for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; i++) {

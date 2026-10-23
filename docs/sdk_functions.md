@@ -1239,19 +1239,19 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x8016640c | 0x33c | MSL_unk_8016640c | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80166748 | 0x27c | MSL_unk_80166748 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x801669c4 | 0x830 | MSL_unk_801669c4 | unk | in module range, no name match; callers=1 callees=2 |
-| 0x801671f4 | 0x3a0 | MSL_unk_801671f4 | unk | in module range, no name match; callers=3 callees=1 |
-| 0x80167594 | 0xf4 | MSL_unk_80167594 | unk | in module range, no name match; callers=5 callees=0 |
+| 0x801671f4 | 0x3a0 | __ieee754_rem_pio2 | high | fdlibm: n = x / (pi/2), y[2] at r3; npio2_hw at 0x801c4c58; large args call __kernel_rem_pio2 0x80167688 (checked in the disassembly 2026-10-22) |
+| 0x80167594 | 0xf4 | __kernel_cos | high | fdlibm __kernel_cos(x f1, y f2): C1-C6 poly, qx 0.28125 (checked 2026-10-22) |
 | 0x80167688 | 0xe54 | MSL_unk_80167688 | unk | in module range, no name match; callers=1 callees=4 |
-| 0x801684dc | 0xa0 | MSL_unk_801684dc | unk | in module range, no name match; callers=5 callees=0 |
+| 0x801684dc | 0xa0 | __kernel_sin | high | fdlibm __kernel_sin(x f1, y f2, iy r3): S1-S6 poly (checked 2026-10-22) |
 | 0x8016857c | 0x214 | MSL_unk_8016857c | unk | in module range, no name match; callers=2 callees=0 |
 | 0x80168790 | 0x218 | MSL_unk_80168790 | unk | in module range, no name match; callers=3 ext=1 callees=0 |
 | 0x801689a8 | 0x28 | MSL_unk_801689a8 | unk | in module range, no name match; callers=3 callees=0 |
-| 0x801689d0 | 0xd4 | sin | medium | calls __kernel_sin/__ieee754_rem_pio2, 55 callers |
+| 0x801689d0 | 0xd4 | cos | high | |x| <= pi/4 calls __kernel_cos; quadrants kcos, -ksin, -kcos, ksin (was listed as sin; native in runtime/libm.c), 55 callers |
 | 0x80168aa4 | 0x148 | MSL_unk_80168aa4 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80168bec | 0x8c | MSL_unk_80168bec | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80168c78 | 0x1c4 | MSL_unk_80168c78 | unk | in module range, no name match; callers=6 callees=1 |
 | 0x80168e3c | 0xfc | MSL_unk_80168e3c | unk | in module range, no name match; callers=1 callees=0 |
-| 0x80168f38 | 0xd8 | cos | medium | same, 52 callers |
+| 0x80168f38 | 0xd8 | sin | high | |x| <= pi/4 calls __kernel_sin; quadrants ksin, kcos, -ksin, -kcos (was listed as cos; native in runtime/libm.c), 52 callers |
 | 0x80169010 | 0x78 | tan | medium | calls __kernel_tan, 12 callers |
 | 0x80169088 | 0x20 | MSL_unk_80169088 | unk | in module range, no name match; callers=3 ext=3 callees=1 |
 | 0x801690a8 | 0x20 | MSL_unk_801690a8 | unk | in module range, no name match; callers=2 ext=2 callees=1 |
@@ -1264,9 +1264,9 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x8016938c | 0x8 | MSL_unk_8016938c | unk | in module range, no name match; callers=6 ext=6 callees=0 |
 | 0x80169394 | 0x24 | MSL_unk_80169394 | unk | in module range, no name match; callers=2 callees=1 |
 | 0x801693b8 | 0x24 | tanf | medium | calls tan; used by C_MTXPerspective |
-| 0x801693dc | 0x24 | cosf | medium | calls cos; used by PSMTXRotRad |
-| 0x80169400 | 0x24 | sinf | medium | calls sin; used by PSMTXRotRad |
-| 0x80169424 | 0x20 | sqrtf | medium | 127 callers, calls sqrt 0x80169168 |
+| 0x801693dc | 0x24 | sinf | high | frsp(sin 0x80168f38) (was listed as cosf); used by PSMTXRotRad |
+| 0x80169400 | 0x24 | cosf | high | frsp(cos 0x801689d0) (was listed as sinf); used by PSMTXRotRad |
+| 0x80169424 | 0x20 | sqrtf | medium | 127 callers, calls sqrt 0x80169168 (no frsp); native in runtime/libc.c |
 | 0x80169444 | 0x4 | MSL_unk_80169444 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80169448 | 0x4 | MSL_unk_80169448 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x8016944c | 0x8 | MSL_unk_8016944c | unk | in module range, no name match; callers=2 callees=0 |

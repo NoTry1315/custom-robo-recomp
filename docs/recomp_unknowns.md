@@ -1554,10 +1554,112 @@ write at frame 0. The shader adds 0 to xy.
 - The slider's position only scales the separation. conv is fixed and has no runtime control.
 - EFB-to-texture copies are not emulated, so render-to-texture effects get no stereo treatment.
 
+## 2v2 game CPU: native sin/cos, inline fmadd, non-volatile saves (2026-10-22, not yet on hardware)
+
+Task: hardware run 28's 2v2 battle runs 30.5 fps with game CPU 29.8 ms of a 32.8 ms frame. Find where the
+game thread's time goes in the `2v2` replay (scene 4.2 r4200-8610) and cut it without hand-porting game logic.
+Citra only (`replay.ps1 -Name 2v2`, `time_avg.py --from 4260`; Citra time counts instructions).
+
+**Profile** (`make FNPROF=1` `# prof`, main@9dc614c, 2v2 r4500-8400 vs 1v1 `battle` r2700-3600; ms = share x
+FNPROF frame, 64.6 ms in the 2v2, 23.9 in the 1v1; `RECOMP_SITEPROF=1` for calls per frame):
+
+| what | 2v2 ms | 1v1 ms | class | note |
+|---|---|---|---|---|
+| call-boundary glue (00000000) | 11.6 | 4.0 | translator | 35.7k calls, 23.9k entries per frame; 139k register stores before calls, 92k reloads, 212k entry loads, 82k return stores |
+| MSL sin/cos (0x801689d0 cos 0.51, 0x80168f38 sin 0.48, __kernel_cos 0.73, __kernel_sin 0.64, __ieee754_rem_pio2 0.78) | 3.1 | ~0.9 | SDK (MSL) | ~2400 sin/cos calls per frame, each 2-3 more translated calls; native now |
+| 0x801829d0 | 3.1 | 0.26 | game | 186 calls per frame, cos/sin x4 per call, 16 FPR saves; with 0x8017b4a4 (1.0), 0x801835b0 (0.9), 0x801822d0 (0.5), 0x8018144c (0.45): a code family at 0x8017b000-0x80185000 that is almost idle in the 1v1 (effects or particles: a guess) |
+| 0x80060fa4 | 2.9 | 0.87 | game | 346 calls per frame, call-free float loop (physics/collision), 15 FPR + 9 GPR saves |
+| PSMTXConcat (native) | 1.8 | 0.6 | SDK | 991 calls per frame |
+| 0x8019fc14 (angles -> rotation) | 1.55 | 0.38 | game | 273 calls, 11 FPR saves |
+| 0x8001b544 (vec3 distance check) | 1.33 | 0.35 | game | 904 calls per frame |
+| GX SDK calls on the game thread (GXBegin, GXLoadPos/NrmMtxImm, GXSetVtxDesc..) | ~2.5 | ~1.2 | runtime | |
+| waits (GXDrawDone 1.9, VIWaitForRetrace 1.1) | 3.0 | 2.0 | runtime | |
+
+What grows with four robots: the glue (+7.5 ms, more calls), the 0x8017b000-0x80185000 family (+5 ms), sin/cos
+(+2.2), 0x80060fa4 (+2.0), PSMTXConcat (+1.2), 0x8019fc14 and 0x8001b544 (+1 each). Prologue saves of r14-r31
+and f14-f31 alone ran ~37k stw, 33k stfd and 33k psq_st per 2v2 frame.
+
+**1. Native MSL sin/cos** (`runtime/libm.c`, recomp.py `MSL_NATIVE`, handled like `MTX_NATIVE`: calls go to
+sdk_sin/cos/sinf/cosf, the translated bodies stay for the rare paths and `cr_libm_off`):
+- Names: `docs/sdk_functions.md` had sin and cos swapped. 0x801689d0 calls __kernel_cos for |x| <= pi/4 and
+  takes quadrants kcos, -ksin, -kcos, ksin, so it is **cos**; 0x80168f38 is **sin**; 0x801693dc = frsp(sin) =
+  sinf and 0x80169400 = cosf (were swapped too). 0x801684dc = __kernel_sin(x, y, iy r3), 0x80167594 =
+  __kernel_cos, 0x801671f4 = __ieee754_rem_pio2 (npio2_hw at 0x801c4c58), all checked in the disassembly.
+- The native follows the guest instruction order with the same operations as gen/, so results are those of
+  the translated code (not Gekko's: see 2). It leaves what the translated calls leave in `cpu` for a later
+  reader: r3, r4, r6, f1-f4 (ps0; lfd and double ops keep ps1) and XER[CA] (srawi in rem_pio2's careful path),
+  and not r0, f0, f5-f7, cr0 or the guest stack frames (no translated return stores those). |x| > 2^19 pi/2,
+  inf and NaN run the translated body (rem_pio2's large path calls __kernel_rem_pio2). recomp.py allows the
+  extra writes (NATIVE_WRITE_EXTRA: libm.c r6, f2-f4, cpu xer_ca).
+- `sdmc:/cr_bench.txt` adds `# bench libm` lines: 20000 inputs per function (small, medium, up to and past
+  2^19 pi/2, float arguments, near n pi/2, tiny, the pi/4 boundary, inf/NaN/0), every compared register poisoned
+  first, ps1 included: 0 differ for all four. Citra per call: sin 3443 -> 1085 ns.
+- `sqrtf` (0x80169424, `bl sqrt` with no frsp, 596 calls per 2v2 frame) is a plain native (`sdk_sqrtf`).
+- Live toggle: bottom-screen button "Native sin/cos" (bound to `recomp_libm_off`); the `# time .. split` line
+  ends with `libm on|off|mixed` and `time_avg.py` splits by it.
+
+**2. Double fmadd inline.** devkitARM's newlib `fma()` is `vmla.f64 d2, d0, d1; vmov; bx lr` (libm.a,
+armv6k/fpu): VFPv2 has no fused multiply-add, so it rounds twice, unlike Gekko's fused fmadd/fmsub/fnmadd/
+fnmsub. gen/ called it at 460 sites (MSL math, a few HSD functions). recomp.py now emits `fmadd_d(a, c, b)` =
+`a * c + b` (ppc.h): the same two roundings without the libm call (logs, framebuffers and the libm bench are
+unchanged). Open: double fmadd is not fused, so double math (MSL sin/cos/atan2/pow..) can differ from Dolphin
+in the last bit; a correct fused multiply-add in software would cost much more. The old ppc.h comment calling
+fma() "a software libm call" was wrong and is corrected.
+
+**3. Non-volatile saves dropped** (recomp.py `drop_nv_saves()`). Translated callers keep r14-r31/f14-f31 in C
+locals and never reload them from `cpu` after a call ("Translator performance"), so an MWCC prologue saved the
+(possibly stale) `cpu` copy it loaded at entry, and the epilogue loaded it back into a local that is dead at the
+return. The pass drops a save and its restores when: the frame is one `stwu` at the entry; r1 is otherwise only
+written by `addi r1, r1, size` with no stack access after it before the return; no address is derived from r1
+(indexed or update forms, `mr rX, r1`, r1 arithmetic other than `addi rX, r1, k`, or such a pointer at or
+above the lowest save slot); the register still holds its entry value at the save (prologue = straight-line
+code from the entry); every other access to the slot in the function (via r1 or r11 = r1 + N for the inlined
+_savegpr/_restgpr) is a restore of the same register at the same offset; and the restored register is not read
+before the function exits. Result: 1886 functions, 9981 stw, 1874 stfd, 1837 psq_st and 13665 restores dropped;
+5 functions keep theirs (other r1 use); no slot was kept for another access. 3dsx 7.37 -> 7.05 MB.
+`RECOMP_KEEP_NV_SAVES=1 python tools/recomp/recomp.py` keeps every save (A/B builds).
+- Semantics: the saved slots in guest stack memory keep older contents. Before, they held the stale `cpu`
+  copies, not the caller's real registers, so a reader of them was already off; a reader of uninitialized stack
+  (or a back-chain walker reading saved registers) would now see other values. Tail calls after a dropped
+  restore store the function's own register value instead of the reloaded stale copy (the tail target saves
+  nothing from it, or only into its own dropped slot). Identity checks below found no difference.
+- Bench (`cr_bench`): translated gmtx_mul (0x8001e134, game code) 3131 -> 2161 ns per call, translated
+  PSMTXConcat body 3189 -> 2992 ns.
+
+**Results** (Citra game ms, time_avg: 2v2 scene 4.2 `--from 4260`, battle 4.2 `--from 2460`, campaign 8.3; base
+main@9dc614c built in a separate worktree):
+
+| step | 2v2 game | 2v2 frame | battle game | campaign game |
+|---|---|---|---|---|
+| base 9dc614c | 52.9 | 60.0 | 20.0 | 9.9 |
+| + native sin/cos, sqrtf (libm.c, fma() calls) | 51.2 | 58.4 | | |
+| + inline multiply-add in libm.c | 50.6 | 57.7 | | |
+| + fmadd_d in gen/ (commit d1e6d03) | 50.4 | 57.5 | 19.2 | 9.8 |
+| same build, `cr_libm_off` | 52.3 | 59.5 | | |
+| + non-volatile saves dropped (3f87081) | 43.2 | 50.4 | 17.1 | 8.9 |
+
+2v2 game -18.3%, battle -14.5%, campaign -10% (campaign is at the 60 Hz cap: frame 17.2 unchanged). GX thread
+busy unchanged (37.7 in the 2v2). Identity vs base (compare_logs.py exit 0: SDK calls with r3-r6 and lr, pad,
+scene, summary lines; framebuffer dumps byte-identical): 2v2 (5269 lines, fb r5000/6500/8000), battle (2690,
+r2100/2700/3300), campaign (2939, r1500/1980/2300) and boot to the title (1601 lines, 3000 retraces), at each
+step; also the 2v2 with `cr_libm_off`. FNPROF after: frame 64.6 -> 54.6 ms; glue 11.6 -> 10.6 ms (19%),
+0x801829d0 3.1 -> 2.4, 0x80060fa4 2.9 -> 1.8, 0x8019fc14 1.55 -> 0.54, 0x8001b544 1.33 -> 0.63, sin + cos
+natives 1.3 ms.
+
+**Not done / next:**
+- The call glue is still the largest bucket (10.6 ms FNPROF, 19%): passing argument registers as C arguments
+  is the redesign named in "Call-boundary glue".
+- The 0x8017b000-0x80185000 family (0x801829d0 and neighbours, ~4 ms after) only runs in the 2v2: identify it
+  (decomp names) and look at its codegen (float stack round trips: stfs/lfs through r1 with bswap, see
+  0x80060fa4).
+- Hardware: the hardware gain of dropping the saves is unknown (stores to the guest stack are cheaper on ARM11
+  than in Citra's instruction count, but the FPR saves also converted ps0/ps1 to float). A/B: the libm button is
+  live; for the saves, build once with `RECOMP_KEEP_NV_SAVES=1`.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
-Functions translated: 2743. SDK stubs: 1048. MetroTRK entries skipped: 184. Jump tables as switch: 52.
+Functions translated: 2742. SDK stubs: 1053. MetroTRK entries skipped: 184. Jump tables as switch: 52.
 
 ### flow into non-translated code that is not a known entry (1)
 
@@ -1595,7 +1697,7 @@ Functions translated: 2743. SDK stubs: 1048. MetroTRK entries skipped: 184. Jump
 
 0x80003408 mtmsr
 
-### valid code not reached from any function start (621)
+### valid code not reached from any function start (628)
 
 0x800034b0, 0x800034b4, 0x800034b8, 0x800034bc, 0x800034c0, 0x800034c4, 0x800034c8, 0x800034cc, 0x800034d0, 0x800034d4, 0x800034d8, 0x800035ac, 0x800036ac, 0x800036b0, 0x800036b4, 0x800036b8, 0x800036bc, 0x800036c0, 0x800036c4, 0x800036c8, 0x800036cc, 0x800036d0, 0x800036d4, 0x800036d8, 0x800036dc, 0x800036e0, 0x800036e4, 0x800036e8, 0x800036ec, 0x800036f0, 0x800036f4, 0x800037ac, 0x800037b0, 0x800037b4, 0x800037b8, 0x800037bc, 0x800037c0, 0x800037c4, 0x800037c8, 0x800037cc, 0x800037d0, 0x800037d4, 0x800037d8, 0x800037dc, 0x800038ac, 0x800038b0, 0x800038b4, 0x800038b8, 0x800038bc, 0x800038c0, 0x800038c4, 0x800038c8, 0x800038cc, 0x800038d0, 0x800038d4, 0x800038d8, 0x800038dc, 0x800039ac, 0x800039b0, 0x800039b4, 0x800039b8, 0x800039bc, 0x800039c0, 0x800039c4, 0x800039c8, 0x800039cc, 0x800039d0, 0x800039d4, 0x800039d8, 0x800039dc, 0x80003aac, 0x80003ab0, 0x80003ab4, 0x80003ab8, 0x80003abc, 0x80003ac0, 0x80003ac4, 0x80003ac8, 0x80003acc, 0x80003ad0, 0x80003ad4, 0x80003ad8, 0x80003adc, 0x80003bac, 0x80003bb0, 0x80003bb4, 0x80003bb8, 0x80003bbc, 0x80003bc0, 0x80003bc4, 0x80003bc8, 0x80003bcc, 0x80003bd0, 0x80003bd4, 0x80003bd8, 0x80003bdc, 0x80003cac, 0x80003cb0, 0x80003cb4, 0x80003cb8, 0x80003cbc, 0x80003cc0, 0x80003cc4, 0x80003cc8, 0x80003ccc, 0x80003cd0, 0x80003cd4, 0x80003cd8, 0x80003cdc, 0x80003dac, 0x80003db0, 0x80003db4, 0x80003db8, 0x80003dbc, 0x80003dc0, 0x80003dc4, 0x80003dc8, 0x80003dcc, 0x80003dd0, 0x80003dd4, 0x80003dd8, 0x80003ddc, 0x800040ac, 0x800040b0, 0x800040b4, 0x800040b8, 0x800040bc, 0x800040c0, 0x800040c4, 0x800040c8, 0x800040cc, 0x800040d0, 0x800040d4, 0x800040d8, 0x800040dc, 0x800041ac, 0x800041b0, 0x800041b4, 0x800041b8, 0x800041bc, 0x800041c0, 0x800041c4, 0x800041c8, 0x800041cc, 0x800041d0, 0x800041d4, 0x800041d8, 0x800041dc, 0x800042ac, 0x800042b0, 0x800042b4, 0x800042b8, 0x800042bc, 0x800042c0, 0x800042c4, 0x800042c8, 0x800042cc, 0x800042d0, 0x800042d4, 0x800042d8, 0x800042dc, 0x800043ac, 0x800043cc, 0x800043d0, 0x800043d4, 0x800043d8, 0x800043dc, 0x800043e0, 0x800043e4, 0x800043e8, 0x800043ec, 0x800043f0, 0x800043f4, 0x800043f8, 0x800043fc, 0x80004400, 0x80004404, 0x80004408, 0x8000440c, 0x80004410, 0x80004414, 0x80004418, 0x8000441c, 0x80004420, 0x80004424, 0x80004428, 0x8000442c, 0x80004430, 0x800044ac, 0x800044b0, 0x800044b4, 0x800044b8, 0x800044bc, 0x800044c0, 0x800044c4, 0x800044c8, 0x800044cc, 0x800044d0, 0x800044d4, 0x800044d8 ...
 

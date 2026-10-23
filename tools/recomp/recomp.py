@@ -32,12 +32,17 @@ STUB_MODULES = {'base', 'OS', 'DB', 'DVD', 'VI', 'PAD', 'AI', 'AR', 'ARQ', 'AX',
 SKIP_MODULES = {'MetroTRK'}
 # C library functions outside STUB_MODULES replaced natively in runtime/libc.c
 # (0x80023394 is game code, not in sdk_functions.md: a byte-wise zero fill with 88 callers)
-NATIVE = {0x8000540c: 'memset', 0x800054f4: 'memcpy', 0x80169168: 'sqrt', 0x80023394: 'mem_zero'}
+NATIVE = {0x8000540c: 'memset', 0x800054f4: 'memcpy', 0x80169168: 'sqrt', 0x80023394: 'mem_zero',
+          0x80169424: 'sqrtf'}   # sqrtf = bl sqrt (no frsp)
 # MTX functions replaced in runtime/mtx.c: calls go to sdk_<name>, the body is still
 # translated (f_) and the weak stub calls it (sdmc:/cr_mtx_off.txt and the bench use it)
 MTX_NATIVE = {0x801394c4, 0x801394f0, 0x80139524, 0x801395f0, 0x80139640, 0x80139738, 0x80139a40,
               0x80139a74, 0x80139eb4, 0x80139f08, 0x8013a160, 0x8013a184, 0x8013a1a8, 0x8013a1c4,
               0x8013a208, 0x8013a220, 0x8013a264, 0x8013a284}
+# MSL sin/cos and their float wrappers, replaced in runtime/libm.c the same way (body translated,
+# sdmc:/cr_libm_off.txt and the native's rare paths call it); summary = the translated body's
+MSL_NATIVE = {0x80168f38, 0x801689d0, 0x801693dc, 0x80169400}   # sin, cos, sinf, cosf
+BODY_NATIVE = MTX_NATIVE | MSL_NATIVE
 # SDK functions inside STUB_MODULES that are pure memory code: translated from the guest
 # (PADClamp + ClampStick: deadzone 15, circle radius 56/44, triggers 30..180)
 # Whole ranges: every instruction must be 'tr', not only the entry (else recomp_bad).
@@ -274,7 +279,7 @@ class Program:
         rt = {int(x, 16) for f in (ROOT / 'runtime').glob('*.c')
               for x in re.findall(r'\bf_([0-9a-f]{8})\s*\(', f.read_text(encoding='utf-8'))}
         self.taken = self.starts & ptr
-        self.rtcalled = self.starts & (rt | MTX_NATIVE) - {self.dol.entry}
+        self.rtcalled = self.starts & (rt | BODY_NATIVE) - {self.dol.entry}
 
     def sdk_name(self, a):
         if a in self.stubs:
@@ -288,7 +293,7 @@ class Program:
 
     def callee(self, t):
         k = self.kind(t)
-        if t in MTX_NATIVE:
+        if t in BODY_NATIVE:
             return f'{self.sdk_name(t)}();'
         if k == 'tr':
             return f'f_{t:08x}();'
@@ -514,8 +519,8 @@ def emit_op(p, a, w, d):
                  'fres': f'ppc_fres({fb})'}
         else:
             e = {'fdiv': f'{fa} / {fb}', 'fsub': f'{fa} - {fb}', 'fadd': f'{fa} + {fb}',
-                 'fmul': f'{fa} * {fc}', 'fmsub': f'fma({fa}, {fc}, -{fb})', 'fmadd': f'fma({fa}, {fc}, {fb})',
-                 'fnmsub': f'fma({fa}, {fc}, -{fb})', 'fnmadd': f'fma({fa}, {fc}, {fb})',
+                 'fmul': f'{fa} * {fc}', 'fmsub': f'fmadd_d({fa}, {fc}, -{fb})', 'fmadd': f'fmadd_d({fa}, {fc}, {fb})',
+                 'fnmsub': f'fmadd_d({fa}, {fc}, -{fb})', 'fnmadd': f'fmadd_d({fa}, {fc}, {fb})',
                  'fsel': f'fsel({fa}, {fc}, {fb})', 'frsqrte': f'ppc_frsqrte({fb})'}
         base = d[:-1] if d.endswith('s') and d[:-1] in e else d
         v = e[base]
@@ -761,7 +766,7 @@ def inline_leaves(p, fns):
     out = {}
     for fn in fns:
         n, last = len(fn.order) - 1, fn.order[-1]
-        if (fn.entry in MTX_NATIVE or fn.order[0] != fn.entry or last - fn.entry != 4 * n or fn.labels or fn.gotos or
+        if (fn.entry in BODY_NATIVE or fn.order[0] != fn.entry or last - fn.entry != 4 * n or fn.labels or fn.gotos or
                 [k for k, _, _ in fn.events] != ['ret'] or fn.ev[last] != [0] or
                 not (n <= 16 or n <= 64 and calls[f'f_{fn.entry:08x}'] <= 4) or
                 'cpu.' in fn.text or fn.W & (CTR | CA | SO)):
@@ -950,13 +955,15 @@ EVENT_RE = re.compile(
 # writes on runtime/*.c. Exceptions:
 NATIVE_IN, NATIVE_CLOB = CALLU, GB(3, 4) | FB(1)
 NATIVE_REGS = {'sdk_memcpy': (GB(3, 4, 5), 0), 'sdk_memset': (GB(3, 4, 5), 0),
-               'sdk_sqrt': (FB(1), FB(1)), 'sdk_mem_zero': (GB(3, 4), GB(0))}
+               'sdk_sqrt': (FB(1), FB(1)), 'sdk_sqrtf': (FB(1), FB(1)), 'sdk_mem_zero': (GB(3, 4), GB(0))}
 # runtime/ files allowed other register writes: boot (cpu_init), recomp_call_guest (saves
 # and restores cpu), the MTX bench (saves and restores cpu) and PSMTXConcat's r6 (MTX_REGS)
 NATIVE_WRITE_OK = {'cpu.c', 'mtx.c'}
 # single registers a file may write besides NATIVE_CLOB (each also in that native's NATIVE_REGS):
 # mem_zero leaves r0 = 0 like the guest loop
-NATIVE_WRITE_EXTRA = {('libc.c', 'R', '0')}
+# libm.c leaves r6, f2-f4 and XER[CA] as the translated sin/cos (rem_pio2, kernels) do (MSL_NATIVE)
+NATIVE_WRITE_EXTRA = {('libc.c', 'R', '0'), ('libm.c', 'R', '6'), ('libm.c', 'F', '2'), ('libm.c', 'F', '3'),
+                      ('libm.c', 'F', '4'), ('libm.c', 'cpu', 'xer_ca')}
 # MTX natives (runtime/mtx.c): the translated body's summary plus what the native reads/writes
 MTX_REGS = (GB(3, 4, 5) | FB(1, 2, 3), GB(3, 6) | FB(1))
 
@@ -972,6 +979,8 @@ def check_native_writes():
                                  r'|\bcpu\.(gpr|fpr|cr|ctr|xer_\w+)\b\s*[-+|&^]?=(?!=)', line):
                 if m.group(1) and ((m.group(1), m.group(2)) in (('R', '3'), ('R', '4'), ('F', '1')) or
                                    (f.name, m.group(1), m.group(2)) in NATIVE_WRITE_EXTRA):
+                    continue
+                if m.group(3) and (f.name, 'cpu', m.group(3)) in NATIVE_WRITE_EXTRA:
                     continue
                 bad.append(f'{f.name}:{n}: {line.strip()}')
     if bad:
@@ -1054,6 +1063,147 @@ def fold_so(fns, quiet=False):
     if not quiet:
         print(f'so = 0: {k} compares without | so')
     return fns
+
+
+NV_SAVE = [   # prologue saves of a non-volatile register (MWCC stw/stmw/stfd/psq_st, _savegpr/_savefpr inline)
+    ('g', re.compile(r'wr32_sp\((?P<b>R\[1?1\]), (?P<k>-?\d+), R\[(?P<n>\d+)\]\);')),
+    ('d', re.compile(r'wr64_sp\((?P<b>R\[1?1\]), (?P<k>-?\d+), d2u\(F\[(?P<n>\d+)\]\.ps0\)\);')),
+    ('q', re.compile(r'psq_st0_sp\(F\[(?P<n>\d+)\], (?P<b>R\[1?1\]), (?P<k>-?\d+), 0\);'))]
+NV_RESTORE = {'g': r'R\[{n}\] = rd32_sp\({b}, {k}\);', 'd': r'F\[{n}\]\.ps0 = u2d\(rd64_sp\({b}, {k}\)\);',
+              'q': r'F\[{n}\] = psq_ld0_sp\({b}, {k}, 0\);'}
+SP_ACCESS = re.compile(r'\b(?:rd|wr)(?P<w>8|16|32|64)_sp\((?P<b>R\[1?1\]), (?P<k>-?\d+)'
+                       r'|\bpsq_(?:ld0_sp\(|st0_sp\(F\[\d+\], )(?P<qb>R\[1?1\]), (?P<qk>-?\d+)')
+
+
+def drop_nv_saves(fns):
+    """MWCC prologues save r14-r31/f14-f31 to the frame and epilogues load them back. Translated
+    callers keep their non-volatile registers in C locals and never reload them from `cpu` after a
+    call (EABI, see "Translator performance"), so a prologue saves the possibly stale `cpu` copy it
+    loaded at entry, and the restore loads it into a local that is dead at the return. Both are
+    dropped where the slot is provably used for nothing else: the frame is one stwu at the entry, r1
+    is otherwise only written by `addi r1, r1, size` followed by no stack access before the return,
+    no address is derived from r1 (indexed/update forms, mr, a pointer at or above the save area),
+    the register still holds its entry value at the save, and every other access to the slot (via r1,
+    or r11 = r1 + N) in the function is a restore of the same register. The guest stack keeps older
+    contents in those slots (a reader of uninitialized stack would see that; the saved values were
+    already the stale `cpu` copies). RECOMP_KEEP_NV_SAVES=1 keeps every save."""
+    if os.environ.get('RECOMP_KEEP_NV_SAVES') == '1':
+        print('note: non-volatile saves kept (RECOMP_KEEP_NV_SAVES=1)')
+        return fns
+    stat = defaultdict(int)
+    for i, fn in enumerate(fns):
+        if fn.order[0] != fn.entry:
+            continue
+        m = re.fullmatch(r'\{ u32 ea = R\[1\] - (\d+); wr32_ram\(ea, R\[1\]\); R\[1\] = ea; \}', ' '.join(fn.body[fn.entry]))
+        if not m:
+            continue
+        size = int(m[1])
+        # prologue: straight-line from the entry to the first label, branch, event or r1 write
+        cands, written, r11, prev = {}, 0, None, fn.entry   # slot offset -> (kind, reg, bytes, statement, address)
+        for a in fn.order[1:]:
+            x = ' '.join(fn.body[a])
+            if a != prev + 4 or a in fn.labels or re.search(
+                    r'goto |return;|\bif \(|switch|recomp_|\bf_[0-9a-f]{8}\(|\bsdk_\w+\(|call_indirect|R\[1\] = ', x):
+                break
+            prev = a
+            for kind, rx in NV_SAVE:
+                for s in rx.finditer(x):
+                    n, k, b = int(s['n']), int(s['k']), s['b']
+                    if n < 14 or written & (GB(n) if kind == 'g' else FB(n)) or (b == 'R[11]' and r11 is None):
+                        continue
+                    cands[k + (r11 if b == 'R[11]' else 0)] = (kind, n, 4 if kind == 'g' else 8, s[0], a)
+            mm = re.search(r'R\[11\] = R\[1\] \+ (\d+);', x)
+            r11 = int(mm[1]) if mm else None if re.search(r'R\[11\] = ', x) else r11
+            written |= fn.write[a]
+        if not cands:
+            continue
+        lo = min(cands)
+        bad, keep, rest, r11 = None, set(), defaultdict(list), None
+        for a in fn.order[1:]:
+            x = ' '.join(fn.body[a])
+            if re.search(r'R\[1\] = ', x):
+                if x.strip() != f'R[1] = R[1] + {size};':
+                    bad = 'r1 write'
+                    break
+                seen, todo = set(), list(fn.succ[a])
+                while todo:
+                    t = todo.pop()
+                    if t in seen or t not in fn.body:
+                        continue
+                    seen.add(t)
+                    y = ' '.join(fn.body[t])
+                    if SP_ACCESS.search(y) or re.search(r'R\[1\]', y):
+                        bad = 'stack access after the epilogue'
+                    if 'return;' not in y:
+                        todo += list(fn.succ[t])
+                if bad:
+                    break
+                continue
+            if re.search(r'ea = R\[1?1\]\b|R\[\d+\] = R\[1\];|R\[1\] [-*&|^]|[-+*&|^] R\[1\]', x):
+                bad = 'address derived from r1'
+                break
+            if any(int(mm[1]) != 11 and int(mm[2]) >= lo for mm in re.finditer(r'R\[(\d+)\] = R\[1\] \+ (\d+);', x)):
+                bad = 'pointer into the save area'
+                break
+            mm = re.search(r'R\[11\] = R\[1\] \+ (\d+);', x)
+            r11 = int(mm[1]) if mm else None if re.search(r'R\[11\] = ', x) else r11
+            for s in SP_ACCESS.finditer(x):
+                b, k = (s['b'], s['k']) if s['b'] else (s['qb'], s['qk'])
+                if b == 'R[11]' and r11 is None:
+                    bad = 'r11 access, base unknown'
+                    break
+                off, width = int(k) + (r11 if b == 'R[11]' else 0), SP_SIZE[s['w']] if s['w'] else 8
+                for c, (kind, n, sz, st, ca) in cands.items():
+                    if not (off < c + sz and c < off + width) or (ca == a and s[0] in st):
+                        continue
+                    r = re.search(NV_RESTORE[kind].format(n=n, b=re.escape(b), k=re.escape(k)), x)
+                    if r and off == c:
+                        rest[c].append((a, r[0]))
+                    else:
+                        keep.add(c)
+            if bad:
+                break
+        if bad:
+            stat['skipped'] += 1
+            continue
+        for c, (kind, n, sz, st, ca) in cands.items():   # a restored register must be dead until the exit
+            nb = GB(n) if kind == 'g' else FB(n)
+            same = {ra for c2, v in cands.items() if v[1] == n and (v[0] == 'g') == (kind == 'g') for ra, _ in rest[c2]}
+            for ra, rs in rest[c]:
+                seen, todo = set(), list(fn.succ[ra])
+                while todo and c not in keep:
+                    t = todo.pop()
+                    if t in seen or t not in fn.body:
+                        continue
+                    seen.add(t)
+                    if t in same:   # the other half's restore (lfd after psq_l): dropped with it
+                        todo += list(fn.succ[t])
+                    elif fn.use[t] & nb:
+                        keep.add(c)
+                    elif not fn.kill[t] & nb and 'return;' not in ' '.join(fn.body[t]):
+                        todo += list(fn.succ[t])
+            if c not in keep and any(len(re.findall(rf'\b(?:R|F)\[{n}\]', ' '.join(fn.body[ra]))) > 1 for ra, _ in rest[c]):
+                keep.add(c)   # the restoring instruction itself reads the register again
+        stat['kept'] += len(keep)
+        drop = {c: v for c, v in cands.items() if c not in keep}
+        if not drop:
+            continue
+        body = {a: list(v) for a, v in fn.body.items()}
+        for c, (kind, n, sz, st, a) in drop.items():
+            body[a] = [y.replace(st, '', 1) for y in body[a]]
+            for ra, rs in rest[c]:
+                body[ra] = [y.replace(rs, '', 1) for y in body[ra]]
+            stat[kind] += 1
+            stat['restores'] += len(rest[c])
+        stat['functions'] += 1
+        fns[i] = Func(fn.entry, fn.order, body, fn.labels, fn.gotos)
+    print(f"non-volatile saves dropped in {stat['functions']} functions: {stat['g']} stw, {stat['d']} stfd, {stat['q']} "
+          f"psq_st, {stat['restores']} restores; {stat['skipped']} functions with saves left as they are (frame use), "
+          f"{stat['kept']} slots kept (other access or read after the restore)")
+    return fns
+
+
+SP_SIZE = {'8': 1, '16': 2, '32': 4, '64': 8}
 
 
 def check_gqr_writes():
@@ -1218,6 +1368,8 @@ class Summaries:
         if a in MTX_NATIVE and a in self.s:
             i, c = self.s[a]
             return i | MTX_REGS[0], c | MTX_REGS[1]
+        if a in MSL_NATIVE and a in self.s:   # libm.c reads f1, writes a subset of the body's clob
+            return self.s[a]
         if callee == 'call_indirect':   # its targets: p.taken (functable.c logs any other) and natives
             return self.native_in | self.ind_in, RELU
         return NATIVE_REGS.get(callee, (self.native_in, NATIVE_CLOB))
@@ -1227,7 +1379,7 @@ class Summaries:
         if callee.startswith('f_'):
             return int(callee[2:], 16)
         a = self.name_addr.get(callee)
-        return a if a in MTX_NATIVE else None
+        return a if a in BODY_NATIVE else None
 
     def solve(self, work=None):
         """work: functions to (re)analyze, default all; their callers follow as summaries change"""
@@ -1513,6 +1665,7 @@ def main():
     fns = [translate_function(p, a) for a in tr]
     fns = fold_base_regs(fns)
     fns = fold_so(fns)
+    fns = drop_nv_saves(fns)
     n = sum(len(re.findall(r'/\* inlined f_', x)) for fn in fns for v in fn.body.values() for x in v)
     print(f'{n} calls to {len(p.inline)} leaf functions inlined')
     for fn in fns:
@@ -1555,7 +1708,7 @@ def main():
     # SDK stubs: weak, they only report the call; runtime/ provides the real ones
     st = ['/* generated: weak logging SDK stubs, overridden by runtime/ */', '#include "funcs.h"']
     for a, n in sorted(p.stubs.items()):
-        body = f'f_{a:08x}();' if a in MTX_NATIVE else f'recomp_sdk_call("{n[4:]}");'
+        body = f'f_{a:08x}();' if a in BODY_NATIVE else f'recomp_sdk_call("{n[4:]}");'
         st.append(f'__attribute__((weak)) void {n}(void) {{ {body} }}  /* 0x{a:08x} {p.module(a)} */')
     write_if_changed(out / 'sdk_stubs.c', '\n'.join(dict.fromkeys(st)) + '\n')
     # function table for bctrl/blrl/computed tail calls
@@ -1569,9 +1722,9 @@ def main():
     if (n++ < 16) recomp_log("# call_indirect %08lx: no pointer to it seen by recomp.py, return stores per out() (recomp_unknowns.md)\\n", (unsigned long)a);
 }''')
     ft += [f'static void u_{a:08x}(void) {{ untaken(0x{a:08x}u); f_{a:08x}(); }}' for a in tr
-           if a not in p.taken and a not in MTX_NATIVE]
+           if a not in p.taken and a not in BODY_NATIVE]
     # MTX bodies are reached through their sdk_ natives (weak stubs), as direct calls are
-    ent = ([(a, f'f_{a:08x}' if a in p.taken else f'u_{a:08x}') for a in tr if a not in MTX_NATIVE] +
+    ent = ([(a, f'f_{a:08x}' if a in p.taken else f'u_{a:08x}') for a in tr if a not in BODY_NATIVE] +
            list(p.stubs.items()) + [(a, f'skip_{a:08x}') for a in skip])
     ent.sort()
     # open addressing, linear probing, at most half full (was a binary search: ~12 probes per call,

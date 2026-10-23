@@ -32,6 +32,7 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
   Citra baselines (main@ccbd9f7 + the 2v2 test, `time_avg.py --from 4260`): 2v2 scene 4.2 game 52.9 ms,
   GX thread busy 37.7 ms (two runs identical, 5269/5269 log lines). Citra ms are slower than hardware
   (2v2 on hardware: game 29.8 ms) but rank changes the same way for CPU-side work.
+  After d1e6d03 + 3f87081 (2026-10-22): 2v2 game 43.2 ms, battle 4.2 (`--from 2460`) 17.1, campaign 8.3 8.9.
 
 ## Where it stands (hardware run 28, 2026-10-22, main@75ea35d LTO build)
 
@@ -50,6 +51,8 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Measured effect | Status | Details (unknowns) |
 |---|---|---|---|---|
+| 10-22 | **Non-volatile saves dropped** (translator: MWCC prologue saves / epilogue restores of r14-r31, f14-f31 that only fed dead locals; 1886 functions) | Citra 2v2 game 50.4 -> 43.2 ms, battle 19.2 -> 17.1, campaign 9.8 -> 8.9; logs + fb identical (3f87081) | on; `RECOMP_KEEP_NV_SAVES=1` at generation keeps them; not yet on hardware | 2v2 game CPU |
+| 10-22 | **Native MSL sin/cos/sinf/cosf + sqrtf**; double fmadd as inline `a*c + b` instead of newlib's (already non-fused) `fma()` | Citra 2v2 game 52.9 -> 50.4 ms (libm off in the same build: 52.3), battle 20.0 -> 19.2, campaign 9.9 -> 9.8; logs + fb identical (d1e6d03) | on; button "Native sin/cos", `cr_libm_off.txt`; not yet on hardware | 2v2 game CPU |
 | 10-22 | **Textures in VRAM** (copied from linear FCRAM after 2 unchanged frames; LRU back to linear) | HW run 27 -> 28: campaign GPU 12.2 -> 3.7 ms, 51.2 -> 56.7 fps; battle GPU 9.3 -> 2.2 ms (different fights: rough) | on; button "VRAM textures", `cr_vramtex_off.txt` | VRAM textures |
 | 10-22 | **Stereo 3D** by replaying the left eye's GPU commands for the right eye (mw3ds technique) | HW run 28: 1v1 battle 51.4 fps with 3D on (GPU 9.8 ms) vs 57.3 mono; 0 fallbacks | on with the 3D slider | Stereo 3D |
 | 10-22 | Back-face culling honoured (GXSetCullMode) | HW run 26: campaign GPU 18.9 -> 15.6 ms, 44.4 -> 52.1 fps | on | Cull mode |
@@ -89,8 +92,10 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 ## Open (next)
 
-- **2v2 battle is game-CPU bound** (29.8 ms of a 32.8 ms frame, run 28): profile the `2v2`
-  replay with `make FNPROF=1` to find the hot game functions and translator patterns.
+- **2v2 battle is game-CPU bound** (29.8 ms of a 32.8 ms frame, run 28). Profiled 2026-10-22 (unknowns
+  "2v2 game CPU"); after native sin/cos and dropped saves, Citra 2v2 game 52.9 -> 43.2 ms (-18%), not yet on
+  hardware. Left: call glue (19% of the FNPROF frame), the 0x8017b000-0x80185000 code family that only the 2v2
+  runs (~4 ms), 0x80060fa4.
 - Packed PICA vertex format (session running 2026-10-22): fewer bytes per vertex.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
