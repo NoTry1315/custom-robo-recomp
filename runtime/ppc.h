@@ -86,6 +86,23 @@ RI void wr16_sp(u32 b, s32 k, u16 v){ v = __builtin_bswap16(v); memcpy(sp_at(b, 
 RI void wr32_sp(u32 b, s32 k, u32 v){ v = __builtin_bswap32(v); memcpy(sp_at(b, k), &v, 4); }
 RI void wr64_sp(u32 b, s32 k, u64 v){ wr32_sp(b, k, (u32)(v >> 32)); wr32_sp(b, k + 4, (u32)v); }
 
+/* gen/'s rA + k accesses for other base registers (recomp.py base_access): the hardware check and the
+ * mask work on the base b, k is the load/store offset, so GCC checks and masks a pointer once for all
+ * the fields read through it. Same result as rd32(b + k) unless b + k crosses into or out of the
+ * hardware range or b & RAM_MASK is within 32 KB of either end of the mirror: ram[] and ram_wr[] have
+ * guard space on both sides (cpu.c), so such an access lands there instead of wrapping. */
+#define RAM_GUARD 0x8000u
+RI u8 *b_at(u32 b, s32 k){ return ram + (b & RAM_MASK) + k; }
+#define WR_MARK_B(b, k) (ram_wr[(s32)(((b) & RAM_MASK) + (k)) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
+RI u8  rd8_b (u32 b, s32 k){ if (__builtin_expect(IS_HW(b),0)) return hw_read(b + k,1); return *b_at(b, k); }
+RI u16 rd16_b(u32 b, s32 k){ if (__builtin_expect(IS_HW(b),0)) return hw_read(b + k,2); u16 v; memcpy(&v, b_at(b, k), 2); return __builtin_bswap16(v); }
+RI u32 rd32_b(u32 b, s32 k){ if (__builtin_expect(IS_HW(b),0)) return hw_read(b + k,4); u32 v; memcpy(&v, b_at(b, k), 4); return __builtin_bswap32(v); }
+RI u64 rd64_b(u32 b, s32 k){ return ((u64)rd32_b(b, k) << 32) | rd32_b(b, k + 4); }
+RI void wr8_b (u32 b, s32 k, u8 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,1); return; } WR_MARK_B(b, k); *b_at(b, k) = v; }
+RI void wr16_b(u32 b, s32 k, u16 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,2); return; } WR_MARK_B(b, k); v = __builtin_bswap16(v); memcpy(b_at(b, k), &v, 2); }
+RI void wr32_b(u32 b, s32 k, u32 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,4); return; } WR_MARK_B(b, k); v = __builtin_bswap32(v); memcpy(b_at(b, k), &v, 4); }
+RI void wr64_b(u32 b, s32 k, u64 v){ wr32_b(b, k, (u32)(v >> 32)); wr32_b(b, k + 4, (u32)v); }
+
 RI float  u2f(u32 v){ float f; memcpy(&f, &v, 4); return f; }
 RI u32    f2u(float f){ u32 v; memcpy(&v, &f, 4); return v; }
 RI double u2d(u64 v){ double d; memcpy(&d, &v, 8); return d; }
@@ -268,7 +285,11 @@ RI void psq_st0(PS v, u32 a, int w){ wr32(a, f2u((float)v.ps0)); if (!w) wr32(a 
 RI void psq_st0_ram(PS v, u32 a, int w){ wr32_ram(a, f2u((float)v.ps0)); if (!w) wr32_ram(a + 4, f2u((float)v.ps1)); }
 RI PS psq_ld0_sp(u32 b, s32 k, int w){ PS r; r.ps0 = u2f(rd32_sp(b, k)); r.ps1 = w ? 1.0 : u2f(rd32_sp(b, k + 4)); return r; }
 RI void psq_st0_sp(PS v, u32 b, s32 k, int w){ wr32_sp(b, k, f2u((float)v.ps0)); if (!w) wr32_sp(b, k + 4, f2u((float)v.ps1)); }
+RI PS psq_ld0_b(u32 b, s32 k, int w){ PS r; r.ps0 = u2f(rd32_b(b, k)); r.ps1 = w ? 1.0 : u2f(rd32_b(b, k + 4)); return r; }
+RI void psq_st0_b(PS v, u32 b, s32 k, int w){ wr32_b(b, k, f2u((float)v.ps0)); if (!w) wr32_b(b, k + 4, f2u((float)v.ps1)); }
 #else
+#define psq_ld0_b(b, k, w) psq_ld((b) + (k), w, 0)
+#define psq_st0_b(v, b, k, w) psq_st(v, (b) + (k), w, 0)
 #define psq_ld0(a, w) psq_ld(a, w, 0)
 #define psq_ld0_ram(a, w) psq_ld(a, w, 0)
 #define psq_st0(v, a, w) psq_st(v, a, w, 0)

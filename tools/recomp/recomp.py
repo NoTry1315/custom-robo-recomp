@@ -367,8 +367,9 @@ def psq_op(d, D, W, I):
     return f'F[{D}] = psq_ld(ea, {W}, {I});' if d.startswith('psq_l') else f'psq_st(F[{D}], ea, {W}, {I});'
 
 
-def emit_op(p, a, w, d):
-    """Straight-line instruction -> list of C statements. Control flow is handled by the caller."""
+def emit_op(p, a, w, d, sp11=False):
+    """Straight-line instruction -> list of C statements. Control flow is handled by the caller.
+    sp11: r11 is a stack pointer (inline_body), so its accesses are left to stack_access."""
     D, A, B, C = rD(w), rA(w), rB(w), rC(w)
     S = D
     rec = rc(w)
@@ -668,6 +669,8 @@ def emit_op(p, a, w, d):
     if A == 1 and (d in LOADS or d in STORES or d[:-1] in LOADS or d[:-1] in STORES or
                    d in ('lmw', 'stmw') or d[:3] in ('lfs', 'lfd', 'stf', 'psq')):
         out = [stack_access(x) for x in out]
+    elif BASE_ACCESS and A != 0 and not (sp11 and A == 11) and d in BASE_OPS:
+        out = [base_access(x, A) for x in out]
     return out
 
 
@@ -692,6 +695,28 @@ def stack_access(x):
             return '{ ' + body + ' }'
     x = re.sub(r'\b(rd|wr)(8|16|32|64)\(', r'\1\2_ram(', x)
     return re.sub(r'\bpsq_(ld|st)0\(', r'psq_\g<1>0_ram(', x)
+
+
+# D-form (base + constant offset) loads/stores, no update: base_access
+BASE_OPS = {'lwz', 'lbz', 'lhz', 'lha', 'stw', 'stb', 'sth', 'lfs', 'lfd', 'stfs', 'stfd', 'psq_l', 'psq_st'}
+BASE_ACCESS = os.environ.get('RECOMP_BASE_ACCESS', '1') != '0'
+BASE_EA = re.compile(r'\{ u32 ea = R\[(\d+)\](?: ([+-]) (-?\d+))?; (.*) \}$')
+BASE_USE = re.compile(r'\b(?:(rd|wr)(8|16|32|64)|psq_(ld|st)0)\((F\[\d+\], )?ea(?=[,)])')
+
+
+def base_access(x, A):
+    """rA + k access (rA not r1) -> *_b(rA, k) (ppc.h): the hardware check and the RAM mask work on
+    the base register, k is the load/store offset, so accesses off one pointer share one check and
+    one masked base. RECOMP_BASE_ACCESS=0 keeps rd32(rA + k)."""
+    x = re.sub(rf'\b(rd|wr)(8|16|32|64)\(R\[{A}\](?: ([+-]) (\d+))?(?=[,)])',
+               lambda m: f'{m[1]}{m[2]}_b(R[{A}], {(m[3] or "") + (m[4] or "0")}'.replace('+', ''), x)
+    m = BASE_EA.match(x)
+    if m and int(m[1]) == A and ' = ea;' not in m[4]:
+        k = (-1 if m[2] == '-' else 1) * int(m[3] or 0)
+        body = BASE_USE.sub(lambda u: (f'{u[1]}{u[2]}_b(' if u[1] else f'psq_{u[3]}0_b({u[4] or ""}') + f'R[{A}], {k}', m[4])
+        if not re.search(r'\bea\b', body):
+            return '{ ' + body + ' }'
+    return x
 
 
 def cond_expr(w):
@@ -726,7 +751,7 @@ def inline_body(p, t):
         if d == 'bclr':
             return out
         assert d in ('stw', 'lwz', 'stfd', 'lfd') and rA(w) == 11, f'save/restore helper {t:08x}: {d}'
-        out += [stack_access(x) for x in emit_op(p, t, w, d)]
+        out += [stack_access(x) for x in emit_op(p, t, w, d, sp11=True)]
         t += 4
 
 
