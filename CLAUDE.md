@@ -278,6 +278,13 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   game 19.96 ms at -O2; -O3 19.94 (+9% code), LTO 19.66 (-1.5%, +2% code), -O3 + LTO 19.66 (+35% code), LTO +
   -fipa-pta 19.76; logs and fb dumps identical. Below the 2% bar, so not default; LTO is a hardware A/B candidate.
   Details: unknowns "-O3 and LTO".
+- Merged hardware test build (2026-10-22, main@75ea35d): VRAM textures + stereo + FPSCR log + GENOPT/LTO options.
+  Merge fixes: right-eye target allocated at init (else VRAM textures can take its VRAM), VRAM code uses
+  C3DCtxHead.q; build id shows "lto" / GENOPT. Citra: battle (mono) and campaign (stereo forced) logs + fb dumps
+  identical to the pre-merge base, 0 stereo fallbacks. SD: 3ds/custom-robo-recomp.3dsx (normal) and
+  custom-robo-recomp-lto.3dsx (LTO=1) for the LTO A/B; old build kept as ..._2026-10-22_pre-stereo-vram.3dsx.bak.
+  Hardware checks: `# fpscr:` boot value, campaign 8.3 gpu ms with the VRAM button on/off, stereo gpu cost with
+  the slider up, LTO vs normal battle game ms.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
