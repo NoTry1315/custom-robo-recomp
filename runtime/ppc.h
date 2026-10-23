@@ -42,14 +42,28 @@ void hw_write(u32 a, u32 v, int size);
  * skips re-hashing a list/array range whose pages were not written since it was last hashed. Stores
  * through r1/r11 (wr*_ram) are not marked; the cache hashes ranges near the stack. */
 #define WR_PAGE_SHIFT 10
-extern u32 ram_wr[(RAM_MASK + 1) >> WR_PAGE_SHIFT];
+extern u32 ram_wr[];   /* (RAM_MASK + 1) >> WR_PAGE_SHIFT entries, guard space around them (cpu.c) */
 extern u32 recomp_wr_epoch;
 #define WR_MARK(a) (ram_wr[((a) & RAM_MASK) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
 void recomp_mark_ram(u32 a, u32 n);   /* bulk writers */
 void recomp_gx_fifo_write(u32 v, int size); /* WGPIPE 0xCC008000 */
 /* hw_write for an address GCC knows: WGPIPE stores (GXPosition3f32 & co. inlined in game code, lis
  * 0xCC01 / -0x8000) call the FIFO directly, as hw_write would */
-#define HW_WRITE(a, v, n) ((__builtin_constant_p(a) && ((a) & ~7u) == 0xCC008000u) ? recomp_gx_fifo_write(v, n) : hw_write(a, v, n))
+#define HW_WRITE(a, v, n) ((__builtin_constant_p(a) && ((a) & ~7u) == 0xCC008000u) ? gx_fifo_put(v, n) : hw_write(a, v, n))
+/* WGPIPE store inline: the bytes go straight into gx.c's FIFO (big-endian) while the primitive GXBegin
+ * started is still incomplete after them (recomp_fifo_lim, gx.c fifo_lim); the store that completes it
+ * (or any other) goes through recomp_gx_fifo_write, which flushes */
+extern unsigned char recomp_fifo[];
+extern u32 recomp_fifo_n, recomp_fifo_lim;
+static inline __attribute__((always_inline)) void gx_fifo_put(u32 v, int n) {
+    u32 f = recomp_fifo_n;
+    if (__builtin_expect(f + n < recomp_fifo_lim, 1)) {
+        if (n == 4) { u32 b = __builtin_bswap32(v); memcpy(recomp_fifo + f, &b, 4); }
+        else if (n == 2) { u16 b = __builtin_bswap16((u16)v); memcpy(recomp_fifo + f, &b, 2); }
+        else recomp_fifo[f] = (u8)v;
+        recomp_fifo_n = f + n;
+    } else recomp_gx_fifo_write(v, n);
+}
 
 /* forced inline: in gen/'s large functions GCC stopped inlining these (37.5k out-of-line calls) */
 #define RI static inline __attribute__((always_inline))
