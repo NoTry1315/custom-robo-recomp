@@ -173,9 +173,13 @@ RI u64 fctiw_bits(double b, int tz){
 double ppc_fres(double b);      /* Gekko table estimates; see recomp_unknowns.md */
 double ppc_frsqrte(double b);
 /* single-precision madd (fmadds, ps_madd...): a is single, c is cut to 25 bits (f25), so
- * a*c is exact in a double and a*c + b rounds once, like fma(). fma() itself is a
- * software libm call on the 3DS (VFPv2 has no fused multiply-add). */
+ * a*c is exact in a double and a*c + b rounds once, like Gekko's fused madd. */
 static inline double fmadd_s(double a, double c, double b){ return a * c + b; }
+/* double fmadd/fmsub/fnmadd/fnmsub: a*c + b with two roundings. Gekko fuses them (one rounding);
+ * the 3DS has no fused multiply-add and newlib's fma() is itself a non-fused vmla.f64 (checked in
+ * devkitARM's libm.a 2026-10-22), so gen/ always rounded twice here: this is the same result inline,
+ * without the libm call (recomp_unknowns.md "Native MSL sin/cos"). */
+RI double fmadd_d(double a, double c, double b){ return a * c + b; }
 static inline double fsel(double a, double b, double c){ return (a >= -0.0) ? b : c; }
 /* single-precision ops as gen/ emits them (fadds..fnmsubs, ps_add..ps_madds1), result rounded
  * to single. Default: Dolphin's double + fsgl with c cut by f25 and one rounding per madd.
@@ -359,6 +363,8 @@ void recomp_menu_touch(int px, int py); /* PADRead: a new touch, in pixels */
 void recomp_menu_retrace(void);        /* recomp_gx_retrace after the sync: apply bound-flag toggles, redraw buttons */
 void recomp_menu_bind(const char *name, int *var, void (*changed)(void));   /* live-toggle a flag variable from its button (menu.c btn[]) */
 extern u32 recomp_menu_flips;          /* bound-flag toggles so far */
+extern int recomp_libm_off;            /* libm.c: sin/cos/sinf/cosf run the translated bodies (sdmc:/cr_libm_off.txt) */
+extern u32 recomp_libm_flips;
 extern int recomp_vt_on;               /* gx.c: cached textures move to VRAM (sdmc:/cr_vramtex_off.txt = 0) */
 void recomp_vt_toggle(void);           /* bottom-screen button: flip it at the next frame start (texture cache invalidated) */
 extern u32 recomp_vt_flips;            /* VRAM texture toggles so far */

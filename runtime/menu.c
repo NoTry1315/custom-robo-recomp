@@ -37,6 +37,7 @@ static struct btn {
     int req, shown;
 } btn[] = {
     { "VRAM textures", "",   vt_get,   recomp_vt_toggle, 0, 0, 0, 0, -2 },   /* cr_vramtex_off */
+    { "Native sin/cos", "",  0,        0,                1, 0, 0, 0, -2 },   /* cr_libm_off (libm.c binds it) */
 };
 #define NBTN (int)(sizeof btn / sizeof btn[0])
 

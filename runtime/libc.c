@@ -63,3 +63,6 @@ void sdk_sqrt(void) {
     if (b >> 63) { wr32(GUEST_ERRNO, 33); F[1].ps0 = u2d((u64)rd32(GUEST_SQRT_NAN) << 32 | rd32(GUEST_SQRT_NAN + 4)); return; }
     F[1].ps0 = __builtin_sqrt(x);
 }
+
+/* 0x80169424 sqrtf(f1) -> f1: bl sqrt and return (no frsp; callers round) */
+void sdk_sqrtf(void) { sdk_sqrt(); }
