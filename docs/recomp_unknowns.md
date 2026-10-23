@@ -1416,6 +1416,78 @@ runs of each variant agree to 0.01 ms), full build with -j20:
   LTO=1 is the one worth a hardware A/B if battle CPU gets tight. Not yet on hardware.
 - -O3 on runtime/ hot files (gx.c) not tried: -O3 on gen/ gave nothing and battle is bound by game code.
 
+## Vertex packing (2026-10-22, not yet on hardware)
+
+Every vertex the PICA read was a 68-byte `PVtx` (float pos[4], u8 mat[4], float nrm[3], 3 x float tc[3]),
+whatever the draw used. Campaign 8.3 is GPU-side limited on hardware (run 27: gpu 12.2 ms, 55.7k indices
+per frame). Other 3DS ports shrink vertices for this: mw3ds uses 16-byte s16/u8 vertices, the Simpsons
+Hit & Run O3DS port drops normals from static meshes, REGTA packs normals into bytes.
+
+What the draws use (`# gx vattr frame` lines, per stats frame, weighted by vertices drawn; nearly all
+vertices come through the display-list cache):
+
+| | campaign 8.3 (28k verts) | battle 4.2 (35-51k verts) |
+|---|---|---|
+| texcoord sets fed 0/1/2/3 | 14 / 86 / 0 / 0 % | ~45 / 15-24 / 26-40 / 2 % |
+| light loop on (normal read) | 80 % | 50-57 % |
+| position | float 72 %, s16 frac 11 28 % | float 60-90 %, s16 frac 11-14 the rest |
+| normal (lit draws) | float 82 %, s16 frac 14 18 % | mostly float, s16 frac 14 0-40 % |
+| texcoords | float 72 %, u16 frac 15 14 % (of all vertices) | float and u16 frac 15; units fed from the normal (env map) 15-30 % |
+
+So float sources dominate: most of the saving is leaving out unused texcoord sets and normals, and storing
+2-component texcoords. s16/s8 packing helps the minority.
+
+Design (`runtime/gx.c` comment at `VLay`, `plan_finish`, `decode_pk`, `use_buf`):
+- Display-list draws (vertex cache and display-list cache) get a per-draw layout. Only the shader inputs
+  the draw reads are stored, in the GX source format where the PICA has one: s16 -> GPU_SHORT, s8 ->
+  GPU_BYTE, u8 -> GPU_UNSIGNED_BYTE, f32 -> GPU_FLOAT (byte-swapped as they are). u16 has no PICA format,
+  so it is converted to float as before. Immediate draws (vbuf) stay PVtx.
+- Every attribute is a multiple of 4 bytes, so offsets stay aligned and the attribute sizes add up to the
+  stride (no padding attributes needed): position s16x4 / s8x4 / f32x4, with the matrix row in w; material
+  u8x4; normal s16x4 / s8x4 / f32x3; texcoord s16x2 or x4, s8x4, f32x2 or x3.
+- The integer scales are exact. The PICA converts an s16 to float24 exactly, and a power-of-2 scale
+  commutes with float24 rounding. The position and normal scales are a new `vscale` uniform: the shader
+  does `mul r0.xyz, vscale.x, inpos` and `mul r13.xyz, vscale.y, innrm`. In the 68-byte layout vscale is 1,
+  so that path computes what it did before. A texcoord's scale is folded into its texm columns (only
+  set_vtx_unif uploads texm now, from set_texgen's `tex_m`).
+- The normal is left out when the light loop is off and it feeds no texgen. A unit nothing feeds reads a
+  fixed attribute (0, 0, 1, 1), the value PVtx had there. All 12 fixed-attribute slots are set once at init
+  and never change, so stereo replay and mid-frame submits are not affected.
+- A texcoord from TEXn has 2 components (the loader's z = 0) only when that unit's texm column 2 is zero.
+  Otherwise z = 1 is stored, as in PVtx: the dp4 then has the same terms.
+- Still one shader program. Each layout is a C3D_AttrInfo: loaders in register order, then fixed slots.
+  use_buf compares a 30-bit layout id. Battle has ~20-30 layout switches per frame; batching is unchanged
+  (190 DrawElements for 2200 draws, the same as before).
+- The vertex arena is now in 4-byte units. Each allocation starts at a multiple of the vertex size
+  (ring_alloc's `al`), and the u16 index window is a multiple of 0x8000 vertices of that size, so indices
+  stay below 0x10000.
+- Cache keys: the layout (VLay, which includes the scales) is hashed into plan_sig. PlanKey also holds
+  pk / lit / texm column-2 mask, so a mode change only misses and nothing has to be flushed. That is why
+  the bottom-screen button can switch modes between frames.
+- The plan memo is now 2-way (512 entries, key hash checked first). With the new key fields, 256 entries
+  direct-mapped collided on 10 of ~250 battle calls a frame (misses 2 -> 10-12; now 0).
+- Flag sdmc:/cr_vtxpack_off.txt = every vertex 68 bytes. The bottom-screen button "Vertex pack" is bound
+  to `recomp_vtxpack_off`; the menu flips it at the retrace sync. Logs: boot "# gx: vertex packing";
+  every 300 GX frames "# gx vpack frame" (vertices/bytes decoded that frame, layout switches, vscale/texm
+  uploads) and "# gx vattr frame" (the distribution above); every `# time .. split` line ends with
+  "vtx pack on|off (B per index, KB vertex fetch per frame)", indices x vertex size, with no
+  post-transform cache. tools/time_avg.py groups it as vpack=on/off.
+
+Citra replays (logs/perf base1/2 = main, p9/p9b = pack, p9off = flag file, p9st/basest = cr_stereo_force):
+campaign and battle SDK/scene/pad logs identical, and framebuffer dumps identical (campaign 1500/1980/2300,
+battle 2100/2700/3300, and both eyes in stereo, 0 fallbacks). Vertex fetch per frame: campaign 4154 ->
+1992 KB (68 -> 32.6 B per index), battle 5815 -> 2513 KB (68 -> 29.4 B). Vertex arena in use: campaign
+3881 -> 1749 KB, battle 4657 -> 2047 KB. GX-thread vertex time (Citra ticks, scene average): campaign
+3.1 -> 3.2 ms, battle 5.7 -> 6.1 ms (6.0 with the flag: most of it is the restructure, i.e. the
+per-draw texm/vscale check and the layout bookkeeping, not packing itself). Decode in the load windows is
+~+20 % (generic per-attribute byte copies vs the specialised float readers), e.g. battle r1800
+1.5 -> 1.8 ms. fps and game ms unchanged; battle is game-CPU-bound.
+
+Citra does not model PICA vertex-fetch bandwidth, so the GPU gain can only be measured on hardware.
+Hardware A/B to run: campaign 8.3 gpu ms (run 27: 12.2) and fps, vpack on vs off (button or flag file),
+with tools/time_avg.py. Also watch the GX thread busy ms, which was 18.0 of 19.5 in run 27: packing adds
+a little GX-thread CPU.
+
 ## Stereo 3D (2026-10-22, not yet on hardware)
 
 **What it does.** When the 3D slider is above 0 (`osGet3DSliderState`, read every frame on the GX thread),

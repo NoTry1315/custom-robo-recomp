@@ -323,7 +323,7 @@ extern u32 recomp_ai_dma_cb, recomp_ai_dma_addr, recomp_ai_dma_len;   /* AI DMA 
 /* frame timing (runtime/log.c): ticks spent per bucket, logged by VI */
 enum { PROF_GX_VTX, PROF_GX_TEX, PROF_GX_END, PROF_AUDIO, PROF_GX_STATE,
        PROF_VX_UNIF, PROF_VX_DEC, PROF_VX_DL, PROF_LOG, PROF_PREDRAW, PROF_GX_SYNC, PROF_GPU, PROF_GPU_SPAN, PROF_DVD,
-       PROF_GX_WAIT, PROF_GX_BUSY, PROF_GPU_DRAWS, PROF_GPU_IDX, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others); PROF_GX_SYNC: C3D_FrameBegin (vblank cap + GPU queue wait); PROF_GPU: GPU queue time from C3D_FrameEnd to queue done (C3D_GetDrawingTime; with mid-frame submits only the tail); PROF_GPU_SPAN: first mid-frame submit (else C3D_FrameEnd) to queue done; PROF_DVD: game thread waiting for the DVD reader thread (inside the others); with the GX thread (recomp_gx_thread) the PROF_GX_* and PROF_VX_* buckets are GX-thread time, PROF_GX_WAIT is the game thread waiting for it, PROF_GX_BUSY the GX thread handling records; PROF_GPU_DRAWS/IDX: counts, not ticks (C3D_DrawElements calls, indices) */
+       PROF_GX_WAIT, PROF_GX_BUSY, PROF_GPU_DRAWS, PROF_GPU_IDX, PROF_GPU_VBYTES, PROF_N };   /* parts of PROF_GX_VTX: uniforms, decode loop, draws from display lists; PROF_LOG: recomp_log writes (inside the others); PROF_GX_SYNC: C3D_FrameBegin (vblank cap + GPU queue wait); PROF_GPU: GPU queue time from C3D_FrameEnd to queue done (C3D_GetDrawingTime; with mid-frame submits only the tail); PROF_GPU_SPAN: first mid-frame submit (else C3D_FrameEnd) to queue done; PROF_DVD: game thread waiting for the DVD reader thread (inside the others); with the GX thread (recomp_gx_thread) the PROF_GX_* and PROF_VX_* buckets are GX-thread time, PROF_GX_WAIT is the game thread waiting for it, PROF_GX_BUSY the GX thread handling records; PROF_GPU_DRAWS/IDX/VBYTES: counts, not ticks (C3D_DrawElements calls, indices, indices x vertex size) */
 extern u64 recomp_prof[PROF_N];
 extern volatile u32 recomp_logw_since;  /* low word of the tick the log writer's fwrite+fflush began, 0 = idle */
 extern volatile u32 recomp_logw_n;      /* log writes finished */
@@ -360,6 +360,7 @@ void recomp_menu_retrace(void);        /* recomp_gx_retrace after the sync: appl
 void recomp_menu_bind(const char *name, int *var, void (*changed)(void));   /* live-toggle a flag variable from its button (menu.c btn[]) */
 extern u32 recomp_menu_flips;          /* bound-flag toggles so far */
 extern int recomp_vt_on;               /* gx.c: cached textures move to VRAM (sdmc:/cr_vramtex_off.txt = 0) */
+extern int recomp_vtxpack_off;          /* gx.c: display-list vertices packed per draw (sdmc:/cr_vtxpack_off.txt = 1) */
 void recomp_vt_toggle(void);           /* bottom-screen button: flip it at the next frame start (texture cache invalidated) */
 extern u32 recomp_vt_flips;            /* VRAM texture toggles so far */
 extern volatile u32 recomp_vt_stat[6]; /* textures in VRAM, KB; in linear, KB (every 30 GX frames); moves, fallbacks (running totals) */
