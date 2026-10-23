@@ -11,6 +11,7 @@
 .fvec amb           ; ambient (rgb from COLOR0, a from ALPHA0); 1 where a channel is unlit
 .fvec lcfg          ; diffuse = max(dot * x + y, z)
 .fvec lights[15]    ; per light: pos, dir, attn a (1, cos, cos^2), attn k (1, d, d^2), colour
+.fvec eye           ; stereo (x, y, convergence w, 0); written raw by gx.c, never by citro3d: 0 = mono
 
 .bool blit          ; any light enabled
 .ivec iloop         ; (lights - 1, 0, 5)
@@ -39,10 +40,21 @@
 	dp4 r1.y, posm[a0.x + 1], r0
 	dp4 r1.z, posm[a0.x + 2], r0
 	mov r1.w, k.y
-	dp4 outpos.x, clipm[0], r1
-	dp4 outpos.y, clipm[1], r1
-	dp4 outpos.z, clipm[2], r1
-	dp4 outpos.w, clipm[3], r1
+	dp4 r11.x, clipm[0], r1
+	dp4 r11.y, clipm[1], r1
+	dp4 r11.z, clipm[2], r1
+	dp4 r11.w, clipm[3], r1
+	; stereo: xy += eye.xy * max(w - eye.z, -w) for perspective draws (in NDC:
+	; eye.xy * (1 - conv / w), at least -eye.xy); orthographic ones (clipm[3].w = 1)
+	; get no shift
+	mov r12, clipm[3]
+	add r12.x, k.yyyy, -r12.wwww
+	add r12.y, -eye.zzzz, r11.wwww
+	max r12.y, -r11.wwww, r12.yyyy
+	mul r12.x, r12.xxxx, r12.yyyy
+	mul r12.xy, eye.xyyy, r12.xxxx
+	add r11.xy, r11, r12
+	mov outpos, r11
 
 	; lighting: r4 = amb + sum(diffuse * attenuation * colour)
 	mov r4, amb

@@ -131,7 +131,7 @@ static VcRing vring, iring;   /* vertices (PVtx), indices (u16) */
 static void ring_flush(VcRing *g);
 static u8 mat_vtx[4], mat_reg[4];   /* material colour per component: vertex CLR0 or register */
 static float ushadow[96][4];        /* last value written per float uniform */
-static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop;
+static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop, u_eye = -1;
 static int frame_open, clear_pending = 1;
 static int scissor_lost = 1;   /* C3D_FrameDrawOn -> C3D_SetViewport disables the scissor: resend it */
 
@@ -192,7 +192,7 @@ void recomp_gx_init(void) {
     u_nrm = shaderInstanceGetUniformLocation(si, "nrmm"); u_tex = shaderInstanceGetUniformLocation(si, "texm");
     u_amb = shaderInstanceGetUniformLocation(si, "amb"); u_lcfg = shaderInstanceGetUniformLocation(si, "lcfg");
     u_lights = shaderInstanceGetUniformLocation(si, "lights"); u_blit = shaderInstanceGetUniformLocation(si, "blit");
-    u_iloop = shaderInstanceGetUniformLocation(si, "iloop");
+    u_iloop = shaderInstanceGetUniformLocation(si, "iloop"); u_eye = shaderInstanceGetUniformLocation(si, "eye");
     memset(ushadow, 0xff, sizeof ushadow);
     gx.efb_w = 640; gx.efb_h = 480;
     gx.color_update = gx.alpha_update = 1;
@@ -225,6 +225,97 @@ static void use_buf(const PVtx *p) {
     BufInfo_Add(bi, p, sizeof(PVtx), 6, 0x543210);
 }
 
+/* Stereo 3D (the mw3ds technique): the left eye is drawn as usual while its
+ * command words are recorded; at frame end the right target is bound, the
+ * shader's eye uniform gets the other sign and the same words are appended
+ * again (GPUCMD_AddRawCommands), so the right eye costs GPU time but almost no
+ * CPU. The recorded words must not depend on state from earlier frames: at
+ * frame begin the left framebuffer is emitted first (outside the recording),
+ * then all other citro3d state is marked dirty, so the first draw re-emits it
+ * inside the recording. eye is written raw and never through citro3d, so no
+ * recorded word sets it. Mid-frame submits split the words into ranges (the
+ * FINALIZE padding between them is not recorded). On with the 3D slider;
+ * sdmc:/cr_stereo_force.txt = "slider [sep] [conv]" forces it (Citra). Slider 0
+ * = the mono path, no extra words. */
+typedef struct { gxCmdQueue_s q; u32 *cmdBuf; size_t cmdBufSize; float cmdBufUsage; u32 flags; } C3DCtxHead;   /* citro3d 1.7.1 source/internal.h C3D_Context */
+#define C3DiF_DrawUsed_ BIT(1)
+/* AttrInfo BufInfo Effect Viewport Scissor Program TexEnvBuf LightEnv, TexAll, TexEnvAll (no FrameBuf, no shader code) */
+#define C3DiF_RESEND (BIT(2) | BIT(3) | BIT(4) | BIT(6) | BIT(7) | BIT(8) | BIT(9) | BIT(10) | (7u << 23) | (0x3Fu << 26))
+void C3Di_UpdateContext(void);
+void C3Di_DirtyUniforms(GPU_SHADER_TYPE type);
+extern C3DCtxHead __C3D_Context;   /* declared with only its head; gxQueue is the first member */
+#define SR_MAX 16
+static C3D_RenderTarget *target_r;
+static int eye_init;
+static float st_force = -1, st_sep = 0.025f, st_conv = 3.0f;   /* sep: parallax per eye at w = inf, in NDC (200 px); conv: w at zero parallax (battle w is ~3-60) */
+static int stereo, stereo_prev;
+static u32 *sr_a[SR_MAX], sr_n[SR_MAX], *sr_open;
+static int sr_k, sr_bad, cb_full, clear_r, st_r_done;
+static u32 st_stereo, st_st_fall, st_st_words;
+static u32 *cb_pos(void) { u32 *a, s, o; GPUCMD_GetBuffer(&a, &s, &o); return a + o; }
+static void sr_close(void) {
+    if (!sr_open) return;
+    if (sr_k < SR_MAX) { sr_a[sr_k] = sr_open; sr_n[sr_k++] = cb_pos() - sr_open; } else sr_bad = 1;
+    sr_open = NULL;
+}
+static void eye_write(float s) {
+    C3D_FVec v; v.x = 0; v.y = s * st_sep; v.z = st_conv; v.w = 0;
+    GPUCMD_AddWrite(GPUREG_VSH_FLOATUNIFORM_CONFIG, 0x80000000 | u_eye);
+    GPUCMD_AddWrites(GPUREG_VSH_FLOATUNIFORM_DATA, (u32 *)&v, 4);
+}
+static float stereo_slider(void) { return st_force >= 0 ? st_force : osGet3DSliderState(); }
+/* after C3D_FrameDrawOn(target): pick mono / stereo, start the recording */
+static void stereo_begin(void) {
+    stereo = stereo_slider() > 0 && u_eye >= 0;
+    if (stereo && !target_r) {
+        target_r = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
+        if (!target_r) { recomp_log("# gx: no VRAM for the right-eye target: stereo off\n"); u_eye = -1; stereo = 0; }
+        else {
+            C3D_RenderTargetSetOutput(target_r, GFX_TOP, GFX_RIGHT,
+                GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) |
+                GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) |
+                GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
+            gfxSet3D(true);   /* frames without the right target still show the left one to both eyes */
+            recomp_log("# gx: stereo on at frame %lu (slider %.2f, sep %.3f, conv %.1f)\n", (unsigned long)frames, stereo_slider(), st_sep, st_conv);
+        }
+    }
+    sr_k = 0; sr_bad = 0; sr_open = NULL; cb_full = 0; st_r_done = 0;
+    if (!stereo) {
+        if (stereo_prev || !eye_init) { eye_write(0); eye_init = 1; }
+        stereo_prev = 0;
+        return;
+    }
+    if (!stereo_prev) clear_r = 1;   /* stale since the last stereo frame: frame_begin clears it */
+    stereo_prev = 1;
+    C3Di_UpdateContext();   /* left framebuffer + any pending state, before the recording */
+    eye_write(stereo_slider());   /* left eye: +, right eye: - (far objects shift apart, near ones cross) */
+    C3DCtxHead *ctx = &__C3D_Context;
+    ctx->flags |= C3DiF_RESEND;
+    C3Di_DirtyUniforms(GPU_VERTEX_SHADER);   /* float uniforms citro3d ever wrote, bools, shader constants */
+    for (int i = 0; i < 4; i++) C3D_IVUnifDirty[GPU_VERTEX_SHADER][i] = true;   /* DirtyUniforms misses ints */
+    sr_open = cb_pos();
+}
+/* before C3D_FrameEnd: append the left eye's words for the right eye */
+static void stereo_end(void) {
+    if (!stereo) return;
+    sr_close();
+    u32 total = 0;
+    for (int i = 0; i < sr_k; i++) total += sr_n[i];
+    u32 *a, size, off;
+    GPUCMD_GetBuffer(&a, &size, &off);
+    if (sr_bad || cb_full || off + total + 256 > size) {   /* the right target is not used: this frame is shown in 2D */
+        if (!st_st_fall++) recomp_log("# gx: stereo fallback at frame %lu (ranges %d%s%s, %lu words, %lu free)\n", (unsigned long)frames,
+                                      sr_k, sr_bad ? " overflow" : "", cb_full ? ", cmdbuf full" : "", (unsigned long)total, (unsigned long)(size - off));
+        return;
+    }
+    C3D_FrameDrawOn(target_r);
+    C3Di_UpdateContext();   /* framebuffer flush of the left eye, right framebuffer, viewport */
+    eye_write(-stereo_slider());
+    for (int i = 0; i < sr_k; i++) GPUCMD_AddRawCommands(sr_a[i], sr_n[i]);
+    __C3D_Context.flags |= C3DiF_DrawUsed_;   /* the replayed draws: C3D_FrameEnd flushes the right framebuffer */
+    st_stereo++; st_st_words += total; st_r_done = 1;
+}
+
 /* Mid-frame GPU submit. C3D_FrameBegin stops citro3d's GX queue, and a
  * C3D_FrameSplit chunk only reaches the GPU once the queue runs, which citro3d
  * does in C3D_FrameEnd: so the GPU idled while the CPU built the frame. Every
@@ -238,7 +329,6 @@ static void use_buf(const PVtx *p) {
  * start with the old one submit at C3D_FrameEnd; pressing ZL toggles it. */
 #define KICK_WORDS 2048
 #define KICK_MAX 12
-extern gxCmdQueue_s __C3D_Context;
 static int kick_off;   /* sdmc:/cr_gpukick_off.txt, read in recomp_gx_start */
 int recomp_gx_kick_on;
 u32 recomp_gx_kick_flips;
@@ -257,8 +347,10 @@ static void gpu_kick(void) {
     }
     pend_issue();   /* not pend_flush: the next draw may still merge (same stats as with submits off) */
     flush_new();
+    sr_close();   /* the FINALIZE words C3D_FrameSplit adds are not recorded */
     C3D_FrameSplit(GX_CMDLIST_FLUSH);   /* void in citro3d 1.7.1; cb_off >= KICK_WORDS, so there is a chunk */
-    gxCmdQueueRun(&__C3D_Context);   /* the queue may have drained and stopped since the last submit */
+    if (stereo) sr_open = cb_pos();
+    gxCmdQueueRun(&__C3D_Context.q);   /* the queue may have drained and stopped since the last submit */
     if (!kicks++) kick_t0 = recomp_ticks();
 }
 static u64 fe_t;   /* ticks at the previous C3D_FrameEnd */
@@ -289,15 +381,17 @@ static void frame_begin(void) {
     }
     kicks = 0; kick_t0 = 0; vb_fl = ib_fl = 0;
     if (!C3D_FrameDrawOn(target)) recomp_log("# gx: C3D_FrameDrawOn failed at frame %lu\n", (unsigned long)frames);
+    stereo_begin();
     frame_open = 1; scissor_lost = 1;
     vb_half = frames & 1; vb_used = ib_used = 0;
     vb_base = 0; cur_buf = NULL;
     use_buf(vbuf[vb_half]);
-    if (clear_pending) {
+    if (clear_pending || (stereo && clear_r)) {
         u32 c = gx.clear_color[0] << 24 | gx.clear_color[1] << 16 | gx.clear_color[2] << 8 | gx.clear_color[3];
         pend_flush();
-        C3D_RenderTargetClear(target, C3D_CLEAR_ALL, c, gx.clear_z);
-        clear_pending = 0;
+        if (clear_pending) C3D_RenderTargetClear(target, C3D_CLEAR_ALL, c, gx.clear_z);
+        if (stereo) C3D_RenderTargetClear(target_r, C3D_CLEAR_ALL, c, gx.clear_z);
+        clear_pending = clear_r = 0;
     }
 }
 
@@ -335,6 +429,11 @@ static void frame_end(void) {
         recomp_log("# gx dl frame %lu: calls %lu prims %lu (%lu per call) cache hits %lu misses %lu slow %lu, plan memo hits %lu misses %lu\n", (unsigned long)frames,
                    (unsigned long)st_dl_calls, (unsigned long)st_dl_prims, st_dl_calls ? (unsigned long)(st_dl_prims / st_dl_calls) : 0ul,
                    (unsigned long)st_dl_hits, (unsigned long)st_dl_misses, (unsigned long)st_dl_slow, (unsigned long)pm_hits, (unsigned long)pm_misses);
+    if (frames % 300 == 0 && target_r) {
+        recomp_log("# gx stereo frame %lu: slider %.2f, stereo frames %lu, fallbacks %lu, replayed %lu words per stereo frame\n", (unsigned long)frames,
+                   stereo_slider(), (unsigned long)st_stereo, (unsigned long)st_st_fall, st_stereo ? (unsigned long)(st_st_words / st_stereo) : 0ul);
+        st_stereo = st_st_fall = st_st_words = 0;
+    }
     /* running totals for the bottom-screen stats (log.c reads them on the game thread); linear free under lin_lock */
     recomp_gx_stat[1] += st_draws; recomp_gx_stat[2] += st_tris; __dmb(); recomp_gx_stat[0]++;
     if (recomp_gx_stat[0] % 60 == 0) { RecursiveLock_Lock(&lin_lock); recomp_gx_stat[3] = linearSpaceFree(); RecursiveLock_Unlock(&lin_lock); }
@@ -347,6 +446,7 @@ static void frame_end(void) {
     u64 t0 = recomp_ticks();
     /* the buffers written since the last mid-frame submit (all of them with submits off) */
     flush_new();
+    stereo_end();
     fe_t = recomp_ticks();
     C3D_FrameEnd(GX_CMDLIST_FLUSH);   /* buffers + textures flushed above; skips the whole-linear-heap flush */
     fb_dump();
@@ -1823,6 +1923,7 @@ static int cmdbuf_room(int prim, int n) {
     if (!kick_off && cb_off >= KICK_WORDS) { gpu_kick(); GPUCMD_GetBuffer(&cb_addr, &cb_size, &cb_off); }   /* offset restarts after a split */
     recomp_gx_dbg[0] = cb_off; recomp_gx_dbg[1] = prim; recomp_gx_dbg[2] = n;
     if (cb_off + 1024 > cb_size) {
+        cb_full = 1;
         if (!st_split++) recomp_log("# gx: GPU command buffer full at frame %lu: rest of the frame's draws skipped\n", (unsigned long)frames);
         return 0;
     }
@@ -2133,18 +2234,23 @@ static int dl_draw(const u8 *list, u32 len) {
  * frame the render target is written to sdmc:/cr_fb_<frame>.bmp (240x400
  * as stored, i.e. rotated), for deterministic before/after image compares. */
 static u32 want[64], nwant;   /* read in recomp_gx_start */
+static void fb_dump_one(C3D_RenderTarget *t, const char *suffix);
 static void fb_dump(void) {
-    static u8 *buf;
     u32 i;
     for (i = 0; i < nwant && want[i] != frames; i++) ;
     if (i == nwant) return;
+    fb_dump_one(target, "");
+    if (st_r_done) fb_dump_one(target_r, "_r");   /* right eye of a stereo frame */
+}
+static void fb_dump_one(C3D_RenderTarget *t, const char *suffix) {
+    static u8 *buf;
     if (!buf && !(buf = linearAlloc(240 * 400 * 3))) return;
-    C3D_SyncDisplayTransfer((u32 *)target->frameBuf.colorBuf, GX_BUFFER_DIM(240, 400), (u32 *)buf, GX_BUFFER_DIM(240, 400),
+    C3D_SyncDisplayTransfer((u32 *)t->frameBuf.colorBuf, GX_BUFFER_DIM(240, 400), (u32 *)buf, GX_BUFFER_DIM(240, 400),
         GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(0) | GX_TRANSFER_RAW_COPY(0) |
         GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8) | GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8) | GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO));
     GSPGPU_InvalidateDataCache(buf, 240 * 400 * 3);
     char name[64];
-    snprintf(name, sizeof name, "sdmc:/cr_fb_%lu.bmp", (unsigned long)frames);
+    snprintf(name, sizeof name, "sdmc:/cr_fb_%lu%s.bmp", (unsigned long)frames, suffix);
     FILE *f = fopen(name, "wb");
     if (!f) return;
     u8 h[54] = {'B', 'M'};
@@ -2321,6 +2427,14 @@ void recomp_gx_start(void) {
     if (flag_file("cr_vcache_small")) {   /* test: rings at 5/8 so that replays evict (ring_alloc) */
         vring.size = VC_VERTS / 8 * 5; iring.size = VC_IXN / 8 * 5;
         recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu vertices, %lu indices\n", (unsigned long)vring.size, (unsigned long)iring.size);
+    }
+    FILE *sf = fopen("sdmc:/cr_stereo_force.txt", "rb");
+    if (sf) {
+        float v[3] = {1, st_sep, st_conv};
+        int n = fscanf(sf, "%f %f %f", &v[0], &v[1], &v[2]);
+        fclose(sf);
+        st_force = v[0]; st_sep = v[1]; st_conv = v[2];
+        recomp_log("# gx: stereo forced (cr_stereo_force.txt, %d values): slider %.2f sep %.3f conv %.1f\n", n < 0 ? 0 : n, st_force, st_sep, st_conv);
     }
     FILE *f = fopen("sdmc:/cr_fbdump.txt", "rb");
     int fbd = f != NULL;

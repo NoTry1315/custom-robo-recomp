@@ -256,6 +256,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   51.2 fps (85%, gpu 12.2 ms, GX thread busy 18.0 of 19.5); Vs. battle 4.2 45.3 fps (76%, game CPU 18.1 ms,
   CPU-bound; mostly campaign battles, which have more models/pods/effects than run 25's 1-v-1 Vs. arena; the user
   saw the 1-v-1 arena run better); menus/pause ~60. Next: battle game CPU.
+- Stereo 3D (2026-10-22, branch claude/2026-10-22-stereo-replay-38d757, not merged): the top screen draws in
+  stereo while the 3D slider is above 0. The right eye replays the left eye's GPU command words (the mw3ds technique),
+  so it costs almost no CPU. The vertex shader has an `eye` uniform that only gx.c writes, raw: perspective draws
+  shift by sep * max(1 - conv/w, -1) per eye, and orthographic (HUD) draws do not shift. sdmc:/cr_stereo_force.txt
+  = "slider [sep] [conv]" forces it in Citra. Slider 0 is the mono path: battle and campaign SDK logs and fb dumps
+  are identical to main. Citra battle 4.2: 0 fallbacks, ~16k words (64 KB) replayed per frame, cmdbuf 2%, GX
+  thread busy 13.6 -> 13.9 ms. Citra's gpu ms does not measure the real GPU, so the stereo cost is not yet
+  measured on hardware. Details: unknowns "Stereo 3D".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
