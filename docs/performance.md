@@ -10,6 +10,10 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
 
 ## How performance is measured
 
+- **One test build.** The SD card holds one build (`sdmc:/3ds/custom-robo-recomp.3dsx`). Features are
+  compared with bottom-screen buttons / flag files within that build. Build-time options (LTO, GENOPT,
+  FLOATOPS) are decided on or off in main, not shipped as a second build.
+
 - **Hardware runs** (New 3DS, played by hand): the game writes `sdmc:/cr_autotest.log` with a
   `# time` window every 60 retraces. `tools/time_avg.py <log> [--from N]` averages them per
   scene (fps, game speed, game CPU ms, GX thread ms, GPU ms). Logs are kept in `logs/` as
@@ -84,7 +88,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
 | 10-22 | -O3 on gen/ (`make GENOPT=-O3`) | Citra battle game 19.96 -> 19.94 ms, +9% code | no gain; more code for the 16 KB I-cache |
-| 10-22 | LTO (`make LTO=1`) | Citra battle game -1.5%, +2% code | below the 2% bar in Citra; on/off decision pending (run 28 used the LTO build; no normal-build log of the same run) |
+| 10-22 | LTO (`make LTO=1`) | Citra battle game -1.5%, +2% code | decided 2026-10-22: off by default (small Citra-only gain, no hardware evidence; one test build, so it cannot be A/B tested on hardware). `make LTO=1` stays available. Run 28 ran an LTO build without problems |
 | 10-22 | FPSCR RunFast (`cr_runfast.txt`) | boot FPSCR is already 03000000 (flush-to-zero + default NaN) on Citra and on hardware (run 28) | nothing to gain: already on |
 | 10-22 | Vertex shader variants | GPU hang at the first draw on New 3DS (fine in Citra) | reverted; one shader only |
 | 10-19 | Mid-frame C3D_FrameSplit every 1024 words | HW battle 35.0 -> 39.3 ms | slower |
@@ -101,8 +105,6 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
   button on/off, 2v2 game ms vs run 28 (29.8), "Native sin/cos" on/off.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
-- LTO: decide on or off in main (Citra -1.5%; run 28 ran an LTO build without problems). Hardware tests use
-  one build only, with A/B through bottom-screen flags, so a build option is not compared with a second build.
 
 ## Hardware run index
 

@@ -276,7 +276,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   unknowns top). Flag file only (no bottom-screen buttons). Hardware boot value not yet read.
 - -O3 / LTO (2026-10-22): Makefile `GENOPT=-O3` (gen/ only) and `LTO=1`, both off by default. Citra battle 4.2
   game 19.96 ms at -O2; -O3 19.94 (+9% code), LTO 19.66 (-1.5%, +2% code), -O3 + LTO 19.66 (+35% code), LTO +
-  -fipa-pta 19.76; logs and fb dumps identical. Below the 2% bar, so not default; LTO is a hardware A/B candidate.
+  -fipa-pta 19.76; logs and fb dumps identical. Below the 2% bar, so not default. Decided 2026-10-22: LTO stays off (user: one test build, A/B only
+  through bottom-screen flags, so build options are decided in main, not tested as a second build).
   Details: unknowns "-O3 and LTO".
 - Merged hardware test build (2026-10-22, main@75ea35d): VRAM textures + stereo + FPSCR log + GENOPT/LTO options.
   Merge fixes: right-eye target allocated at init (else VRAM textures can take its VRAM), VRAM code uses
