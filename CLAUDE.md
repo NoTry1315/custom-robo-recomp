@@ -285,6 +285,18 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   custom-robo-recomp-lto.3dsx (LTO=1) for the LTO A/B; old build kept as ..._2026-10-22_pre-stereo-vram.3dsx.bak.
   Hardware checks: `# fpscr:` boot value, campaign 8.3 gpu ms with the VRAM button on/off, stereo gpu cost with
   the slider up, LTO vs normal battle game ms.
+- Hardware run 28 (2026-10-22, main@75ea35d LTO build, logs/cr_autotest_2026-10-22_hw-run28-merged-lto.log; the
+  normal build's log was overwritten): campaign 8.3 56.7 fps (gpu 12.2 -> 3.7 ms with VRAM textures), 1v1 battle
+  57.3 fps (95%, game 15.1, gpu 2.2), 1v1 with 3D 51.4 fps (gpu 9.8), 2v2 battle 30.5 fps (51%, game 29.8 ms: game
+  CPU is the limit). FPSCR is 03000000 on hardware too (RunFast already on). Next: game CPU in the 2v2.
+- 2v2 test (2026-10-22): `tools/citra/replay.ps1 -Name 2v2` boots the story save `data/saves/2026-10-22_pre-2v2`
+  (from the user's SD card; card on, Citra's save folder restored afterwards), pad script `tools/citra/pad_2v2.txt`
+  (START + A to load) then run 28's pad lines shifted -4530 (`tools/citra/pad_2v2.log`): dialogue -> 6 -> c -> 7 ->
+  2v2 battle scene 4.2 r4200-8610, the same frames as on hardware. Use it for game-CPU work.
+- Records (2026-10-22): `docs/performance.md` lists every perf change with its measured effect (hardware run or
+  Citra replay, scene, commit), what is on, what was tried and dropped, and the hardware run index. Update it with
+  every perf change, plus README Status after a hardware run. New sections in recomp_unknowns.md go ABOVE the
+  `<!-- generated -->` line: recomp.py rewrites everything after it (the stereo section was lost that way once).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

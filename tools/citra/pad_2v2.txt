@@ -1,0 +1,8 @@
+# 2v2 route, part 1 (pad script lines "<from> <to> <buttons hex>", tools/citra/replay.ps1 -Name 2v2):
+# START at the title, then A until the save loads into the story (scene 8.0 at r1140 in Citra).
+853 864 1000
+900 906 100
+950 956 100
+1000 1006 100
+1050 1056 100
+1100 1106 100

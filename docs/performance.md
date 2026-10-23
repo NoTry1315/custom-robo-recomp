@@ -1,0 +1,109 @@
+# Performance history
+
+Every change made for speed, with what it was measured to do, how it was measured, and
+whether it is on. Negative results stay listed: knowing what did not help is as useful as
+knowing what did. Details of each change live in `docs/recomp_unknowns.md` (section names
+in the last column); the day-by-day log is the Status list in `CLAUDE.md`.
+
+Rule for every entry: the number, where it was measured (hardware run N or Citra replay),
+the scene, and the commit or branch. "Not yet on hardware" until a hardware run has it.
+
+## How performance is measured
+
+- **Hardware runs** (New 3DS, played by hand): the game writes `sdmc:/cr_autotest.log` with a
+  `# time` window every 60 retraces. `tools/time_avg.py <log> [--from N]` averages them per
+  scene (fps, game speed, game CPU ms, GX thread ms, GPU ms). Logs are kept in `logs/` as
+  `cr_autotest_<date>_hw-run<N>-<what>.log`. Hand play means two runs never show the same
+  frames: compare scenes with many windows, or the same scene within one run (bottom-screen
+  buttons switch a feature on and off live, and `time_avg.py` splits windows by mode).
+- **Citra replays** (`tools/citra/replay.ps1`): the same pad input every run, so logs are
+  deterministic. `tools/citra/compare_logs.py` checks that a change keeps every SDK call,
+  scene and pad line and the framebuffer dumps identical. Citra's game ms follows the amount
+  of ARM code run, so it measures translator and CPU-side changes well. It does **not** model
+  ARM11 caches, FCRAM vs VRAM bandwidth, the PICA's real speed or VFP traps, so GPU and
+  memory changes can only be judged on hardware.
+
+  | Replay | What it plays | Heavy part |
+  |---|---|---|
+  | `battle` | Vs. mode 1v1, idle robots (no card) | scene 4.2 r2400-3600 |
+  | `campaign` | story walking (no card) | scene 8.3 r1470-2400 |
+  | `2v2` | story save `data/saves/2026-10-22_pre-2v2` -> dialogue -> 2v2 battle (card on) | scene 4.2 r4200-8610 |
+
+  Citra baselines (main@ccbd9f7 + the 2v2 test, `time_avg.py --from 4260`): 2v2 scene 4.2 game 52.9 ms,
+  GX thread busy 37.7 ms (two runs identical, 5269/5269 log lines). Citra ms are slower than hardware
+  (2v2 on hardware: game 29.8 ms) but rank changes the same way for CPU-side work.
+
+## Where it stands (hardware run 28, 2026-10-22, main@75ea35d LTO build)
+
+| Scene | fps | game speed | game CPU ms | GPU ms | bound by |
+|---|---|---|---|---|---|
+| Campaign 8.3 | 56.7 | 95% | 9.9 | 3.7 | near 60 |
+| Battle 1v1, mono | 57.3 | 95% | 15.1 | 2.2 | near 60 |
+| Battle 1v1, stereo 3D | 51.4 | 86% | 14.5 | 9.8 | GPU + CPU |
+| Battle 2v2 | 30.5 | 51% | 29.8 | 5.6 | **game CPU** |
+| Title, menus | ~60 | 97-100% | | | |
+
+Game speed is fps / 60: the game runs one logic step per frame. From the first battle on
+hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
+
+## Changes that helped (newest first)
+
+| Date | Change | Measured effect | Status | Details (unknowns) |
+|---|---|---|---|---|
+| 10-22 | **Textures in VRAM** (copied from linear FCRAM after 2 unchanged frames; LRU back to linear) | HW run 27 -> 28: campaign GPU 12.2 -> 3.7 ms, 51.2 -> 56.7 fps; battle GPU 9.3 -> 2.2 ms (different fights: rough) | on; button "VRAM textures", `cr_vramtex_off.txt` | VRAM textures |
+| 10-22 | **Stereo 3D** by replaying the left eye's GPU commands for the right eye (mw3ds technique) | HW run 28: 1v1 battle 51.4 fps with 3D on (GPU 9.8 ms) vs 57.3 mono; 0 fallbacks | on with the 3D slider | Stereo 3D |
+| 10-22 | Back-face culling honoured (GXSetCullMode) | HW run 26: campaign GPU 18.9 -> 15.6 ms, 44.4 -> 52.1 fps | on | Cull mode |
+| 10-22 | Lossless 16-bit texture formats, mip chains | inert/small (game uses no mips) | on | Texture mipmaps and lossless formats |
+| 10-22 | Codegen per instruction, model scaling, GX display-list path, call-boundary glue (perf-test branch) | HW run 24 -> 25: battle 47.9 -> 54.2 fps (game 19.1 -> 16.1 ms); campaign game 12.3 -> 5.5 ms | on | Codegen per guest instruction; Per-model cost; GX thread per display-list cost; Call-boundary glue |
+| 10-21 | GX thread on core 2 (GX work off the game thread) | HW run 23 -> 24: battle 35.0 -> 47.9 fps (58 -> 80%); same run on/off 32 -> 44 fps | on; button | GX thread |
+| 10-21 | Mid-frame GPU submit (GPU starts while the CPU builds the frame) | HW runs 20-21 on/off: battle 29.8 -> 37.5 fps (gx sync 9.1 -> 1.0 ms), campaign 20 -> 29.8 fps | on; `cr_gpukick_off.txt` | Mid-frame GPU submit |
+| 10-21 | DVD reader thread | removes read stalls from the game thread | on; `cr_dvdasync_off.txt` | DVD reader thread |
+| 10-19 | Texture write tracking (skip re-hashing unchanged textures) | Citra battle frame 36.3 -> 32.1 ms | on | CLAUDE.md status |
+| 10-19 | Display-list write tracking (per-1 KB page store epochs) | Citra battle frame 38.7 -> 36.3 ms | on; `cr_dlclean_off.txt` | CLAUDE.md status |
+| 10-19 | GXBegin FIFO size computed once | Citra battle game 23.3 -> 19.5 ms (-16%) | on | CLAUDE.md status |
+| 10-19 | .sdata2 constants folded by the translator | Citra battle game -3.8% | on | CLAUDE.md status |
+| 10-19 | Register spills only where needed (interprocedural summaries) | Citra game ms -4.5..-5.5% | on | Register spills per call site |
+| 10-19 | Frame pacing: 60 Hz cap instead of a vblank wait per frame | Citra battle 12.8 -> 14.6 fps; HW battle game 34.9 -> 21.8 ms | on; `cr_vsync_on.txt` = old | Frame pacing: vblank wait |
+| 10-19 | Native MTX/VEC functions; single-precision float ops (FLOATOPS) | HW battle 19.9 -> 21.7 -> 21.9 fps | on; `cr_mtx_off.txt`, `make FLOATOPS=0` | Float ops and native MTX |
+| 10-19 | Whole display-list cache | HW battle 11-12.5 -> 16-20 fps (run 9 -> 10) | on; `cr_dlcache_off.txt` | Display-list cache |
+| 10-19 | GX CPU cost (texture index memo, TEV/scissor compare in place) | Citra battle 5.4 -> 6.5 fps | on | GX CPU cost |
+| 10-19 | Draw batching (same-state draws merged) | Citra battle 4.6 -> 5.4 fps | on; `cr_batch_off.txt` | GX draw batching |
+| 10-19 | Open DVD file handles kept (LRU of 8) | HW run 16: longest read 3633 -> 187 ms, no stalls | on | CLAUDE.md status |
+| 10-19 | GX_CMDLIST_FLUSH, log threads on core 2, native memcpy/memset/sqrt | HW battle 165 -> 105-122 ms per frame (run 4 -> 8) | on | Perf wins 2026-10-19 |
+| 10-19 | SD log writes buffered on a thread | removed multi-second stalls | on | Hardware stalls and jaggies |
+| 10-18 | Vertex cache (decode display-list draws once) | Citra battle 3.7 -> 4.5-4.8 fps, title 15 -> 30 | on | Vertex cache |
+| 10-18 | Translator: registers as C locals, EABI spills | Citra battle game 118 -> 59 ms | on | Translator performance |
+| 10-18 | GX transform/lighting/texgen in the PICA vertex shader | Citra campaign 2.0 -> 4.6 fps | on | CLAUDE.md status |
+
+## Tried and not kept
+
+| Date | Change | Result | Why not kept |
+|---|---|---|---|
+| 10-22 | -O3 on gen/ (`make GENOPT=-O3`) | Citra battle game 19.96 -> 19.94 ms, +9% code | no gain; more code for the 16 KB I-cache |
+| 10-22 | LTO (`make LTO=1`) | Citra battle game -1.5%, +2% code | below the 2% bar in Citra; HW A/B pending (run 28 used the LTO build; no normal-build log of the same run) |
+| 10-22 | FPSCR RunFast (`cr_runfast.txt`) | boot FPSCR is already 03000000 (flush-to-zero + default NaN) on Citra and on hardware (run 28) | nothing to gain: already on |
+| 10-22 | Vertex shader variants | GPU hang at the first draw on New 3DS (fine in Citra) | reverted; one shader only |
+| 10-19 | Mid-frame C3D_FrameSplit every 1024 words | HW battle 35.0 -> 39.3 ms | slower |
+| 10-19 | int->double stack peephole in the translator | -0.05% | GCC already forwards the store |
+| 10-19 | 2x supersampling (anti-aliasing) | too slow on hardware | reverted; jaggies remain |
+
+## Open (next)
+
+- **2v2 battle is game-CPU bound** (29.8 ms of a 32.8 ms frame, run 28): profile the `2v2`
+  replay with `make FNPROF=1` to find the hot game functions and translator patterns.
+- Packed PICA vertex format (session running 2026-10-22): fewer bytes per vertex.
+- Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
+  needed most with stereo 3D.
+- LTO on hardware: play the same scene once on each build.
+
+## Hardware run index
+
+| Run | Date | Build | Log (`logs/`) | Tested |
+|---|---|---|---|---|
+| 28 | 10-22 | main@75ea35d LTO | cr_autotest_2026-10-22_hw-run28-merged-lto.log | VRAM textures, stereo 3D, FPSCR value, 2v2 battle |
+| 27 | 10-22 | main 8575bae | cr_autotest_2026-10-22_hw-run27-clean-main.log | campaign GPU clean build |
+| 26 | 10-22 | campaign-gpu | cr_autotest_2026-10-22_hw-run26-campaign-gpu-vsh-single.log | culling, vertex shader |
+| 25 | 10-22 | perf-test bcd754a | cr_autotest_2026-10-22_hw-run25-perf-branches.log | codegen, model scaling, call glue |
+| 24 | 10-21 | | cr_autotest_2026-10-21_hw-run24-gx-thread.log | GX thread |
+| 20-23 | 10-21 | | cr_autotest_2026-10-21_hw-run2x-*.log | GPU kick, DVD thread, movie |
+| 4-19 | 10-18/19 | | on the SD card root (`cr_autotest_2026-10-1x_hw-run*.log`) | see CLAUDE.md status |

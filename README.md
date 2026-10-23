@@ -10,38 +10,38 @@ libctru and citro3d. No game files are included: bring your own disc.
 ## Status (2026-10-22)
 
 Playable on a New 3DS from boot to the title, menus, campaign and Vs. battle,
-with sound, memory card saves, the attract movie and the HOME button.
+with sound, memory card saves, stereoscopic 3D, the attract movie and the HOME button.
 
 Frame rates on hardware (New 3DS, averages of the in-game `# time` windows from
 `tools/time_avg.py`). Each run was played by hand, so the scenes differ from run to run:
 
-| Scene | Run 24 (10-21) | Run 25 (10-22) | Run 27 (10-22, current main) | Game speed now |
-|---|---|---|---|---|
-| Title, menus (2.x, 5.0) | 49-60 | ~60 | 58-60 | 97-100% |
-| Campaign (8.3) | 42.4 | 44.4 | **51.2** (210 windows) | 85% |
-| Battle (4.2; run 27 mostly campaign battles) | 47.9 | 54.2 | 45.3 (103 windows) | 76% |
-| Battle other phases (4.0-4.9) | - | - | 53-60 | 89-100% |
-| Pause (c.0) | 40.1 | 55.8 | 59.1 | 99% |
-| Scenes 6 / 7 | - / 49.3 | - / 56.4 | 53.9 / 57.4 | 90 / 96% |
-| Attract movie | ~9 | 13.9 | not played | ~46% |
+| Scene | Run 24 (10-21) | Run 25 (10-22) | Run 27 (10-22) | Run 28 (10-22, current main) | Game speed now |
+|---|---|---|---|---|---|
+| Title, menus (2.x, 5.0) | 49-60 | ~60 | 58-60 | 58-60 | 97-100% |
+| Campaign (8.3) | 42.4 | 44.4 | 51.2 | **56.7** (39 windows) | 95% |
+| Battle 1v1 (4.2) | 47.9 | 54.2 | 45.3 (campaign battles) | **57.3** (19 windows) | 95% |
+| Battle 1v1, 3D slider up | - | - | - | 51.4 (20 windows) | 86% |
+| Battle 2v2 (4.2) | - | - | - | 30.5 (72 windows) | 51% |
+| Pause (c.0) | 40.1 | 55.8 | 59.1 | 57.5 (2 windows) | 96% |
+| Attract movie | ~9 | 13.9 | not played | not played | ~46% |
 
 The game runs one logic step per frame, so game speed is fps / 60: at 48 fps a
 battle plays in slow motion at 80% of real time. 100% needs a steady 60 fps.
 The movie is measured against its own 30 fps.
 
-Where the time goes now (run 27, ms per frame):
+Where the time goes now (run 28, ms per frame):
 
-| Scene | frame | game CPU | gx wait | GPU | bound by |
+| Scene | frame | game CPU | GX thread busy | GPU | bound by |
 |---|---|---|---|---|---|
-| Campaign 8.3 | 19.5 | 8.7 | 10.1 | 12.2 | GPU / GX thread (busy 18.0) |
-| Battle 4.2 (campaign battles) | 22.1 | 18.1 | 2.6 | 9.3 | game CPU |
+| Campaign 8.3 | 17.6 | 9.9 | 16.1 | 3.7 | near 60 fps |
+| Battle 1v1 | 17.5 | 15.1 | 12.2 | 2.2 | near 60 fps |
+| Battle 1v1, 3D | 19.5 | 14.5 | 16.5 | 9.8 | GPU + CPU |
+| Battle 2v2 | 32.8 | 29.8 | 18.7 | 5.6 | **game CPU** |
 
-Back-face culling (2026-10-22) cut campaign GPU time: run 26 measured 15.6 ms GPU
-with culling vs 19.9 without it. The lower battle figure in run 27 comes from what was played,
-not from the build: most of its battle windows were campaign battles, where the opponent
-fights back with more models, pods, explosions and effects than a 1-v-1 Vs. arena match. The
-1-v-1 Vs. arena ran better (user report). Battle stays CPU-bound by the game code (18.1 ms). Per-run details: `docs/recomp_unknowns.md`
-("Hardware runs 26-27") and `CLAUDE.md` Status.
+Textures in VRAM (2026-10-22) cut GPU time to under a third: campaign 12.2 -> 3.7 ms, battle
+9.3 -> 2.2 ms (runs 27 -> 28; the battles were different fights, so that one is rough). The 2v2 battle is now the heaviest scene, and it is bound by the
+game's own code (29.8 ms per frame). Every performance change and its measured effect, including
+the ones that did not help, is listed in `docs/performance.md`.
 
 Known problems:
 
@@ -112,7 +112,8 @@ scene          8  sub 3  r12345
 io  late 0 slow 3 stall 0 lin 17714K
 ```
 
-There are no touch controls.
+Touch buttons on the bottom screen switch test features live (the log records each switch,
+and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures" (on by default).
 
 ## Controls
 
@@ -123,6 +124,7 @@ There are no touch controls.
 | D-pad, A, B, X, Y, L, R, Start | same |
 | ZR | Z |
 | Hold SELECT | input goes to controller 2 (Vs. mode) |
+| 3D slider | stereoscopic 3D on the top screen (0 = 2D, no extra cost) |
 
 ## Test flags
 
@@ -138,6 +140,9 @@ can be compared with a feature on and off:
 | `cr_dlcache_off.txt` | no display-list cache |
 | `cr_dlclean_off.txt` | always re-hash display lists and textures (no write tracking) |
 | `cr_mtx_off.txt` | translated MTX functions instead of the native ones |
+| `cr_vramtex_off.txt` | textures stay in linear memory (no VRAM textures) |
+| `cr_runfast.txt` | set the VFP's flush-to-zero + default-NaN mode at boot (already on: the boot log's `# fpscr:` line shows the value) |
+| `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
 | `cr_vsync_on.txt` | old pacing: wait for a vblank every frame |
 | `cr_dvdasync_off.txt` | wait for every disc read to finish (old timing) |
 | `cr_dvd_stalltest.txt` | every 64th music read sleeps 3 s (tests late reads) |
@@ -147,7 +152,15 @@ can be compared with a feature on and off:
 | `cr_audio_dump.txt` | also write the audio mix to `cr_audio.wav` |
 | `cr_pad_script.txt`, `cr_pad_replay.txt` | scripted input or replay of a logged run (autotests; fixed run length) |
 
-Citra autotests: `tools/citra/autotest.ps1`.
+Build variants (a second `.3dsx` for a hardware A/B; the bottom screen's build id names
+the variant): `make LTO=1` (link-time optimisation), `make GENOPT=-O3` (extra flags for the
+translated code only), `make FLOATOPS=0` (exact Gekko float rounding).
+
+Citra tests: `tools/citra/replay.ps1 -Name battle|campaign|2v2` plays recorded input
+deterministically (see `docs/performance.md`, "How performance is measured");
+`tools/citra/compare_logs.py` compares two runs. `2v2` boots the story save in
+`data/saves/2026-10-22_pre-2v2/` (copy it there from your own SD card) and plays into a 2v2
+battle, the heaviest scene so far.
 
 ## How it works
 
@@ -169,8 +182,10 @@ Citra autotests: `tools/citra/autotest.ps1`.
 
 ## Docs
 
+- `docs/performance.md`: every performance change, what it measured on hardware or in
+  Citra, what is on, what was tried and dropped, and the index of hardware runs.
 - `docs/recomp_unknowns.md`: semantics decisions, assumptions, open questions,
-  and every performance change with its hardware and Citra measurements.
+  and the full write-up of each performance change.
 - `docs/sdk_functions.md`: the SDK functions in `main.dol` (address, name,
   module) and which ones are hand-written.
 - `CLAUDE.md`: project rules and the development status log.
