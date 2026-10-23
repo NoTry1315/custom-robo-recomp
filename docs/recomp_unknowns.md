@@ -1389,6 +1389,32 @@ model FCRAM vs VRAM bandwidth (gpu ms unchanged there), so the gain can only be 
 Hardware A/B to run: campaign 8.3 with and without the flag (or tap the button; windows with a tap are
 dropped), compare gpu ms (run 27: 12.2) and GX sync (13.2) / fps (51.2) per vram=on/off with
 tools/time_avg.py; check the "VRAM full" counts and that no texture looks wrong after a scene change.
+## -O3 and LTO (2026-10-22, off by default)
+
+Other 3DS ports build with -O3/-O4 and LTO; this one builds everything at -O2 without LTO. Makefile options,
+both off by default: `GENOPT=-O3` (extra flags for gen/recomp_*.c only, after -fno-ivopts, which still
+wins), `LTO=1` (-flto in CFLAGS, -flto=20 at link). LTO needed `__attribute__((used))` on the
+`__assert_func` / `abort` overrides in log.c (libc members that call them are pulled in after LTO had dropped
+them: undefined __assert_func). With LTO the per-file -fno-ivopts is kept (it is in the objects' LTO option
+records, GCC keeps per-function optimisation options) and check_3dsx.py passes for every variant.
+Citra battle replay (scene 4.2, mean game ms of the 20 windows r2460-3600; Citra time is deterministic, the two
+runs of each variant agree to 0.01 ms), full build with -j20:
+
+| variant | game ms | vs -O2 | .text | .3dsx | build |
+|---|---|---|---|---|---|
+| -O2 (default) | 19.96 / 19.96 | | 7.27 MB | 7.36 MB | 57 s |
+| GENOPT=-O3 | 19.94 / 19.94 | -0.1% | 7.93 MB (+9%) | 8.03 MB | 68 s |
+| LTO=1 (-O2) | 19.66 / 19.66 | -1.5% | 7.42 MB (+2%) | 7.53 MB | 51 s |
+| LTO=1 GENOPT=-O3 | 19.66 / 19.67 | -1.5% | 9.81 MB (+35%) | 9.93 MB | 87 s |
+| LTO=1 + -fipa-pta at link | 19.76 / 19.75 | -1.0% | 7.43 MB | 7.54 MB | 61 s |
+
+- SDK call / pad / scene lines and the framebuffer dumps (r2100/2700/3300) identical to -O2 in every variant.
+- -O3 does nothing for the translated code (goto-heavy, memory accessors; little to vectorise or unroll
+  usefully) and grows it 9%; with LTO it grows it 35% for no gain. Not worth it on a 16 KB I-cache.
+- LTO -1.5% (below the 2% bar for a default change) with +2% code: probably cross-file inlining of runtime
+  helpers into gen/. Citra does not model the ARM11 caches, so the hardware effect is unknown either way;
+  LTO=1 is the one worth a hardware A/B if battle CPU gets tight. Not yet on hardware.
+- -O3 on runtime/ hot files (gx.c) not tried: -O3 on gen/ gave nothing and battle is bound by game code.
 
 <!-- generated -->
 ## Stereo 3D (2026-10-22, not yet on hardware)

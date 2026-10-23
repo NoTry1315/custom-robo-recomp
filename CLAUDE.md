@@ -274,6 +274,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   GX threads in Citra, so flush-to-zero was already on; sdmc:/cr_runfast.txt (sets FZ+DN) is a no-op there,
   logs identical, game ms unchanged. The game never sets FPSCR[NI], so flushing deviates from Dolphin (open,
   unknowns top). Flag file only (no bottom-screen buttons). Hardware boot value not yet read.
+- -O3 / LTO (2026-10-22): Makefile `GENOPT=-O3` (gen/ only) and `LTO=1`, both off by default. Citra battle 4.2
+  game 19.96 ms at -O2; -O3 19.94 (+9% code), LTO 19.66 (-1.5%, +2% code), -O3 + LTO 19.66 (+35% code), LTO +
+  -fipa-pta 19.76; logs and fb dumps identical. Below the 2% bar, so not default; LTO is a hardware A/B candidate.
+  Details: unknowns "-O3 and LTO".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

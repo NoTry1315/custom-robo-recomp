@@ -32,11 +32,20 @@ FLOATOPS ?= 1
 ifeq ($(FLOATOPS),1)
 CFLAGS	+=	-DRECOMP_FLOATOPS
 endif
+# GENOPT: extra flags for the translated gen/recomp_*.c only (e.g. GENOPT=-O3); LTO=1: link-time optimisation
+GENOPT ?=
+LTO ?= 0
+ifeq ($(LTO),1)
+CFLAGS	+=	-flto
+endif
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 ASFLAGS	:=	-g $(ARCH)
 # --wrap=linear*: a lock around libctru's linear heap, which the game and GX threads both use (runtime/gx.c)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=svcBreak \
 			-Wl,--wrap=linearAlloc,--wrap=linearMemAlign,--wrap=linearFree
+ifeq ($(LTO),1)
+LDFLAGS	+=	-flto=20
+endif
 LIBS	:= -lcitro3d -lctru -lm
 LIBDIRS	:= $(CTRULIB)
 
@@ -73,7 +82,7 @@ $(OUTPUT).elf	:	$(OFILES)
 $(OFILES_SRC)	:	$(HFILES)
 # gen/: IVOPTS folds `ram + (p & RAM_MASK)` into `ram - 0x80000000 + k` literals, which the
 # 3dsx format cannot relocate (tools/check_3dsx.py, run after every build)
-recomp_%.o	:	CFLAGS += -fno-ivopts
+recomp_%.o	:	CFLAGS += -fno-ivopts $(GENOPT)
 # vertex shaders: picasso, then embedded with bin2s (symbols <name>_shbin, _shbin_size)
 %.shbin.o %_shbin.h : %.v.pica
 	@echo $(notdir $<)

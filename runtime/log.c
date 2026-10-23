@@ -451,13 +451,14 @@ Result __wrap_svcBreak(UserBreakType reason) {
     crash(buf, 0, (u32)__builtin_return_address(0));
 }
 
-void __assert_func(const char *file, int line, const char *func, const char *expr) {
+/* used: with LTO=1 the libc members that call these are only pulled in after LTO has dropped them */
+__attribute__((used)) void __assert_func(const char *file, int line, const char *func, const char *expr) {
     char buf[200];
     snprintf(buf, sizeof buf, "assert %s:%d %s: %s", file, line, func ? func : "", expr);
     crash(buf, 0, (u32)__builtin_return_address(0));
 }
 
-void abort(void) { crash("abort", 0, (u32)__builtin_return_address(0)); }
+__attribute__((used)) void abort(void) { crash("abort", 0, (u32)__builtin_return_address(0)); }
 
 static void on_exception(ERRF_ExceptionInfo *e, CpuRegisters *r) {
     static const char *const names[] = { "prefetch abort", "data abort", "undefined insn", "vfp" };
