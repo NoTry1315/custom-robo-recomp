@@ -354,6 +354,14 @@ void recomp_menu_header(const char *build, const char *flags);   /* build id + s
 int  recomp_gx_thread_ok(void);        /* the GX thread exists (core 2) */
 extern volatile u32 recomp_gx_stat[4];  /* GX frames, draws, triangles (running totals), linear heap free (bytes); written by whoever runs GX */
 extern u32 recomp_dvd_slow_n, recomp_dvd_late_n;   /* dvd.c */
+void recomp_menu_touch(int px, int py); /* PADRead: a new touch, in pixels */
+void recomp_menu_retrace(void);        /* recomp_gx_retrace after the sync: apply bound-flag toggles, redraw buttons */
+void recomp_menu_bind(const char *name, int *var, void (*changed)(void));   /* live-toggle a flag variable from its button (menu.c btn[]) */
+extern u32 recomp_menu_flips;          /* bound-flag toggles so far */
+extern int recomp_vt_on;               /* gx.c: cached textures move to VRAM (sdmc:/cr_vramtex_off.txt = 0) */
+void recomp_vt_toggle(void);           /* bottom-screen button: flip it at the next frame start (texture cache invalidated) */
+extern u32 recomp_vt_flips;            /* VRAM texture toggles so far */
+extern volatile u32 recomp_vt_stat[6]; /* textures in VRAM, KB; in linear, KB (every 30 GX frames); moves, fallbacks (running totals) */
 extern int recomp_gx_kick_on;          /* mid-frame GPU submit mode now (for the # time lines) */
 extern u32 recomp_gx_kick_flips;       /* ZL toggles so far */
 extern u32 recomp_gx_dbg[3];           /* last draw: gpucmd offset at entry, prim, vertex count */

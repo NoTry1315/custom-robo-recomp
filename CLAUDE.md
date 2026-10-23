@@ -256,6 +256,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   51.2 fps (85%, gpu 12.2 ms, GX thread busy 18.0 of 19.5); Vs. battle 4.2 45.3 fps (76%, game CPU 18.1 ms,
   CPU-bound; mostly campaign battles, which have more models/pods/effects than run 25's 1-v-1 Vs. arena; the user
   saw the 1-v-1 arena run better); menus/pause ~60. Next: battle game CPU.
+- VRAM textures (2026-10-22): cached textures move from linear FCRAM to VRAM after 2 unchanged frames
+  (GX_TextureCopy in citro3d's GPU queue, linear freed next frame; <= 8 per frame; stale VRAM textures copied
+  back to linear when full; ~5 MB used of 5394 KB free). sdmc:/cr_vramtex_off.txt = linear only; bottom-screen
+  button "VRAM textures" (touch grid back in menu.c) toggles it. Citra: logs + fb dumps identical, battle gx tex
+  0.2 -> 0.3 ms, linear free +4.5 MB. Default on. Not yet on hardware: A/B campaign 8.3 gpu ms (run 27: 12.2).
+  Details: unknowns "VRAM textures".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

@@ -1,5 +1,5 @@
 """Per-scene averages of the '# time' windows in cr_autotest logs, split by GX thread mode, gpukick and the
-campaign-gpu flags (cull, vsh, mipmaps, tex 16-bit) when the split line has them.
+campaign-gpu flags (cull, vsh, mipmaps, tex 16-bit, vram tex) when the split line has them.
 Reads both '# time' formats (inline: game, gx vertex..; GX thread: game, gx wait..; gx thread busy..).
 Windows with a toggle inside (mixed, or a '# menu r<n>:' bottom-screen flag toggle) are dropped.
     PYTHONUTF8=1 python tools/time_avg.py logs/perf/base-battle.log logs/perf/new-battle.log [--from 2460]
@@ -12,7 +12,7 @@ NEW = re.compile(r'^# time r(\d+): ([\d.]+) fps, frame ([\d.]+) ms \(worst ([\d.
                  r'audio ([\d.]+) .*gx thread busy ([\d.]+): vertex ([\d.]+), tex ([\d.]+), state ([\d.]+), end/wait ([\d.]+), sync ([\d.]+)')
 SPLIT = re.compile(r'^# time r(\d+) split: .*gpu ([\d.]+) \(tail.*gpu span ([\d.]+).*gpukick (\w+)(?:, gx thread (\w+))?')
 GPUF = [('cull', re.compile(r'cull (\w+)')), ('vsh', re.compile(r'vsh (\w+)')), ('mip', re.compile(r'mipmaps (\w+)')),
-        ('t16', re.compile(r'tex 16-bit (\w+)'))]   # campaign-gpu A/B flags; absent in older logs
+        ('t16', re.compile(r'tex 16-bit (\w+)')), ('vram', re.compile(r'vram tex (\w+)'))]   # A/B flags; absent in older logs
 MENU = re.compile(r'^# menu r(\d+): ')
 SCENE = re.compile(r'^# retrace (\d+) scene (\w+) sub (\w+)')
 KEYS = ['frame', 'worst', 'game', 'gxwait', 'busy', 'vtx', 'tex', 'state', 'sync', 'audio', 'gpu', 'span']

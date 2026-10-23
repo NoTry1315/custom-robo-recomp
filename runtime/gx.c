@@ -273,6 +273,7 @@ static int vsync_on;   /* read in recomp_gx_start */
 static u32 last_vbl;
 
 static u8 tex_gen;
+static void vt_frame(void);
 static void frame_begin(void) {
     if (frame_open) return;
     recomp_gx_kick_on = !kick_off;
@@ -281,6 +282,7 @@ static void frame_begin(void) {
     if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
     last_vbl = C3D_FrameCounter(0);
     recomp_prof[PROF_GX_SYNC] += recomp_ticks() - ts;
+    vt_frame();
     /* the previous frame's queue (draws + display transfer) is finished here: its GPU time, in ms */
     if (frames) {
         u64 g = (u64)(C3D_GetDrawingTime() * (SYSCLOCK_ARM11 / 1000.0));
@@ -307,6 +309,9 @@ static RecursiveLock lin_lock;   /* below, at the linearAlloc wrappers */
 static u32 st_dl_calls, st_dl_prims, st_dl_hits, st_dl_misses, st_dl_slow, pm_hits, pm_misses;
 static void fb_dump(void);
 static void tex_resident(u32 *bytes, u32 *etc1);
+static void vt_count(void);
+static int vramtex_off;
+static u32 st_vt_moves, st_vt_kb, st_vt_cap, st_vt_full, st_vt_evict;   /* VRAM textures, per 300-frame stats line */
 
 static int in_draw;
 static void frame_end(void) {
@@ -326,6 +331,12 @@ static void frame_end(void) {
         tex_resident(&tb, &te);
         recomp_log("# gx tex frame %lu: resident %lu KB (as ETC1/ETC1A4 %lu KB)\n", (unsigned long)frames,
                    (unsigned long)(tb >> 10), (unsigned long)(te >> 10));
+        vt_count();
+        recomp_log("# gx vram tex frame %lu: %s; in VRAM %lu (%lu KB), linear %lu (%lu KB), VRAM free %lu KB; moves %lu (%lu KB), over cap %lu, VRAM full %lu, moved back to linear %lu\n",
+                   (unsigned long)frames, vramtex_off ? "off" : "on", (unsigned long)recomp_vt_stat[0], (unsigned long)recomp_vt_stat[1],
+                   (unsigned long)recomp_vt_stat[2], (unsigned long)recomp_vt_stat[3], (unsigned long)(vramSpaceFree() >> 10),
+                   (unsigned long)st_vt_moves, (unsigned long)st_vt_kb, (unsigned long)st_vt_cap, (unsigned long)st_vt_full, (unsigned long)st_vt_evict);
+        st_vt_moves = st_vt_kb = st_vt_cap = st_vt_full = st_vt_evict = 0;
         gap_dump();
         recomp_log("# gx vcache frame %lu: hits %lu misses %lu (draws), arena %lu KB, index ring %lu KB, evicted %lu + %lu, full %lu + %lu (since start), linear free %lu KB\n", (unsigned long)frames,
                    (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vring.live * sizeof(PVtx) >> 10), (unsigned long)(iring.live * 2 >> 10),
@@ -337,6 +348,7 @@ static void frame_end(void) {
                    (unsigned long)st_dl_hits, (unsigned long)st_dl_misses, (unsigned long)st_dl_slow, (unsigned long)pm_hits, (unsigned long)pm_misses);
     /* running totals for the bottom-screen stats (log.c reads them on the game thread); linear free under lin_lock */
     recomp_gx_stat[1] += st_draws; recomp_gx_stat[2] += st_tris; __dmb(); recomp_gx_stat[0]++;
+    if (recomp_gx_stat[0] % 30 == 0) vt_count();
     if (recomp_gx_stat[0] % 60 == 0) { RecursiveLock_Lock(&lin_lock); recomp_gx_stat[3] = linearSpaceFree(); RecursiveLock_Unlock(&lin_lock); }
     vc_hits = vc_misses = 0;
     st_dl_calls = st_dl_prims = st_dl_hits = st_dl_misses = st_dl_slow = pm_hits = pm_misses = 0;
@@ -427,8 +439,8 @@ static void tex_decode(u32 *out, u32 src, int w, int h, int fmt, const Tlut *tl)
 
 static u32 pow2(u32 v) { u32 p = 8; while (p < v && p < 1024) p <<= 1; return p; }
 
-/* lv: PICA levels allocated, lk: tex_lk of the texmap it was made for; etc1: bytes the texture would take as ETC1/ETC1A4 (estimate only) */
-typedef struct { u32 img, tlut_addr, hash, last, pkey, vep, tlut_n, etc1; u16 w, h; u8 fmt, tlut_fmt, used, lv, lk, gen; C3D_Tex tex; } TexEntry;
+/* upf: frame of the last upload; dmf: frame + 1 of its last move VRAM -> linear (tex_to_vram); lv: PICA levels allocated, lk: tex_lk of the texmap it was made for; etc1: bytes the texture would take as ETC1/ETC1A4 (estimate only) */
+typedef struct { u32 img, tlut_addr, hash, last, pkey, vep, tlut_n, etc1, upf, dmf; u16 w, h; u8 fmt, tlut_fmt, used, lv, lk, gen; C3D_Tex tex; } TexEntry;
 #define TEX_CACHE 192
 static TexEntry tcache[TEX_CACHE];
 static u32 *decode_buf;
@@ -593,6 +605,7 @@ static void tex_upload(TexEntry *e, const TexMap *m, u32 W, u32 H) {
     u32 total = C3D_TexCalcTotalSize(e->tex.size, e->lv - 1);
     GSPGPU_FlushDataCache(e->tex.data, total);
     st_upload++; st_upbytes += total;
+    e->upf = frames;
 }
 
 /* first upload of each texture (up to 400 lines): the texture inventory */
@@ -653,7 +666,84 @@ static void tex_unlink(TexEntry *e) {
     while (*p != i) p = &tex_next[*p - 1];
     *p = tex_next[i - 1];
 }
-#define TEX_SAME_KEY(t, m) ((t)->img == (m)->img && (t)->w == (m)->w && (t)->h == (m)->h && (t)->fmt == (m)->fmt && (t)->lk == tex_lk(m) && (t)->gen == tex_gen)
+/* VRAM textures. A texture whose contents stayed the same for 2 frames moves from linear FCRAM to
+ * VRAM (campaign is partly fill-bound, hw run 17b). tex_upload still decodes into linear memory;
+ * the move is a GX_TextureCopy added to citro3d's GPU queue (bound by C3D_Init), which runs in
+ * order: after the work already queued, before this frame's command list (queued at a mid-frame
+ * submit or C3D_FrameEnd). So the copy is done before any draw reads the VRAM copy, and VRAM freed
+ * by an entry not drawn this frame is not read after a copy overwrites it. The linear block is
+ * freed at the next frame_begin (C3D_FrameBegin waited for the queue). Not C3D_TexInitVRAM +
+ * C3D_TexLoadImage: its C3D_SyncTextureCopy waits for and clears the queue mid-frame.
+ * At most VT_COPIES moves per frame, and only while the queue (32 entries) keeps room for the
+ * frame's submits: a texture over the cap stays linear and moves on a later frame. When VRAM
+ * (less VT_RESERVE) is full, VRAM entries not drawn for VT_STALE frames move back to linear memory
+ * (a queued copy, ordered before the move that takes their VRAM; deleting them made battle r3000
+ * decode them all again in one 337 ms frame in Citra); their new linear block is the copy's target
+ * until the queue runs, so that frame (dmf) it is not reused, rewritten or freed. With no stale
+ * VRAM entry the texture stays linear (a fallback). VRAM entries are never rewritten in
+ * place: changed contents go to a new linear allocation. sdmc:/cr_vramtex_off.txt = linear only;
+ * the bottom-screen button toggles it between frames (texture cache invalidated). */
+#define VT_COPIES 8
+#define VT_RESERVE (256u << 10)
+#define VT_STALE 60
+static volatile int vt_req;   /* recomp_vt_toggle (bottom-screen button), applied by frame_begin */
+void recomp_vt_toggle(void) { vt_req = 1; }
+int recomp_vt_on;
+u32 recomp_vt_flips;
+volatile u32 recomp_vt_stat[6];   /* VRAM textures, KB; linear textures, KB; moves, fallbacks (running totals) */
+static void *vt_free[VT_COPIES];
+static int vt_nfree;
+static int tex_in_vram(const TexEntry *e) { return (u32)e->tex.data - OS_VRAM_VADDR < OS_VRAM_SIZE; }
+static void tex_to_vram(TexEntry *e) {
+    if (vramtex_off || !frame_open || tex_in_vram(e) || frames - e->upf < 2) return;
+    const gxCmdQueue_s *q = &__C3D_Context;
+    if (vt_nfree == VT_COPIES || q->numEntries + 8 + KICK_MAX - kicks >= q->maxEntries) { st_vt_cap++; return; }
+    u32 size = C3D_TexCalcTotalSize(e->tex.size, e->lv - 1);
+    void *v = NULL;
+    while (vramSpaceFree() < size + VT_RESERVE || !(v = vramAlloc(size))) {
+        TexEntry *old = NULL;
+        for (int i = 0; i < TEX_CACHE; i++) {
+            TexEntry *t = &tcache[i];
+            if (t->used && tex_in_vram(t) && t->last + VT_STALE < frames && (!old || t->last < old->last)) old = t;
+        }
+        if (!old) { st_vt_full++; recomp_vt_stat[5]++; return; }
+        if (vt_nfree + 1 >= VT_COPIES || q->numEntries + 9 + KICK_MAX - kicks >= q->maxEntries) { st_vt_cap++; return; }   /* room for both copies */
+        u32 osz = C3D_TexCalcTotalSize(old->tex.size, old->lv - 1);
+        void *l = linearAlloc(osz);
+        if (l) {
+            GX_TextureCopy((u32 *)old->tex.data, 0, (u32 *)l, 0, osz, 8);
+            vramFree(old->tex.data);
+            old->tex.data = l; old->dmf = frames + 1;
+            vt_nfree++; vt_free[vt_nfree - 1] = NULL;   /* counts toward VT_COPIES (linearFree(NULL) is a no-op) */
+        } else { C3D_TexDelete(&old->tex); tex_unlink(old); old->used = 0; }
+        st_vt_evict++;
+    }
+    GX_TextureCopy((u32 *)e->tex.data, 0, (u32 *)v, 0, size, 8);   /* flags as citro3d's C3D_TexLoadImage */
+    vt_free[vt_nfree++] = e->tex.data;
+    e->tex.data = v;
+    st_vt_moves++; st_vt_kb += size >> 10; recomp_vt_stat[4]++;
+}
+/* frame_begin, after C3D_FrameBegin: the copies queued last frame are done; a button toggle */
+static void vt_frame(void) {
+    for (int i = 0; i < vt_nfree; i++) if (vt_free[i]) linearFree(vt_free[i]);
+    vt_nfree = 0;
+    if (vt_req) {
+        vt_req = 0; vramtex_off ^= 1; recomp_vt_on = !vramtex_off; recomp_vt_flips++;
+        tex_gen++; memset(fidx, 0, sizeof fidx);   /* every texture decodes again (into linear memory first) */
+        recomp_log("# gx r%lu: VRAM textures %s (bottom-screen tap)\n", (unsigned long)recomp_retrace_count(), vramtex_off ? "off" : "on");
+    }
+}
+/* resident textures per pool, for the # time lines (log.c) and the 300-frame line */
+static void vt_count(void) {
+    u32 n[2] = {0, 0}, b[2] = {0, 0};
+    for (int i = 0; i < TEX_CACHE; i++) if (tcache[i].used) {
+        int v = tex_in_vram(&tcache[i]);
+        n[v]++; b[v] += C3D_TexCalcTotalSize(tcache[i].tex.size, tcache[i].lv - 1);
+    }
+    recomp_vt_stat[0] = n[1]; recomp_vt_stat[1] = b[1] >> 10; recomp_vt_stat[2] = n[0]; recomp_vt_stat[3] = b[0] >> 10;
+}
+
+#define TEX_SAME_KEY(t, m)((t)->img == (m)->img && (t)->w == (m)->w && (t)->h == (m)->h && (t)->fmt == (m)->fmt && (t)->lk == tex_lk(m) && (t)->gen == tex_gen)
 static C3D_Tex *tex_get(const TexMap *m, float *su, float *sv) {
     if (!m->img) { tex_miss("no image", m); return NULL; }
     if (!tile_w[m->fmt & 15]) { tex_miss("format not decoded", m); return NULL; }
@@ -690,6 +780,7 @@ static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float
         if (t->vep && TEX_SAME_KEY(t, m) && t->tlut_addr == tla &&
             t->tlut_n == tln && range_clean(ram + (m->img & RAM_MASK), n, t->vep) &&
             (!tl || range_clean(ram + (tl->addr & RAM_MASK), tl->n * 2, t->vep))) {
+            tex_to_vram(t);
             t->last = frames; fidx[fk] = t;
             return tex_bind_params(t, m, su, sv);
         }
@@ -702,18 +793,18 @@ static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float
         t = &tcache[k - 1];
         if (!TEX_SAME_KEY(t, m)) continue;
         if (t->hash == hash) { e = t; e->vep = ep; e->tlut_n = tln; break; }
-        if (t->last < frames) same = t;   /* changed contents: reuse its memory (the GPU is done with it) */
+        if (t->last < frames && t->dmf != frames + 1) same = t;   /* changed contents: reuse its memory (the GPU is done with it) */
     }
     if (!e) for (int i = 0; i < TEX_CACHE; i++) {   /* a new texture: the least recently used entry */
         t = &tcache[i];
         if (!t->used) { if (!victim || victim->used) victim = t; }
-        else if ((!victim || (victim->used && t->last < victim->last)) && t->last + 2 < frames) victim = t;
+        else if ((!victim || (victim->used && t->last < victim->last)) && t->last + 2 < frames && t->dmf != frames + 1) victim = t;
     }
     if (!e) pend_flush();   /* the entry may be bound to a pending draw */
     GPU_TEXCOLOR pf = pica_fmt(m->fmt);
     int alpha = m->fmt == 2 || m->fmt == 3;
     if (!e && pf == GPU_RGBA8) pf = tex_classify(m, tl, lv, &alpha);   /* decodes into decode_buf for tex_upload */
-    if (!e && same && same->tex.fmt == pf) {   /* (lv is the same: same key) */
+    if (!e && same && same->tex.fmt == pf && !tex_in_vram(same)) {   /* (lv is the same: same key); a VRAM entry is replaced below */
         e = same;
         tex_upload(e, m, W, H);
         e->hash = hash; e->vep = ep; e->tlut_n = tln;
@@ -725,8 +816,8 @@ static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float
         e->used = 0;
         while (!C3D_TexInitWithParams(&e->tex, NULL, (C3D_TexInitParams){W, H, lv - 1, pf, GPU_TEX_2D, false})) {   /* out of linear memory: free the least recently used */
             TexEntry *old = NULL;
-            for (int i = 0; i < TEX_CACHE; i++)
-                if (tcache[i].used && tcache[i].last < frames && (!old || tcache[i].last < old->last)) old = &tcache[i];
+            for (int i = 0; i < TEX_CACHE; i++)   /* (a VRAM entry frees no linear memory) */
+                if (tcache[i].used && tcache[i].last < frames && !tex_in_vram(&tcache[i]) && tcache[i].dmf != frames + 1 && (!old || tcache[i].last < old->last)) old = &tcache[i];
             if (!old) { ONCE("C3D_TexInit failed with nothing left to evict\n"); tex_miss("C3D_TexInit failed", m); return NULL; }
             C3D_TexDelete(&old->tex); tex_unlink(old); old->used = 0;
             st_evict++;
@@ -741,6 +832,7 @@ static C3D_Tex *tex_find(const TexMap *m, const Tlut *tl, u32 tla, u32 fk, float
         tex_link(e);
         tex_note(m, e);
     }
+    if (e->last < frames) tex_to_vram(e);   /* not drawn this frame yet; fresh uploads wait (upf) */
     e->last = frames;
     e->tlut_addr = tla;
     fidx[fk] = e;
@@ -2282,6 +2374,7 @@ void recomp_gx_retrace(void) {
             recomp_log("# gx r%lu: GX thread %s (%s)\n", (unsigned long)recomp_retrace_count(), recomp_gx_thread ? "on" : "off", why);
         }
     }
+    recomp_menu_retrace();
 }
 
 void recomp_gx_stop(void) {
@@ -2318,6 +2411,8 @@ void recomp_gx_start(void) {
     batch_off = flag_file("cr_batch_off");
     dl_off = flag_file("cr_dlcache_off");
     dl_clean_off = flag_file("cr_dlclean_off");
+    vramtex_off = flag_file("cr_vramtex_off");   /* sdmc:/cr_vramtex_off.txt: textures stay in linear memory */
+    recomp_vt_on = !vramtex_off;
     if (flag_file("cr_vcache_small")) {   /* test: rings at 5/8 so that replays evict (ring_alloc) */
         vring.size = VC_VERTS / 8 * 5; iring.size = VC_IXN / 8 * 5;
         recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu vertices, %lu indices\n", (unsigned long)vring.size, (unsigned long)iring.size);
@@ -2332,6 +2427,8 @@ void recomp_gx_start(void) {
     recomp_log("# gx: draw batching %s\n", batch_off ? "off (cr_batch_off.txt)" : "on");
     recomp_log("# gx: display-list cache %s\n", dl_off ? "off (cr_dlcache_off.txt)" : "on");
     recomp_log("# gx: display-list write tracking %s\n", dl_clean_off ? "off (cr_dlclean_off.txt)" : "on");
+    recomp_log("# gx: VRAM textures %s (VRAM free %lu KB after the render target, reserve %u KB, at most %d moves per frame)\n",
+               vramtex_off ? "off (cr_vramtex_off.txt): linear only" : "on", (unsigned long)(vramSpaceFree() >> 10), VT_RESERVE >> 10, VT_COPIES);
     if (fbd) recomp_log("# gx: framebuffer dump at %lu frames\n", (unsigned long)nwant);
     int off = flag_file("cr_gxthread_off");   /* only the starting mode: the thread exists either way */
     gq_fliptest = flag_file("cr_gxthread_fliptest");

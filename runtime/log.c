@@ -209,9 +209,15 @@ void recomp_prof_frame(u32 retrace) {
     const char *audio = recomp_ax_flips != aflips ? "mixed" : recomp_ax_rt ? "rt" : "retrace";
     u32 und = recomp_ax_underruns - aund, skip = recomp_ax_skipped - askip;
     aflips = recomp_ax_flips; aund = recomp_ax_underruns; askip = recomp_ax_skipped;
-    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s, gx thread %s; %.0f draw calls, %.0f indices per frame; audio %s (underruns %lu, skipped %lu)\n",
+    static u32 vflips, vmoves, vfull;   /* VRAM textures: same */
+    const char *vram = recomp_vt_flips != vflips ? "mixed" : recomp_vt_on ? "on" : "off";
+    u32 moves = recomp_vt_stat[4] - vmoves, full = recomp_vt_stat[5] - vfull;
+    vflips = recomp_vt_flips; vmoves = recomp_vt_stat[4]; vfull = recomp_vt_stat[5];
+    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s, gx thread %s; %.0f draw calls, %.0f indices per frame; audio %s (underruns %lu, skipped %lu); vram tex %s (VRAM %lu tex %lu KB, linear %lu tex %lu KB, moves %lu, VRAM full %lu)\n",
                (unsigned long)retrace, pre, frame - pre, gpu, span, kick, gxt,
-               (cur[PROF_GPU_DRAWS] - sum[PROF_GPU_DRAWS]) / 60.0, (cur[PROF_GPU_IDX] - sum[PROF_GPU_IDX]) / 60.0, audio, (unsigned long)und, (unsigned long)skip);
+               (cur[PROF_GPU_DRAWS] - sum[PROF_GPU_DRAWS]) / 60.0, (cur[PROF_GPU_IDX] - sum[PROF_GPU_IDX]) / 60.0, audio, (unsigned long)und, (unsigned long)skip,
+               vram, (unsigned long)recomp_vt_stat[0], (unsigned long)recomp_vt_stat[1], (unsigned long)recomp_vt_stat[2], (unsigned long)recomp_vt_stat[3],
+               (unsigned long)moves, (unsigned long)full);
     if (retrace % 300 == 0) {
         double un = (cur[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (cur[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
         double dl = (cur[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;
