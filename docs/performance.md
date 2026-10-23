@@ -51,6 +51,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Measured effect | Status | Details (unknowns) |
 |---|---|---|---|---|
+| 10-22 | **Vertex packing**: display-list draws store only the inputs the draw reads, in the GX source format (s16/s8/u8/f32) where the PICA has one; normal dropped when unlit | Citra: vertex fetch 68 -> 32.6 B per index (campaign, 4154 -> 1992 KB/frame), 29.4 B (battle, 5815 -> 2513 KB/frame); logs + fb dumps identical. GPU effect not yet on hardware | on; button "Vertex pack", `cr_vtxpack_off.txt` | Vertex packing |
 | 10-22 | **Non-volatile saves dropped** (translator: MWCC prologue saves / epilogue restores of r14-r31, f14-f31 that only fed dead locals; 1886 functions) | Citra 2v2 game 50.4 -> 43.2 ms, battle 19.2 -> 17.1, campaign 9.8 -> 8.9; logs + fb identical (3f87081) | on; `RECOMP_KEEP_NV_SAVES=1` at generation keeps them; not yet on hardware | 2v2 game CPU |
 | 10-22 | **Native MSL sin/cos/sinf/cosf + sqrtf**; double fmadd as inline `a*c + b` instead of newlib's (already non-fused) `fma()` | Citra 2v2 game 52.9 -> 50.4 ms (libm off in the same build: 52.3), battle 20.0 -> 19.2, campaign 9.9 -> 9.8; logs + fb identical (d1e6d03) | on; button "Native sin/cos", `cr_libm_off.txt`; not yet on hardware | 2v2 game CPU |
 | 10-22 | **Textures in VRAM** (copied from linear FCRAM after 2 unchanged frames; LRU back to linear) | HW run 27 -> 28: campaign GPU 12.2 -> 3.7 ms, 51.2 -> 56.7 fps; battle GPU 9.3 -> 2.2 ms (different fights: rough) | on; button "VRAM textures", `cr_vramtex_off.txt` | VRAM textures |
@@ -83,7 +84,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
 | 10-22 | -O3 on gen/ (`make GENOPT=-O3`) | Citra battle game 19.96 -> 19.94 ms, +9% code | no gain; more code for the 16 KB I-cache |
-| 10-22 | LTO (`make LTO=1`) | Citra battle game -1.5%, +2% code | below the 2% bar in Citra; HW A/B pending (run 28 used the LTO build; no normal-build log of the same run) |
+| 10-22 | LTO (`make LTO=1`) | Citra battle game -1.5%, +2% code | below the 2% bar in Citra; on/off decision pending (run 28 used the LTO build; no normal-build log of the same run) |
 | 10-22 | FPSCR RunFast (`cr_runfast.txt`) | boot FPSCR is already 03000000 (flush-to-zero + default NaN) on Citra and on hardware (run 28) | nothing to gain: already on |
 | 10-22 | Vertex shader variants | GPU hang at the first draw on New 3DS (fine in Citra) | reverted; one shader only |
 | 10-19 | Mid-frame C3D_FrameSplit every 1024 words | HW battle 35.0 -> 39.3 ms | slower |
@@ -96,10 +97,12 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
   "2v2 game CPU"); after native sin/cos and dropped saves, Citra 2v2 game 52.9 -> 43.2 ms (-18%), not yet on
   hardware. Left: call glue (19% of the FNPROF frame), the 0x8017b000-0x80185000 code family that only the 2v2
   runs (~4 ms), 0x80060fa4.
-- Packed PICA vertex format (session running 2026-10-22): fewer bytes per vertex.
+- Hardware run of main@dad2161 (vertex packing + 2v2 CPU work): campaign/battle GPU ms with the "Vertex pack"
+  button on/off, 2v2 game ms vs run 28 (29.8), "Native sin/cos" on/off.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
-- LTO on hardware: play the same scene once on each build.
+- LTO: decide on or off in main (Citra -1.5%; run 28 ran an LTO build without problems). Hardware tests use
+  one build only, with A/B through bottom-screen flags, so a build option is not compared with a second build.
 
 ## Hardware run index
 

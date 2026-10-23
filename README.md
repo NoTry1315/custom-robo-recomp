@@ -113,7 +113,8 @@ io  late 0 slow 3 stall 0 lin 17714K
 ```
 
 Touch buttons on the bottom screen switch test features live (the log records each switch,
-and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures" (on by default).
+and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack"
+and "Native sin/cos" (all on by default).
 
 ## Controls
 
@@ -141,6 +142,8 @@ can be compared with a feature on and off:
 | `cr_dlclean_off.txt` | always re-hash display lists and textures (no write tracking) |
 | `cr_mtx_off.txt` | translated MTX functions instead of the native ones |
 | `cr_vramtex_off.txt` | textures stay in linear memory (no VRAM textures) |
+| `cr_vtxpack_off.txt` | every vertex in the full 68-byte layout (no vertex packing) |
+| `cr_libm_off.txt` | translated sin/cos/sinf/cosf/sqrtf instead of the native ones |
 | `cr_runfast.txt` | set the VFP's flush-to-zero + default-NaN mode at boot (already on: the boot log's `# fpscr:` line shows the value) |
 | `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
 | `cr_vsync_on.txt` | old pacing: wait for a vblank every frame |
