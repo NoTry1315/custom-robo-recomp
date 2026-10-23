@@ -1656,6 +1656,153 @@ natives 1.3 ms.
   than in Citra's instruction count, but the FPR saves also converted ps0/ps1 to float). A/B: the libm button is
   live; for the saves, build once with `RECOMP_KEEP_NV_SAVES=1`.
 
+## 2v2 game CPU 2 (2026-10-23, not yet on hardware)
+
+Task: make the 2v2 battle (scene 4.2, hardware run 28: 30.5 fps, game CPU 29.7 ms) faster past the previous
+session. Citra only: `replay.ps1 -Name 2v2`, `time_avg.py --from 4260` (battle 4.2 `--from 2460`, campaign 8.3).
+Base main@8fc8d98 built in a separate worktree; every step run twice on the 2v2 (the two runs gave the same
+numbers each time) and once on battle, campaign and boot. Logs: `logs/perf/2026-10-23_*` in the session
+worktree (not committed).
+
+**Research (web, ideas only, no code taken).**
+- XenonRecomp (hedge-dev, PPC -> C++ for Xbox 360; README "Optimizations",
+  https://cdn.jsdelivr.net/gh/hedge-dev/XenonRecomp@main/README.md): every function takes (context, base);
+  options keep ctr, xer, cr, the reserved register, non-argument and non-volatile registers as C++ locals (ABI
+  assumed). Argument registers r3-r10 stay in the context struct. Its largest reported gain is from the locals
+  (savegpr/restgpr calls and redundant context stores gone). No arguments as C parameters, no stack-slot
+  promotion. Its `skip_lr` option drops LR handling when the game uses no exceptions.
+- ReXGlue (https://mintlify.wiki/rexglue/rexglue-sdk/concepts/recompilation): same (ctx, base) signature,
+  locals for the registers a function uses, MMIO base-register tracking (accesses through a register known to
+  hold a hardware base use MMIO helpers): the same idea as checking the base register below, the other way
+  round. N64Recomp (https://github.com/N64Recomp/N64Recomp): (rdram, ctx), ctx->rN directly.
+  So this translator already does more than the published PPC recompilers (per-site dirty spills,
+  interprocedural summaries, dropped saves); C-argument passing would be new ground.
+- VFP11 (ARM11 FPU), FFmpeg's dsputil_vfp.S comments (LGPL, Siarhei Siamashka;
+  https://fuchsia.googlesource.com/third_party/ffmpeg/+/refs/tags/n0.7.7/libavcodec/arm/dsputil_vfp.S): 1-cycle
+  throughput for most single-precision ops but not double arithmetic, latency 4 (loads) / 8 (arithmetic),
+  separate load/store and arithmetic pipelines; scheduling decides speed. Short-vector mode (FPSCR LEN) queues
+  LEN operations into the same pipeline one after another: fewer instructions, not more arithmetic per cycle
+  (https://ffmpeg.org/pipermail/ffmpeg-devel/2008-April/040786.html; their vector_fmul ~1.9 cycles per element,
+  load/store bound). For the MTX natives a better schedule matters more than vector mode, and Citra cannot show
+  either (it counts instructions).
+- ARM11 `ldr` + `rev` (big-endian load): a dependency chain, ~6 cycles reported for the unaligned case, `rev`
+  needs its operand early (https://ffmpeg.org/pipermail/ffmpeg-devel/2008-July/048658.html). Every guest access
+  avoided saves both.
+- New 3DS: 4 cores at 804 MHz and the 2 MB L2, enabled by osSetSpeedupEnable (https://3dbrew.org/wiki/Hardware;
+  already on here).
+- PGO on a bare-metal ARM target needs a way to dump .gcda without constructors or a filesystem
+  (https://gcc.gnu.org/pipermail/gcc/2020-November/234164.html); on the 3DS the sdmc exists, but the profile
+  would bias the one test build to one scene. Function ordering: lld --symbol-ordering-file
+  (https://reviews.llvm.org/D44969), with GNU ld a linker script listing hot `.text.f_*` sections first. Both
+  need hardware to measure (I-cache), so not tried.
+- -ffast-math sub-flags: only -fno-math-errno leaves values unchanged; -fno-signed-zeros changes x + 0.0 and
+  0.0 * x, so it breaks the identity rule.
+
+**Profile** (FNPROF build of the base, 2v2 r4500-8400, 53.2 ms FNPROF frame; `RECOMP_SITEPROF=1` build for
+counts): call glue 19.3% (10.3 ms), 0x801829d0 4.5%, GXDrawDone 3.7%, 0x80060fa4 3.3%, PSMTXConcat 3.2%,
+0x8006eef8 2.5%, VIWaitForRetrace 2.0%, GXBegin 1.6%, sin + cos + sinf + cosf 3.4%. Per frame: 31.6k calls, 17.4k
+translated function entries, 2.5k call_indirect; register traffic at call boundaries (stores before calls 129k,
+entry loads ~100k, return stores 62k, reloads at most 82k, many dead and dropped by GCC) is ~1.2 ms of Citra time
+at most, so most of the glue is the C call itself (prologue/epilogue, the caller's spills around the bl), not
+`cpu` traffic. Half of the entries (8.7k) go to functions of at most 64 instructions, almost all of them in
+another gen/ file than the caller (60 functions per file). The SDK natives' union in-set (r1, r3-r10, f1-f8)
+costs at most ~15k stores per frame (<0.1 ms). Two runtime paths stood out in the ARM output: every WGPIPE
+store (722 sites, immediate-mode vertices in 0x801829d0 / 0x8006eef8 ..) called `recomp_gx_fifo_write` out of
+line, and every non-stack access checked and masked its own effective address.
+
+**Steps kept** (Citra game ms; frame = time_avg frame; all identical to the base, see below):
+
+| step | commit | 2v2 game | 2v2 frame | battle game | campaign game |
+|---|---|---|---|---|---|
+| base main@8fc8d98 | | 43.2 | 50.5 | 17.1 | 8.9 |
+| 1 base-register accesses | c27c2f2 | 40.9 | 48.3 | 16.3 | 8.4 |
+| 2 WGPIPE stores inline | 0c8c024 | 39.0 | 47.0 | 15.5 | 8.4 |
+| 3 SDK call path | 136d224 | 37.4 | 46.3 | 14.6 | 8.2 |
+| 4 stack words in locals | 40381bd | 36.0 | 45.9 | 14.1 | 8.0 |
+
+2v2 game -16.7%, battle -17.5%, campaign -10% (campaign stays at the 60 Hz cap). The 2v2 frame moves less: in
+Citra the GX thread (busy 38.6 ms, unchanged) is now longer than the game thread (gx wait 0.9 -> 3.6 ms). On
+hardware run 28 the GX thread was 18.6 ms against game 29.7, so the game thread still decides there. Estimate,
+not measured: scaling run 28's 29.7 ms by Citra's 52.9 -> 36.0 (run 28's build had neither this work nor the
+2026-10-22 2v2 work) puts the game thread near 20 ms, close to the GX thread. .text 6.96 -> 6.66 MB.
+
+1. **Base-register accesses** (recomp.py `base_access`, ppc.h `rd*_b/wr*_b/psq_*0_b`): a D-form access
+   `rA + k` (rA not r1) checks IS_HW and masks the base register and uses k as the load/store offset, like the
+   r1 `_sp` accesses; GCC then checks and masks a pointer once for all the fields read through it (one check per
+   struct pointer in a loop body instead of one per field). Differs from `rd32(rA + k)` only if rA + k crosses
+   into or out of 0xCC000000-0xCDFFFFFF or rA & RAM_MASK is within 32 KB of either end of the 32 MB mirror:
+   ram[] and ram_wr[] now sit inside larger blocks with 32 KB / 32 pages of guard space on both sides
+   (cpu.c: `.set ram, recomp_ram_block + 0x8000`), so such an access lands in the guard instead of wrapping.
+   Indexed and update forms keep the old helpers. `RECOMP_BASE_ACCESS=0` = old code. On by default.
+2. **WGPIPE stores inline** (ppc.h `gx_fifo_put`, gx.c `fifo_lim`): a store to 0xCC008000 appends its bytes
+   to the game thread's FIFO in place while fifo_n + size < recomp_fifo_lim (the primitive GXBegin started is
+   still incomplete after it, and the buffer has room); the completing store, and every store while the
+   primitive size is unknown, still calls `recomp_gx_fifo_write`, which flushes as before. Always on (the same
+   bytes reach the same records; no flag).
+3. **SDK call path** (ppc.h `recomp_sdk_log_at` / `RECOMP_LOG`, log.c, gx.c): `LOG()` is inline, with the
+   name's count slot looked up once per function (a static pointer) instead of count_of's hash probe per call;
+   the first 20 calls per name still write the same log line, the ring of the last 32 calls is the same.
+   `vtx_size_g` (21 attr_size_in per GXBegin) is cached per vertex format until GXSetVtxDesc /
+   GXClearVtxDesc / GXSetVtxAttrFmt change gs.desc / gs.vat. Always on.
+4. **Stack words in locals** (recomp.py `promote_stack_slots`, `frame_pointers`; ppc.h `psq_ld0_v`): words
+   r1 + k of a frame that only the function itself uses become `u32 sp_s<k>` locals holding the word's bits
+   (stw/lwz, stfs/lfs, stfd/lfd as two words, psq with GQR0, the stw/stw/lfd int->double idiom), so MWCC's
+   spills and reloads lose the address mask, the byte swaps and the RAM round trip, and GCC can forward them.
+   A word qualifies when: the frame is one stwu in the straight-line prologue (after `mflr`/`stw r0, 4(r1)`),
+   r1 is otherwise only written by the epilogue `addi r1, r1, size` with no stack access after it, and r1 is
+   not used in any other way; 8 <= k and k + 4 <= size; k lies below every frame offset a register derived from
+   r1 may point to (forward may-analysis over the function: r1 + k, pointer +/- constants, + an index taken as
+   non-negative, update forms; masks and other arithmetic get k - 4096; a register that keeps going down, or
+   minus a register, gets no bound; loads are data; after a call r3/r4 may be a pointer argument returned; a
+   definition counts as a use, so a pointer passed to a callee or stored counts); no callee reaches that word of
+   its caller's frame (stack accesses above a callee's own frame or before its stwu, pointers it derives there,
+   through frameless functions transitively, per call target; call_indirect = any frameless function;
+   natives in `NATIVE_STACK_READS`, today GXInitTexObjCI's 9th argument at r1 + 8, and recomp.py fails if
+   runtime/ reads `R[1] +/-` anywhere else); and every access to it is a whole-word 32-bit, 64-bit or psq access
+   of promoted words (byte and halfword accesses keep the word in memory). The local starts as the word's memory
+   value right after the stwu (GCC drops the load where a write comes first). 3439 words in 483 functions,
+   11085 accesses. Assumption (new): code reaches a local array or struct only from its address upward, as C
+   does. The frame memory of promoted words keeps older contents: only a reader of dead stack below r1, or a
+   pointer path these rules miss, would see a difference. `RECOMP_STACK_SLOTS=0` = old code. On by default.
+   A first version applied the callee exclusion globally and matched no callee at all (a `\b` lost to shell
+   escaping): the campaign replay then asserted in AX (`pvoices[...] == NULL`) because 0x8016d5dc kept a
+   12-argument call's 10th-12th arguments (its words 12-20, read by 0x80173f64 at its r1 + 172..180) in locals.
+   The identity runs caught it. Lesson: a regex written through a shell heredoc can lose its `\b` (it became a
+   backspace character); check new translator code for control characters before trusting a zero count.
+
+**Tried and not kept:**
+- Inline copies (`static inline fi_` copies of every translated function of at most 32 instructions in each
+  gen/ file that calls it, so GCC can inline across files: 756 copies, 3509 call sites; GCC inlined ~2580 of
+  them, including the hot 0x8018758c / 0x8018a28c / 0x801690c8): 2v2 game 37.4 -> 37.2 (-0.5%) for +5.5%
+  ARM instructions. Small callees are cheap to call already; the glue is in larger functions' calls.
+- Per-native in-sets instead of the union (r1, r3-r10, f1-f8): sized from the site counts at < 0.1 ms, not built.
+- LR save/restore removal (XenonRecomp's skip_lr): ~6 instructions per framed call, ~12k per 2v2 frame,
+  estimated 0.3 ms (0.7%), and SDK log lines show lr after tail calls; not built.
+
+**Identity** (`compare_logs.py` exit 0: SDK calls with r3-r6 and lr, pad, scene, summary lines; framebuffer
+dumps byte-identical) against base 8fc8d98 after every kept step: 2v2 (5269 lines, fb r5000/6500/8000), battle
+(2690, r2100/2700/3300), campaign (2939, r1500/1980/2300) and boot (1581 lines).
+
+**Profile after** (FNPROF build of 40381bd, same windows): FNPROF frame 53.2 -> 46.9 ms, game 46.0 -> 38.9. Call
+glue 21.8% (10.2 ms; was 10.3), GXDrawDone 6.1% (2.9 ms: waiting for the GX thread), PSMTXConcat 3.7%,
+0x80060fa4 3.3 -> 2.3%, VIWaitForRetrace 2.3%, 0x801829d0 4.5 -> 2.1% (WGPIPE path), 0x8005d08c 1.8%, cos 1.5%,
+PSMTXMultVec 1.4%, GXLoadPosMtxImm 1.2%, GXBegin 1.6 -> 1.2%, sin 1.2%. Game code is flat (no function above
+2.3%); the glue is now a larger share of a smaller frame.
+
+**Not done / next (ranked):**
+1. Hardware run: 2v2 game ms against run 28 (29.7) with this branch plus the 2026-10-22 2v2 work; also check the
+   GX thread (busy 18.6 ms in run 28): with the game thread near 20 ms it is the next limit.
+2. Stack words between address-taken locals: most hot frames (0x8017b4a4, 0x801835b0, 0x8018144c) keep their
+   spills because a local struct sits at r1 + 8..24 below them. Promoting those needs the extent each callee
+   reads through a pointer argument (an interprocedural "bytes reached through r3-r10" summary, plus a table for
+   the natives that take pointers), then words outside every passed object qualify.
+3. Call glue (still the largest bucket): C arguments for r3-r10/f1-f8 would remove the `cpu` traffic (~1.2 ms
+   Citra at most) but not the C call itself; inlining larger hot callees (64-200 instructions, 4.8k entries per
+   frame) needs a size/benefit choice GCC's inliner does not make here (see inline copies).
+4. MTX natives (PSMTXConcat 991 calls, ~1.7 ms FNPROF): ldm + rev + `vmov d, r, r` pairs and an interleaved
+   schedule; bit-identical by construction, measurable only on hardware (`cr_bench`).
+5. I-cache layout (hot functions first) and PGO: hardware only; PGO would need to be the main build.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
