@@ -1416,73 +1416,6 @@ runs of each variant agree to 0.01 ms), full build with -j20:
   LTO=1 is the one worth a hardware A/B if battle CPU gets tight. Not yet on hardware.
 - -O3 on runtime/ hot files (gx.c) not tried: -O3 on gen/ gave nothing and battle is bound by game code.
 
-<!-- generated -->
-## Stereo 3D (2026-10-22, not yet on hardware)
-
-**What it does.** When the 3D slider is above 0 (`osGet3DSliderState`, read every frame on the GX thread),
-gx.c records the command words of the left eye. At frame end it binds a second render target, set as the
-output for GFX_TOP/GFX_RIGHT, and appends the same words again with GPUCMD_AddRawCommands. This is the mw3ds
-technique: the right eye costs GPU time and a memcpy, with no second pass of game or GX CPU work.
-`gfxSet3D(true)` is called the first time stereo is used, and the right target is created then too
-(VRAM: 240x400 RGBA8 + D24S8). After that, a frame that does not use the right target is shown in 2D,
-with the left framebuffer sent to both eyes (libctru `gfxScreenSwapBuffers(..., hasStereo)`).
-
-**How the replay is kept correct** (citro3d 1.7.1 source read: base.c, renderqueue.c, uniforms.c, internal.h):
-- citro3d only emits dirty state, so the left eye's first draws normally rely on state left over from the previous
-  frame. The right-eye replay would start from the left eye's end state instead. To avoid that, `stereo_begin`
-  calls `C3Di_UpdateContext()` right after `C3D_FrameDrawOn(left)`. This emits the left framebuffer outside the
-  recording. It then sets every other dirty flag (`C3DiF_RESEND`: attr/buf info, effect, viewport, scissor,
-  program without code, texenv buffer, light enable, all tex units, all texenvs). It also calls
-  `C3Di_DirtyUniforms` and dirties the 4 int uniforms, which DirtyUniforms misses (it clears their EverDirty
-  flag). The first draw therefore re-emits the full state inside the recording. `__C3D_Context` is declared in
-  gx.c with only the head of citro3d's struct (gxQueue, cmdBuf, cmdBufSize, cmdBufUsage, flags).
-- `eye` (vshader.v.pica, the 92nd of 96 float uniform slots including the constant `k`) is written raw
-  (GPUREG_VSH_FLOATUNIFORM_CONFIG/DATA) before each eye's words and is never set through citro3d. So no
-  recorded word writes it, and citro3d never re-uploads it. eye = 0 is written once at the first frame and
-  whenever stereo turns off.
-- Mid-frame submits (gpu_kick, up to 12 per frame) split the words into ranges. The FINALIZE / framebuffer
-  flush words that C3D_FrameSplit adds between chunks are not recorded. The replay goes into the frame's
-  last chunk.
-- Right eye: `C3D_FrameDrawOn(right)` + `C3Di_UpdateContext()` (left framebuffer flush, right framebuffer,
-  viewport), eye, the ranges. Then citro3d's DrawUsed flag is set again (the replayed draws did not set it),
-  so C3D_FrameEnd flushes the right framebuffer before its display transfer. The right target is cleared
-  together with the left one, and also when stereo turns on.
-- Fallback (counted, the frame is shown in 2D): the left eye hit the command-buffer limit, the ranges
-  overflowed, or the replay would not fit in the rest of the 2 MB buffer. 0 fallbacks so far: battle frames
-  use about 2% of the buffer, so the buffer was not raised.
-
-**Shader.** Clip-space xy += eye.xy * max(w - eye.z, -w) * (1 - clipm[3].w). With eye = (0, +-sep * slider,
-conv, 0), the per-eye shift in NDC is sep * (1 - conv/w), clamped to at least -sep. The display's horizontal
-axis is clip y, because the top screen is rotated (set_clip). The left eye gets +, the right eye gets -; the
-signs were checked with fb dumps. Distant objects get up to 2 * sep * 200 = 10 px of uncrossed disparity at
-full slider. Objects nearer than conv cross, by at most the same 10 px. Orthographic draws have
-clipm[3] = (0,0,0,1), so the factor is 0 and the HUD stays at screen depth. Default sep 0.025, conv 3.0.
-Battle eye-space w is about 3 to 60: conv 40 put most of the arena 24+ px in front of the screen, and conv
-15 clamped almost everything. With conv 3 the arena sits 0-10 px behind the HUD (Citra fb dumps r2100/2700/
-3300, measured by best horizontal shift per band; script in the session notes). This is a single shader with
-no variants (see "Vertex shader variants").
-
-**Cost (Citra, logs/perf in the worktree, not committed).** Battle 4.2 (r2460-3600): mono vs forced stereo:
-game 20.0 / 20.0 ms, GX thread busy 13.6 / 13.9, 44.9 / 44.7 fps. 8-16k replayed words per frame (32-64 KB
-memcpy), cmdbuf 2% either way, 0 fallbacks. Campaign 8.3: busy 15.5 / 15.7, 0 fallbacks, ~11k words. The
-gpu column is meaningless in Citra (about 1 ms in both modes). The real cost is GPU time, roughly double the
-top-screen draw time (battle gpu 9.3 ms and campaign 12.2 ms in hw run 27, so expect about 19 / 24 ms). That
-would make campaign GPU-bound below 60 fps. If fps drops to about 30, game speed may halve, because the game
-appears frame-locked (unconfirmed). Not yet on hardware.
-
-**Mono path.** Slider 0 (no flag file): the battle and campaign replays are identical to main 342a766 (SDK,
-pad and scene lines, and fb dumps; tools/citra/compare_logs.py). The only extra GPU words are one eye = 0
-write at frame 0. The shader adds 0 to xy.
-
-**Open.**
-- Hardware: real GPU cost, how the slider feels, whether 2D fallback frames flicker the parallax barrier,
-  and whether conv/sep suit the campaign. The campaign replay's top screen is black in Citra from r1100 on
-  (fb dumps and window shots, main too), so campaign stereo has not been checked visually.
-- Split-screen battle views: the shift is in full-screen NDC, so it applies across the viewport split,
-  where the scissor cuts it.
-- The slider's position only scales the separation. conv is fixed and has no runtime control.
-- EFB-to-texture copies are not emulated, so render-to-texture effects get no stereo treatment.
-
 ## Vertex packing (2026-10-22, not yet on hardware)
 
 Every vertex the PICA read was a 68-byte `PVtx` (float pos[4], u8 mat[4], float nrm[3], 3 x float tc[3]),
@@ -1554,6 +1487,73 @@ Citra does not model PICA vertex-fetch bandwidth, so the GPU gain can only be me
 Hardware A/B to run: campaign 8.3 gpu ms (run 27: 12.2) and fps, vpack on vs off (button or flag file),
 with tools/time_avg.py. Also watch the GX thread busy ms, which was 18.0 of 19.5 in run 27: packing adds
 a little GX-thread CPU.
+
+<!-- generated -->
+## Stereo 3D (2026-10-22, not yet on hardware)
+
+**What it does.** When the 3D slider is above 0 (`osGet3DSliderState`, read every frame on the GX thread),
+gx.c records the command words of the left eye. At frame end it binds a second render target, set as the
+output for GFX_TOP/GFX_RIGHT, and appends the same words again with GPUCMD_AddRawCommands. This is the mw3ds
+technique: the right eye costs GPU time and a memcpy, with no second pass of game or GX CPU work.
+`gfxSet3D(true)` is called the first time stereo is used, and the right target is created then too
+(VRAM: 240x400 RGBA8 + D24S8). After that, a frame that does not use the right target is shown in 2D,
+with the left framebuffer sent to both eyes (libctru `gfxScreenSwapBuffers(..., hasStereo)`).
+
+**How the replay is kept correct** (citro3d 1.7.1 source read: base.c, renderqueue.c, uniforms.c, internal.h):
+- citro3d only emits dirty state, so the left eye's first draws normally rely on state left over from the previous
+  frame. The right-eye replay would start from the left eye's end state instead. To avoid that, `stereo_begin`
+  calls `C3Di_UpdateContext()` right after `C3D_FrameDrawOn(left)`. This emits the left framebuffer outside the
+  recording. It then sets every other dirty flag (`C3DiF_RESEND`: attr/buf info, effect, viewport, scissor,
+  program without code, texenv buffer, light enable, all tex units, all texenvs). It also calls
+  `C3Di_DirtyUniforms` and dirties the 4 int uniforms, which DirtyUniforms misses (it clears their EverDirty
+  flag). The first draw therefore re-emits the full state inside the recording. `__C3D_Context` is declared in
+  gx.c with only the head of citro3d's struct (gxQueue, cmdBuf, cmdBufSize, cmdBufUsage, flags).
+- `eye` (vshader.v.pica, the 92nd of 96 float uniform slots including the constant `k`) is written raw
+  (GPUREG_VSH_FLOATUNIFORM_CONFIG/DATA) before each eye's words and is never set through citro3d. So no
+  recorded word writes it, and citro3d never re-uploads it. eye = 0 is written once at the first frame and
+  whenever stereo turns off.
+- Mid-frame submits (gpu_kick, up to 12 per frame) split the words into ranges. The FINALIZE / framebuffer
+  flush words that C3D_FrameSplit adds between chunks are not recorded. The replay goes into the frame's
+  last chunk.
+- Right eye: `C3D_FrameDrawOn(right)` + `C3Di_UpdateContext()` (left framebuffer flush, right framebuffer,
+  viewport), eye, the ranges. Then citro3d's DrawUsed flag is set again (the replayed draws did not set it),
+  so C3D_FrameEnd flushes the right framebuffer before its display transfer. The right target is cleared
+  together with the left one, and also when stereo turns on.
+- Fallback (counted, the frame is shown in 2D): the left eye hit the command-buffer limit, the ranges
+  overflowed, or the replay would not fit in the rest of the 2 MB buffer. 0 fallbacks so far: battle frames
+  use about 2% of the buffer, so the buffer was not raised.
+
+**Shader.** Clip-space xy += eye.xy * max(w - eye.z, -w) * (1 - clipm[3].w). With eye = (0, +-sep * slider,
+conv, 0), the per-eye shift in NDC is sep * (1 - conv/w), clamped to at least -sep. The display's horizontal
+axis is clip y, because the top screen is rotated (set_clip). The left eye gets +, the right eye gets -; the
+signs were checked with fb dumps. Distant objects get up to 2 * sep * 200 = 10 px of uncrossed disparity at
+full slider. Objects nearer than conv cross, by at most the same 10 px. Orthographic draws have
+clipm[3] = (0,0,0,1), so the factor is 0 and the HUD stays at screen depth. Default sep 0.025, conv 3.0.
+Battle eye-space w is about 3 to 60: conv 40 put most of the arena 24+ px in front of the screen, and conv
+15 clamped almost everything. With conv 3 the arena sits 0-10 px behind the HUD (Citra fb dumps r2100/2700/
+3300, measured by best horizontal shift per band; script in the session notes). This is a single shader with
+no variants (see "Vertex shader variants").
+
+**Cost (Citra, logs/perf in the worktree, not committed).** Battle 4.2 (r2460-3600): mono vs forced stereo:
+game 20.0 / 20.0 ms, GX thread busy 13.6 / 13.9, 44.9 / 44.7 fps. 8-16k replayed words per frame (32-64 KB
+memcpy), cmdbuf 2% either way, 0 fallbacks. Campaign 8.3: busy 15.5 / 15.7, 0 fallbacks, ~11k words. The
+gpu column is meaningless in Citra (about 1 ms in both modes). The real cost is GPU time, roughly double the
+top-screen draw time (battle gpu 9.3 ms and campaign 12.2 ms in hw run 27, so expect about 19 / 24 ms). That
+would make campaign GPU-bound below 60 fps. If fps drops to about 30, game speed may halve, because the game
+appears frame-locked (unconfirmed). Not yet on hardware.
+
+**Mono path.** Slider 0 (no flag file): the battle and campaign replays are identical to main 342a766 (SDK,
+pad and scene lines, and fb dumps; tools/citra/compare_logs.py). The only extra GPU words are one eye = 0
+write at frame 0. The shader adds 0 to xy.
+
+**Open.**
+- Hardware: real GPU cost, how the slider feels, whether 2D fallback frames flicker the parallax barrier,
+  and whether conv/sep suit the campaign. The campaign replay's top screen is black in Citra from r1100 on
+  (fb dumps and window shots, main too), so campaign stereo has not been checked visually.
+- Split-screen battle views: the shift is in full-screen NDC, so it applies across the viewport split,
+  where the scissor cuts it.
+- The slider's position only scales the separation. conv is fixed and has no runtime control.
+- EFB-to-texture copies are not emulated, so render-to-texture effects get no stereo treatment.
 
 ## Generated by tools/recomp/recomp.py
 
