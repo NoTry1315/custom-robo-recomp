@@ -300,6 +300,7 @@ void recomp_sdk_call(const char *name); /* logs an SDK call that runtime/ does n
 
 /* ---- runtime services (runtime/log.c, runtime/dol.c) ---- */
 void recomp_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+u32 recomp_fpscr(void);   /* main.c: this thread's VFP FPSCR */
 void recomp_sdk_log(const char *name);  /* same report for hand-written SDK functions */
 void recomp_done(const char *why) __attribute__((noreturn)); /* ends the guest run */
 int  recomp_load_dol(void);             /* main.dol + boot info into ram; 0 on success */

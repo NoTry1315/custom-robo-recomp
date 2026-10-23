@@ -270,6 +270,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   are identical to main. Citra battle 4.2: 0 fallbacks, ~16k words (64 KB) replayed per frame, cmdbuf 2%, GX
   thread busy 13.6 -> 13.9 ms. Citra's gpu ms does not measure the real GPU, so the stereo cost is not yet
   measured on hardware. Details: unknowns "Stereo 3D".
+- FPSCR (2026-10-22): boot log `# fpscr:` shows 03000000 (FZ+DN = RunFast, nearest, no traps) on game and
+  GX threads in Citra, so flush-to-zero was already on; sdmc:/cr_runfast.txt (sets FZ+DN) is a no-op there,
+  logs identical, game ms unchanged. The game never sets FPSCR[NI], so flushing deviates from Dolphin (open,
+  unknowns top). Flag file only (no bottom-screen buttons). Hardware boot value not yet read.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

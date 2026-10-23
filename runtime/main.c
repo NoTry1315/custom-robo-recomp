@@ -11,6 +11,11 @@ void f_80003154(void); /* __start (DOL entry) */
 extern jmp_buf recomp_exit_jmp;
 u32 __stacksize__ = 1024 * 1024;  /* translated code nests one host frame per guest call */
 
+/* VFP FPSCR of the calling thread (each thread has its own). Bits: 25 DN, 24 FZ, 23-22 rounding,
+ * 15/12-8 exception trap enables. */
+u32 recomp_fpscr(void) { u32 v; __asm__ volatile("vmrs %0, fpscr" : "=r"(v)); return v; }
+static void fpscr_set(u32 v) { __asm__ volatile("vmsr fpscr, %0" : : "r"(v)); }
+
 int main(void) {
     gfxInitDefault();
     recomp_menu_init();   /* bottom screen (runtime/menu.c) */
@@ -29,10 +34,16 @@ int main(void) {
         recomp_mtx_init();
         printf("main.dol loaded, running __start\n");
         recomp_log("# build %s\n", RECOMP_BUILD);
+        /* sdmc:/cr_runfast.txt: FZ+DN on the game thread (VFP11 traps to support code on
+         * denormals unless FZ is set). Gekko keeps denormals (the game never sets FPSCR[NI]). */
+        u32 fp0 = recomp_fpscr();
+        FILE *rf = fopen("sdmc:/cr_runfast.txt", "rb");
+        if (rf) { fclose(rf); fpscr_set(fp0 | (3u << 24)); }
+        recomp_log("# fpscr: game thread at boot %08lx, now %08lx (sdmc:/cr_runfast.txt)\n", fp0, recomp_fpscr());
         /* sdmc flag files present at boot, so a hardware run shows what it tested */
         static const char *const flags[] = { "cr_gxthread_off", "cr_gxthread_fliptest", "cr_batch_off", "cr_dlcache_off", "cr_dlclean_off", "cr_gpukick_off",
-            "cr_mtx_off", "cr_vsync_on", "cr_dvdasync_off", "cr_dvd_stalltest", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_audio_rt_off", "cr_audio_rt_on", "cr_pad_script", "cr_pad_replay",
-            "cr_vramtex_off" };
+            "cr_mtx_off", "cr_runfast", "cr_vsync_on", "cr_dvdasync_off", "cr_dvd_stalltest", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_audio_rt_off", "cr_audio_rt_on", "cr_pad_script", "cr_pad_replay",
+            "cr_vramtex_off", "cr_stereo_force" };
         char on[256] = "";
         for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; i++) {
             char p[48]; snprintf(p, sizeof p, "sdmc:/%s.txt", flags[i]);

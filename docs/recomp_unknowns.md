@@ -10,8 +10,14 @@ logged here with addresses or turned into a runtime call that reports it
   fmuls/fmadds/ps_mul* is first rounded to a 25-bit mantissa (`f25`), as Dolphin does.
 - fmadd family uses C `fma()` then rounds to single (double rounding, same as
   Dolphin). It is slow on 3DS because VFPv2 has no fused multiply-add.
-- The ARM FPSCR is not configured yet. If libctru enables flush-to-zero or default-NaN
-  ("RunFast") mode, denormals and NaN payloads differ from Gekko.
+- The ARM FPSCR is already in RunFast mode: the boot log line `# fpscr:` reads 03000000 on the
+  game thread and the GX thread in Citra (FZ + DN set, round to nearest, no traps; set by libctru /
+  the kernel, this repo never wrote it). So denormals are flushed and NaN payloads are lost, unlike
+  Gekko: the game never sets FPSCR[NI] (PPCSetFpNonIEEEMode 0x80131d14 and PPCMtfpscr are never
+  called from translated code), so Dolphin keeps denormals. sdmc:/cr_runfast.txt ORs in FZ+DN at
+  boot (a no-op while the boot value already has them). Citra battle 4.2 / campaign 8.3 game ms
+  19.9 / 9.9 with and without it, logs and fb dumps identical (2026-10-22). The hardware boot value
+  is not yet read: check the `# fpscr:` lines in the next hardware log.
 - lfs/stfs use the C float<->double conversion. Dolphin uses bit-exact
   ConvertToDouble/ConvertToSingle, which differ for SNaN and for denormals on store.
 - fres/frsqrte/ps_res/ps_rsqrte use placeholder `1/x` and `1/sqrt(x)` in runtime/cpu.c.
