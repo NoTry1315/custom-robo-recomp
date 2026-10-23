@@ -297,6 +297,15 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   Citra replay, scene, commit), what is on, what was tried and dropped, and the hardware run index. Update it with
   every perf change, plus README Status after a hardware run. New sections in recomp_unknowns.md go ABOVE the
   `<!-- generated -->` line: recomp.py rewrites everything after it (the stereo section was lost that way once).
+- 2v2 game CPU (2026-10-22): FNPROF of the 2v2 replay: call glue 18% (+7.5 ms vs 1v1), MSL sin/cos ~2400 calls
+  per frame (3.1 ms), a code family at 0x8017b000-0x80185000 that only the 2v2 runs (~6 ms), 0x80060fa4. Native
+  sin/cos/sinf/cosf (`runtime/libm.c`, recomp.py MSL_NATIVE, button "Native sin/cos", cr_libm_off) and sqrtf;
+  sdk_functions.md had sin/cos (and sinf/cosf) swapped: 0x801689d0 is cos, 0x80168f38 sin. newlib's fma() is a
+  non-fused vmla, so gen/ now emits fmadd_d (a*c + b): same results, no call (double fmadd was never fused: open).
+  recomp.py drop_nv_saves(): MWCC prologue saves / epilogue restores of r14-r31/f14-f31 removed where the slot
+  only feeds the restore (1886 functions; RECOMP_KEEP_NV_SAVES=1 keeps them). Citra 2v2 game 52.9 -> 43.2 ms
+  (-18%), battle 20.0 -> 17.1, campaign 9.9 -> 8.9; 2v2/battle/campaign/boot logs and fb dumps identical to
+  9dc614c. Not yet on hardware. Details: unknowns "2v2 game CPU".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
