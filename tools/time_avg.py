@@ -12,7 +12,8 @@ NEW = re.compile(r'^# time r(\d+): ([\d.]+) fps, frame ([\d.]+) ms \(worst ([\d.
                  r'audio ([\d.]+) .*gx thread busy ([\d.]+): vertex ([\d.]+), tex ([\d.]+), state ([\d.]+), end/wait ([\d.]+), sync ([\d.]+)')
 SPLIT = re.compile(r'^# time r(\d+) split: .*gpu ([\d.]+) \(tail.*gpu span ([\d.]+).*gpukick (\w+)(?:, gx thread (\w+))?')
 GPUF = [('cull', re.compile(r'cull (\w+)')), ('vsh', re.compile(r'vsh (\w+)')), ('mip', re.compile(r'mipmaps (\w+)')),
-        ('t16', re.compile(r'tex 16-bit (\w+)')), ('vram', re.compile(r'vram tex (\w+)'))]   # A/B flags; absent in older logs
+        ('t16', re.compile(r'tex 16-bit (\w+)')), ('vram', re.compile(r'vram tex (\w+)')),
+        ('vpack', re.compile(r'vtx pack (\w+)'))]   # A/B flags; absent in older logs
 MENU = re.compile(r'^# menu r(\d+): ')
 SCENE = re.compile(r'^# retrace (\d+) scene (\w+) sub (\w+)')
 KEYS = ['frame', 'worst', 'game', 'gxwait', 'busy', 'vtx', 'tex', 'state', 'sync', 'audio', 'gpu', 'span']

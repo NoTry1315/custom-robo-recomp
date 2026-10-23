@@ -105,6 +105,29 @@ static void t_mark2(int b, int part) { u64 t = recomp_ticks(); recomp_prof[b] +=
 #define IB_INDICES 0x30000   /* per frame half (immediate draws; cached lists are drawn from vc_ixa) */
 #define VC_VERTS 0x14000     /* vertex cache arena (5.4 MB) */
 typedef struct { float pos[4]; u8 mat[4]; float nrm[3], tc[3][3]; } PVtx;   /* vshader.v.pica inputs */
+/* Vertex packing (sdmc:/cr_vtxpack_off.txt = every vertex a PVtx; bottom-screen button "Vertex
+ * pack"). Display-list draws (the vertex / display-list caches) store only the shader inputs the
+ * draw reads, in the GX source format where the PICA has one (s16 -> GPU_SHORT, s8 -> GPU_BYTE,
+ * u8 -> GPU_UNSIGNED_BYTE, f32 -> GPU_FLOAT; u16 is converted to float): the position scale 2^-frac
+ * goes to the vscale uniform (exact: the PICA converts the integer to float24 exactly and the
+ * power-of-2 scale commutes with rounding), a texcoord's into its texm rows. The normal is left out
+ * when the light loop is off and it feeds no texgen; texcoord units nothing feeds read a fixed
+ * attribute (0, 0, 1, 1), the value PVtx has there. A texcoord from TEXn is 2 components (the
+ * loader's z = 0) when its texm column 2 is zero, else z = 1 is stored. Every attribute is a
+ * multiple of 4 bytes, so offsets stay aligned. One shader program; per-draw C3D_AttrInfo. */
+typedef struct { u8 stride, nl, pk, c2z; u8 reg[6], fmt[6], cnt[6]; float vs[2], ts[3]; u8 tn[3]; u32 id, ush; } VLay;   /* loaders in memory order; ts/tn: texm scale and columns per unit; id: lay_id; ush: vs/ts/tn encoded (plan_finish), 0 = no scale */
+/* attribute configuration as one number: per register, loaded (1) | format (2) | count - 1 (2) */
+static u32 lay_id(const VLay *l) {
+    u32 id = 0;
+    for (int i = 0; i < l->nl; i++) id |= (1u | (u32)l->fmt[i] << 1 | (u32)(l->cnt[i] - 1) << 3) << (5 * l->reg[i]);
+    return id;
+}
+static VLay lay_full = {sizeof(PVtx), 6, 0, 0, {0, 1, 2, 3, 4, 5}, {GPU_FLOAT, GPU_UNSIGNED_BYTE, GPU_FLOAT, GPU_FLOAT, GPU_FLOAT, GPU_FLOAT},
+                              {4, 4, 3, 3, 3, 3}, {1, 1}, {1, 1, 1}, {0, 0, 0}, 0, 0};   /* id set in recomp_gx_init */
+static VLay cur_lay;      /* layout of the PICA attribute buffer (use_buf; stride 0: none yet) */
+int recomp_vtxpack_off;   /* read in recomp_gx_start; flipped by the menu between frames */
+static int va_on;   /* this frame is a stats frame (va_count; set in frame_begin: ARM11 has no divide) */
+static u32 st_dec_v, st_dec_b, st_lay_sw, st_vu;   /* vertices decoded and their bytes; C3D_AttrInfo changes; set_vtx_unif uploads (300-frame line) */
 
 static C3D_RenderTarget *target;
 static DVLB_s *vsh_dvlb;
@@ -115,7 +138,7 @@ static u32 vb_used, ib_used, vb_half;
 /* display-list vertex cache, see vc_draw: decoded vertices in vc_arena, index lists in vc_ixa,
  * both linear memory the GPU reads in place, each allocated through a ring (ring_alloc) */
 #define VC_IXN 0x30000       /* index ring (u16) */
-static PVtx *vc_arena;
+static u8 *vc_arena;   /* allocations in 4-byte units (vring), aligned to the vertex size */
 static u16 *vc_ixa;
 static u32 vc_hits, vc_misses;
 #define VC_REC 32768   /* allocation records per ring */
@@ -127,11 +150,11 @@ typedef struct {
     u16 freel[VC_REC], q[VC_REC];
     VcRec rec[VC_REC];
 } VcRing;
-static VcRing vring, iring;   /* vertices (PVtx), indices (u16) */
+static VcRing vring, iring;   /* vertices (4-byte units), indices (u16) */
 static void ring_flush(VcRing *g);
 static u8 mat_vtx[4], mat_reg[4];   /* material colour per component: vertex CLR0 or register */
 static float ushadow[96][4];        /* last value written per float uniform */
-static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop, u_eye = -1;
+static int u_clip, u_pos, u_nrm, u_tex, u_amb, u_lcfg, u_lights, u_blit, u_iloop, u_eye = -1, u_vsc;
 static int frame_open, clear_pending = 1;
 static int scissor_lost = 1;   /* C3D_FrameDrawOn -> C3D_SetViewport disables the scissor: resend it */
 
@@ -147,7 +170,7 @@ static u32 pend_n, st_merged, batch_off;   /* batch_off: read in recomp_gx_start
 static void pend_issue(void) {
     if (!pend_n) return;
     C3D_DrawElements(GPU_TRIANGLES, pend_n, C3D_UNSIGNED_SHORT, pend_ix);
-    recomp_prof[PROF_GPU_DRAWS]++; recomp_prof[PROF_GPU_IDX] += pend_n;
+    recomp_prof[PROF_GPU_DRAWS]++; recomp_prof[PROF_GPU_IDX] += pend_n; recomp_prof[PROF_GPU_VBYTES] += pend_n * cur_lay.stride;
     pend_n = 0;
 }
 static void pend_flush(void) { last_end = NULL; pend_issue(); }
@@ -166,14 +189,10 @@ void recomp_gx_init(void) {
     shaderProgramInit(&vsh);
     shaderProgramSetVsh(&vsh, &vsh_dvlb->DVLE[0]);
     C3D_BindProgram(&vsh);
-    C3D_AttrInfo *ai = C3D_GetAttrInfo();
-    AttrInfo_Init(ai);
-    AttrInfo_AddLoader(ai, 0, GPU_FLOAT, 4);
-    AttrInfo_AddLoader(ai, 1, GPU_UNSIGNED_BYTE, 4);
-    AttrInfo_AddLoader(ai, 2, GPU_FLOAT, 3);
-    AttrInfo_AddLoader(ai, 3, GPU_FLOAT, 3);
-    AttrInfo_AddLoader(ai, 4, GPU_FLOAT, 3);
-    AttrInfo_AddLoader(ai, 5, GPU_FLOAT, 3);
+    /* C3D_AttrInfo: use_buf, per vertex layout. Fixed attribute values per attribute slot: a
+     * packed layout's fixed slots (after its loaders) read (0, 0, 1, 1), constant forever */
+    for (int i = 0; i < 12; i++) C3D_FixedAttribSet(i, 0, 0, 1, 1);
+    lay_full.id = lay_id(&lay_full);
     vbuf[0] = linearAlloc(sizeof(PVtx) * VB_VERTS * 2);
     vc_arena = linearAlloc(sizeof(PVtx) * VC_VERTS);   /* NULL: no vertex cache */
     if (!vc_arena) recomp_log("# gx: no linear memory for the vertex cache\n");
@@ -186,7 +205,7 @@ void recomp_gx_init(void) {
     VcRing *rg[2] = {&vring, &iring};
     for (int k = 0; k < 2; k++) {
         VcRing *g = rg[k];
-        g->base = k ? (u8 *)vc_ixa : (u8 *)vc_arena; g->unit = k ? 2 : sizeof(PVtx); g->size = k ? VC_IXN : VC_VERTS;
+        g->base = k ? (u8 *)vc_ixa : vc_arena; g->unit = k ? 2 : 4; g->size = k ? VC_IXN : VC_VERTS * sizeof(PVtx) / 4;
         g->dlo = 0xffffffffu; g->nfree = VC_REC;
         for (u32 i = 0; i < VC_REC; i++) g->freel[i] = (u16)(VC_REC - 1 - i);
     }
@@ -196,6 +215,7 @@ void recomp_gx_init(void) {
     u_amb = shaderInstanceGetUniformLocation(si, "amb"); u_lcfg = shaderInstanceGetUniformLocation(si, "lcfg");
     u_lights = shaderInstanceGetUniformLocation(si, "lights"); u_blit = shaderInstanceGetUniformLocation(si, "blit");
     u_iloop = shaderInstanceGetUniformLocation(si, "iloop"); u_eye = shaderInstanceGetUniformLocation(si, "eye");
+    u_vsc = shaderInstanceGetUniformLocation(si, "vscale");
     memset(ushadow, 0xff, sizeof ushadow);
     gx.efb_w = 640; gx.efb_h = 480;
     gx.color_update = gx.alpha_update = 1;
@@ -218,14 +238,24 @@ static float efb_y0(void) { return (240 - gx.efb_h * efb_scale()) * 0.5f; }
 
 /* u16 indices reach 0x10000 vertices: past that, later draws index from a new base */
 static u32 vb_base;
-static const PVtx *cur_buf;   /* PICA attribute buffer: vbuf + vb_base or a vertex cache window */
-static void use_buf(const PVtx *p) {
-    if (p == cur_buf) return;
+static const void *cur_buf;   /* PICA attribute buffer: vbuf + vb_base or a vertex cache window */
+static void use_buf(const void *p, const VLay *l) {
+    int same = cur_lay.stride && cur_lay.id == l->id;   /* the id fixes the stride too */
+    if (p == cur_buf && same) return;
     pend_flush();
+    if (!same) {
+        C3D_AttrInfo *ai = C3D_GetAttrInfo();
+        AttrInfo_Init(ai);
+        u32 have = 0;
+        for (int i = 0; i < l->nl; i++) { AttrInfo_AddLoader(ai, l->reg[i], l->fmt[i], l->cnt[i]); have |= 1u << l->reg[i]; }
+        for (int r = 0; r < 6; r++) if (!(have >> r & 1)) AttrInfo_AddFixed(ai, r);
+        cur_lay = *l;
+        st_lay_sw++;
+    }
     cur_buf = p;
     C3D_BufInfo *bi = C3D_GetBufInfo();
     BufInfo_Init(bi);
-    BufInfo_Add(bi, p, sizeof(PVtx), 6, 0x543210);
+    BufInfo_Add(bi, p, l->stride, l->nl, 0x543210 & ((1u << (4 * l->nl)) - 1));
 }
 
 /* Stereo 3D (the mw3ds technique): the left eye is drawn as usual while its
@@ -388,8 +418,8 @@ static void frame_begin(void) {
     stereo_begin();
     frame_open = 1; scissor_lost = 1;
     vb_half = frames & 1; vb_used = ib_used = 0;
-    vb_base = 0; cur_buf = NULL;
-    use_buf(vbuf[vb_half]);
+    vb_base = 0; cur_buf = NULL; va_on = frames % 300 == 0;
+    use_buf(vbuf[vb_half], &lay_full);
     if (clear_pending || (stereo && clear_r)) {
         u32 c = gx.clear_color[0] << 24 | gx.clear_color[1] << 16 | gx.clear_color[2] << 8 | gx.clear_color[3];
         pend_flush();
@@ -404,6 +434,7 @@ volatile u32 recomp_gx_stat[4];
 static RecursiveLock lin_lock;   /* below, at the linearAlloc wrappers */
 static u32 st_dl_calls, st_dl_prims, st_dl_hits, st_dl_misses, st_dl_slow, pm_hits, pm_misses;
 static void fb_dump(void);
+static void va_log(void);
 static void tex_resident(u32 *bytes, u32 *etc1);
 static void vt_count(void);
 static int vramtex_off;
@@ -435,9 +466,12 @@ static void frame_end(void) {
         st_vt_moves = st_vt_kb = st_vt_cap = st_vt_full = st_vt_evict = 0;
         gap_dump();
         recomp_log("# gx vcache frame %lu: hits %lu misses %lu (draws), arena %lu KB, index ring %lu KB, evicted %lu + %lu, full %lu + %lu (since start), linear free %lu KB\n", (unsigned long)frames,
-                   (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vring.live * sizeof(PVtx) >> 10), (unsigned long)(iring.live * 2 >> 10),
+                   (unsigned long)vc_hits, (unsigned long)vc_misses, (unsigned long)(vring.live * 4 >> 10), (unsigned long)(iring.live * 2 >> 10),
                    (unsigned long)vring.evicted, (unsigned long)iring.evicted, (unsigned long)vring.fails, (unsigned long)iring.fails, (unsigned long)(linearSpaceFree() >> 10));
+        recomp_log("# gx vpack frame %lu: %s; decoded this frame %lu vertices, %lu bytes (%lu per vertex); layout switches %lu, vscale/texm uploads %lu\n", (unsigned long)frames, recomp_vtxpack_off ? "off" : "on",
+                   (unsigned long)st_dec_v, (unsigned long)st_dec_b, st_dec_v ? (unsigned long)(st_dec_b / st_dec_v) : 0ul, (unsigned long)st_lay_sw, (unsigned long)st_vu);
     }
+    if (frames % 300 == 0) va_log();
     if (frames % 300 == 0)
         recomp_log("# gx dl frame %lu: calls %lu prims %lu (%lu per call) cache hits %lu misses %lu slow %lu, plan memo hits %lu misses %lu\n", (unsigned long)frames,
                    (unsigned long)st_dl_calls, (unsigned long)st_dl_prims, st_dl_calls ? (unsigned long)(st_dl_prims / st_dl_calls) : 0ul,
@@ -451,7 +485,7 @@ static void frame_end(void) {
     recomp_gx_stat[1] += st_draws; recomp_gx_stat[2] += st_tris; __dmb(); recomp_gx_stat[0]++;
     if (recomp_gx_stat[0] % 30 == 0) vt_count();
     if (recomp_gx_stat[0] % 60 == 0) { RecursiveLock_Lock(&lin_lock); recomp_gx_stat[3] = linearSpaceFree(); RecursiveLock_Unlock(&lin_lock); }
-    vc_hits = vc_misses = 0;
+    vc_hits = vc_misses = st_dec_v = st_dec_b = st_lay_sw = st_vu = 0;
     st_dl_calls = st_dl_prims = st_dl_hits = st_dl_misses = st_dl_slow = pm_hits = pm_misses = 0;
     st_draws = st_tris = st_tex = st_evict = st_upload = st_upbytes = st_split = st_merged = st_kick_cap = 0;
     /* a frame with no draws still shows the clear color (frame_begin above) */
@@ -1426,7 +1460,7 @@ static void read_color(const u8 *p, int type, u8 *c) {
 /* One plan per draw: where each present attribute's bytes come from. rd reads
  * n components (big-endian, fixed point scaled) into out. */
 typedef struct APlan APlan;
-struct APlan { s8 attr, d, type, cs, n; u8 off, size, dst, kind, dpos; u16 imax; float scale; const u8 *base; u32 stride; void (*rd)(const u8 *, const APlan *, float *); };
+struct APlan { s8 attr, d, type, cs, n; u8 off, size, dst, kind, dpos, tco[3]; u16 imax; float scale; const u8 *base; u32 stride; void (*rd)(const u8 *, const APlan *, float *); };   /* tco: packed, byte offset of each further texcoord unit in dst */
 
 static inline u16 be16(const u8 *p) { return (u16)(p[0] << 8 | p[1]); }
 static void rd_u8(const u8 *p, const APlan *a, float *o) { for (int i = 0; i < a->n; i++) o[i] = p[i] * a->scale; }
@@ -1491,7 +1525,7 @@ static int make_plan(int fmt, APlan *pl, int *vsize) {
  * unit mask for TEXn, and POS/NRM also feeding texgen. */
 static u8 tc_fed;   /* PICA tc units written by some attribute (trim_plan) */
 
-static int trim_plan(APlan *pl, int np, const s8 tsrc[3]) {
+static int trim_plan(APlan *pl, int np, const s8 tsrc[3], int drop_nrm) {   /* drop_nrm: packed, light loop off */
     int k = 0, clr = mat_vtx[0] || mat_vtx[3];
     tc_fed = 0;
     for (int i = 0; i < np; i++) {
@@ -1500,36 +1534,162 @@ static int trim_plan(APlan *pl, int np, const s8 tsrc[3]) {
         for (int u = 0; u < 3; u++)
             if ((q.attr == A_POS && tsrc[u] == 1) || (q.attr == A_NRM && tsrc[u] == 2) || (q.attr >= A_TEX0 && tsrc[u] == 3 + q.attr - A_TEX0)) q.dst |= 1 << u;
         tc_fed |= q.dst;
-        if (q.attr == A_PNMTX || q.attr == A_POS || q.attr == A_NRM || (q.attr == A_CLR0 && clr) || (q.attr >= A_TEX0 && q.dst)) pl[k++] = q;
+        if (q.attr == A_PNMTX || q.attr == A_POS || (q.attr == A_NRM && (!drop_nrm || q.dst)) || (q.attr == A_CLR0 && clr) || (q.attr >= A_TEX0 && q.dst)) pl[k++] = q;
     }
     return k;
 }
 
+enum { K_PNMTX, K_FLOAT, K_CLR, K_RAW, K_CONV };   /* K_RAW: packed, components byte-swapped as they are; K_CONV: packed, rd -> floats */
+static u32 pmtx_row(void) {
+    u32 pn = gx.cur_mtx;
+    if (pn % 3 || pn >= 30) { ONCE("position matrix row %lu not a PNMTXn\n", (unsigned long)pn); pn = 0; }
+    return pn;
+}
+/* packed: a source attribute -> PICA format, component count (*cnt) and whether it is copied raw.
+ * home: 0 position, 2 normal (lit), 3.. texcoord (texgen source; c2: its texm column 2 is zero) */
+static int pk_fmt(const APlan *a, int home, int c2, u8 *cnt) {
+    int t = a->type, tex = a->attr >= A_TEX0, raw = t == 0 || t == 1 || t == 3 || t == 4;
+    if (tex && a->n < 2) raw = 0;   /* (s, 0, 1): as PVtx */
+    if (!raw || t == 4) {
+        *cnt = home == 0 ? 4 : tex && a->n >= 2 && c2 ? 2 : 3;
+        return GPU_FLOAT | (raw ? 0x100 : 0);
+    }
+    *cnt = tex && t == 3 && c2 ? 2 : 4;
+    return (t == 3 ? GPU_SHORT : t == 1 ? GPU_BYTE : GPU_UNSIGNED_BYTE) | 0x100;
+}
+static int fmt_size(int f) { return f == GPU_FLOAT ? 4 : f == GPU_SHORT ? 2 : 1; }
+static void put_comp(u8 *d, int f, int v) {   /* integer v in format f */
+    if (f == GPU_FLOAT) { float x = (float)v; memcpy(d, &x, 4); }
+    else if (f == GPU_SHORT) { s16 x = (s16)v; memcpy(d, &x, 2); }
+    else *d = (u8)v;
+}
 /* PICA vertex: see runtime/vshader.v.pica */
 /* Per draw: tm = the vertex with every field an attribute does not write
  * (pos/nrm 0, texcoords (0, 0, 1), register material, current matrix). Per
- * attribute the destination is fixed (dpos = float offset in PVtx), so the
- * vertex loop has no per-attribute decisions beyond its kind. Indexed
- * attributes record the largest index they read (imax, for the cache). */
-enum { K_PNMTX, K_FLOAT, K_CLR };
-static void plan_finish(APlan *pl, int np, PVtx *tm) {
+ * attribute the destination is fixed (dpos = float offset in PVtx; packed: byte
+ * offset), so the vertex loop has no per-attribute decisions beyond its kind.
+ * Indexed attributes record the largest index they read (imax, for the cache).
+ * L = the vertex layout: lay_full unless pk (then lit and c2z, texm column 2 zero
+ * per unit, decide it). */
+static u32 pow2_frac(float f) { return (127 - (fbits(f) >> 23 & 0xff)) & 31; }   /* f = 2^-frac */
+static void plan_finish(APlan *pl, int np, PVtx *tm, VLay *L, int pk, int lit, u8 c2z) {
     memset(tm, 0, sizeof *tm);
-    for (int u = 0; u < 3; u++) tm->tc[u][2] = 1;
-    u32 pn = gx.cur_mtx;
-    if (pn % 3 || pn >= 30) { ONCE("position matrix row %lu not a PNMTXn\n", (unsigned long)pn); pn = 0; }
-    tm->pos[3] = (float)pn;
-    for (int i = 0; i < 4; i++) tm->mat[i] = mat_vtx[i] ? 0 : mat_reg[i];
+    u32 pn = pmtx_row();
+    for (int i = 0; i < np; i++) pl[i].imax = 0;
+    if (!pk) {
+        *L = lay_full;
+        for (int u = 0; u < 3; u++) tm->tc[u][2] = 1;
+        tm->pos[3] = (float)pn;
+        for (int i = 0; i < 4; i++) tm->mat[i] = mat_vtx[i] ? 0 : mat_reg[i];
+        for (int i = 0; i < np; i++) {
+            APlan *a = &pl[i];
+            if (a->attr == A_PNMTX) { a->kind = K_PNMTX; continue; }
+            if (a->attr == A_CLR0) { a->kind = K_CLR; continue; }
+            a->kind = K_FLOAT;
+            int u0 = a->dst ? __builtin_ctz(a->dst) : -1;
+            if (a->attr == A_POS) a->dpos = offsetof(PVtx, pos) / 4;
+            else if (a->attr == A_NRM) a->dpos = offsetof(PVtx, nrm) / 4;
+            else { a->dpos = offsetof(PVtx, tc[u0]) / 4; a->dst &= ~(1 << u0); }
+        }
+        return;
+    }
+    /* packed: each attribute's home register (position 0, normal 2 when lit, else its first
+     * texcoord unit), the format it decides; further texcoord units it feeds get copies */
+    memset(L, 0, sizeof *L);
+    L->pk = 1; L->c2z = c2z; L->vs[0] = L->vs[1] = 1;
+    for (int u = 0; u < 3; u++) L->ts[u] = 1;
+    s8 src[6] = {-1, -1, -1, -1, -1, -1}, home[21];
+    u8 rf[6] = {0}, rc[6] = {0}, roff[6] = {0}, israw[6] = {0};
     for (int i = 0; i < np; i++) {
         APlan *a = &pl[i];
-        a->imax = 0;
-        if (a->attr == A_PNMTX) { a->kind = K_PNMTX; continue; }
-        if (a->attr == A_CLR0) { a->kind = K_CLR; continue; }
-        a->kind = K_FLOAT;
-        int u0 = a->dst ? __builtin_ctz(a->dst) : -1;
-        if (a->attr == A_POS) a->dpos = offsetof(PVtx, pos) / 4;
-        else if (a->attr == A_NRM) a->dpos = offsetof(PVtx, nrm) / 4;
-        else { a->dpos = offsetof(PVtx, tc[u0]) / 4; a->dst &= ~(1 << u0); }
+        home[i] = -1;
+        if (a->attr == A_PNMTX || a->attr == A_CLR0) continue;
+        int h = a->attr == A_POS ? 0 : a->attr == A_NRM && lit ? 2 : a->dst ? 3 + __builtin_ctz(a->dst) : -1;
+        home[i] = (s8)h;
+        if (h >= 0) src[h] = (s8)i;
+        for (int u = 0; u < 3; u++) if (a->dst >> u & 1) src[3 + u] = (s8)i;
     }
+    int off = 0;
+    for (int r = 0; r < 6; r++) {
+        if (r == 1) { rf[r] = GPU_UNSIGNED_BYTE; rc[r] = 4; }
+        else if (src[r] >= 0) {
+            const APlan *a = &pl[(int)src[r]];
+            int f = pk_fmt(a, r == 0 ? 0 : r == 2 ? 2 : 3, r >= 3 && a->attr >= A_TEX0 && (c2z >> (r - 3) & 1), &rc[r]);
+            rf[r] = (u8)(f & 0xff); israw[r] = f >> 8;
+            if (a->attr == A_POS && r >= 3) rc[r] = rf[r] == GPU_FLOAT ? 3 : 4;   /* texgen from position: w = 1 */
+            if (israw[r] && rf[r] != GPU_FLOAT) {
+                if (r == 0) L->vs[0] = a->scale;
+                else if (r == 2) L->vs[1] = a->scale;
+                else { L->ts[r - 3] = a->scale; L->tn[r - 3] = a->attr >= A_TEX0 ? 2 : 3; }
+            }
+        } else continue;
+        roff[r] = (u8)off;
+        L->reg[L->nl] = (u8)r; L->fmt[L->nl] = rf[r]; L->cnt[L->nl++] = rc[r];
+        off += rc[r] * fmt_size(rf[r]);
+    }
+    L->stride = (u8)off;
+    L->id = lay_id(L);
+    /* scales are 2^-frac, frac 0..31: 5 bits each, plus 2 bits of tn per unit (exact, 31 bits) */
+    L->ush = pow2_frac(L->vs[0]) | pow2_frac(L->vs[1]) << 5;
+    for (int u = 0; u < 3; u++) L->ush |= pow2_frac(L->ts[u]) << (10 + 5 * u) | (u32)(L->tn[u] & 3) << (25 + 2 * u);
+    /* template: position row, register material, texcoord z / w = 1 */
+    u8 *b = (u8 *)tm;
+    if (src[0] >= 0) put_comp(b + roff[0] + 3 * fmt_size(rf[0]), rf[0], (int)pn);
+    for (int i = 0; i < 4; i++) b[roff[1] + i] = mat_vtx[i] ? 0 : mat_reg[i];
+    for (int u = 0; u < 3; u++) {
+        int r = 3 + u;
+        if (src[r] < 0) continue;
+        int fs = fmt_size(rf[r]), tex = pl[(int)src[r]].attr >= A_TEX0;
+        if (rc[r] == 4) put_comp(b + roff[r] + 3 * fs, rf[r], 1);
+        if (tex && rc[r] >= 3) put_comp(b + roff[r] + 2 * fs, rf[r], 1);
+    }
+    for (int i = 0; i < np; i++) {
+        APlan *a = &pl[i];
+        if (a->attr == A_PNMTX) { a->kind = K_PNMTX; a->cs = (s8)fmt_size(rf[0]); a->dpos = (u8)(roff[0] + 3 * a->cs); continue; }
+        if (a->attr == A_CLR0) { a->kind = K_CLR; a->dpos = roff[1]; continue; }
+        int h = home[i];
+        a->dpos = roff[h];
+        a->kind = israw[h] ? K_RAW : K_CONV;
+        if (h >= 3) a->dst &= ~(1 << (h - 3));
+        for (int u = 0; u < 3; u++) a->tco[u] = a->dst >> u & 1 ? roff[3 + u] : 0;
+    }
+}
+
+/* attribute use per stats frame (frames % 300 == 0), weighted by vertices drawn:
+ * path (0 vbuf, 1 vcache, 2 dl cache), texcoord sets fed, lit, source types */
+static u32 va_v[3], va_tc[4], va_lit, va_pos[5], va_nrm[5], va_tcs[5], va_tg[3], va_frac[3][17];
+static void va_count(const APlan *pl, int np, int lit, int path, u32 nv) {
+    if (!va_on) return;
+    va_v[path] += nv; va_lit += lit ? nv : 0;
+    int ntc = 0;
+    for (int i = 0; i < np; i++) {
+        const APlan *a = &pl[i];
+        if (a->attr == A_POS) { va_pos[(int)a->type] += nv; }
+        if (a->attr == A_NRM && lit) va_nrm[(int)a->type] += nv;
+        /* plan_finish dropped a texcoord's own unit from dst: dst = further units only */
+        int nu = __builtin_popcount(a->dst) + (a->attr >= A_TEX0);
+        if (a->attr >= A_TEX0) va_tcs[(int)a->type] += nv;
+        ntc += nu; va_tg[a->attr == A_POS ? 0 : a->attr == A_NRM ? 1 : 2] += nu * nv;
+        if (a->kind != K_PNMTX && a->kind != K_CLR && a->scale > 0) {
+            int fr = 0; for (float s = a->scale; s < 1 && fr < 16; s *= 2) fr++;
+            int w = a->attr == A_POS ? 0 : a->attr == A_NRM ? 1 : 2;
+            if (a->type != 4 && (w != 1 || lit)) va_frac[w][fr] += nv;
+        }
+    }
+    va_tc[ntc > 3 ? 3 : ntc] += nv;
+}
+static void va_log(void) {
+    char fr[3][128];
+    for (int w = 0; w < 3; w++) { int p = 0; fr[w][0] = 0; for (int f = 0; f <= 16; f++) if (va_frac[w][f]) p += snprintf(fr[w] + p, sizeof fr[w] - p, " %d:%lu", f, (unsigned long)va_frac[w][f]); }
+    recomp_log("# gx vattr frame %lu: verts vbuf %lu vcache %lu dl %lu; tc sets 0/1/2/3 %lu/%lu/%lu/%lu; lit %lu; pos u8/s8/u16/s16/f32 %lu/%lu/%lu/%lu/%lu; nrm(lit) %lu/%lu/%lu/%lu/%lu; tc %lu/%lu/%lu/%lu/%lu; tc from pos/nrm/tex %lu/%lu/%lu; frac pos%s nrm%s tc%s\n",
+        (unsigned long)frames, (unsigned long)va_v[0], (unsigned long)va_v[1], (unsigned long)va_v[2],
+        (unsigned long)va_tc[0], (unsigned long)va_tc[1], (unsigned long)va_tc[2], (unsigned long)va_tc[3], (unsigned long)va_lit,
+        (unsigned long)va_pos[0], (unsigned long)va_pos[1], (unsigned long)va_pos[2], (unsigned long)va_pos[3], (unsigned long)va_pos[4],
+        (unsigned long)va_nrm[0], (unsigned long)va_nrm[1], (unsigned long)va_nrm[2], (unsigned long)va_nrm[3], (unsigned long)va_nrm[4],
+        (unsigned long)va_tcs[0], (unsigned long)va_tcs[1], (unsigned long)va_tcs[2], (unsigned long)va_tcs[3], (unsigned long)va_tcs[4],
+        (unsigned long)va_tg[0], (unsigned long)va_tg[1], (unsigned long)va_tg[2], fr[0], fr[1], fr[2]);
+    memset(va_v, 0, sizeof va_v); memset(va_tc, 0, sizeof va_tc); va_lit = 0; memset(va_pos, 0, sizeof va_pos);
+    memset(va_nrm, 0, sizeof va_nrm); memset(va_tcs, 0, sizeof va_tcs); memset(va_tg, 0, sizeof va_tg); memset(va_frac, 0, sizeof va_frac);
 }
 
 static void decode_vtx(const u8 *p, APlan *pl, int np, const PVtx *tm, PVtx *o) {
@@ -1560,6 +1720,53 @@ static void decode_vtx(const u8 *p, APlan *pl, int np, const PVtx *tm, PVtx *o) 
     }
 }
 
+/* packed vertex (plan_finish with pk): template, then each attribute at its byte offset */
+static void decode_pk(const u8 *p, APlan *pl, int np, const u8 *tm, u32 stride, u8 *o) {
+    memcpy(o, tm, stride);
+    for (int i = 0; i < np; i++) {
+        APlan *a = &pl[i];
+        const u8 *src = p + a->off;
+        if (a->kind == K_PNMTX) {
+            u32 pn = *src;
+            if (pn % 3 || pn >= 30) { ONCE("position matrix row %lu not a PNMTXn\n", (unsigned long)pn); pn = 0; }
+            put_comp(o + a->dpos, a->cs == 4 ? GPU_FLOAT : a->cs == 2 ? GPU_SHORT : GPU_BYTE, (int)pn);
+            continue;
+        }
+        if (a->d >= 2) {
+            u32 ix = a->d == 2 ? src[0] : (u32)(src[0] << 8 | src[1]);
+            if (ix > a->imax) a->imax = ix;
+            src = a->base + ix * a->stride;
+        }
+        u8 *d = o + a->dpos;
+        if (a->kind == K_CLR) {
+            u8 clr[4];
+            read_color(src, a->type, clr);
+            for (int c = 0; c < 4; c++) if (mat_vtx[c]) d[c] = clr[c];
+            continue;
+        }
+        int nb;
+        if (a->kind == K_RAW) {
+            nb = a->n * a->cs;
+            if (a->cs == 4) for (int k = 0; k < nb; k += 4) { u32 w; memcpy(&w, src + k, 4); w = __builtin_bswap32(w); memcpy(d + k, &w, 4); }
+            else if (a->cs == 2) for (int k = 0; k < nb; k += 2) { u16 w; memcpy(&w, src + k, 2); w = __builtin_bswap16(w); memcpy(d + k, &w, 2); }
+            else memcpy(d, src, nb);
+        } else {
+            float f[3];
+            a->rd(src, a, f);
+            nb = a->n * 4;
+            memcpy(d, f, nb);
+        }
+        if (a->dst) for (int u = 0; u < 3; u++) if (a->dst >> u & 1) memcpy(o + a->tco[u], d, nb);
+    }
+}
+
+/* n vertices of a draw into o (PVtx or packed per L) */
+static void decode_run(const u8 *data, u32 n, int vs, APlan *pl, int np, const PVtx *tm, const VLay *L, u8 *o) {
+    if (!L->pk) { PVtx *v = (PVtx *)o; for (u32 i = 0; i < n; i++) decode_vtx(data + i * vs, pl, np, tm, &v[i]); }
+    else for (u32 i = 0; i < n; i++) decode_pk(data + i * vs, pl, np, (const u8 *)tm, L->stride, o + i * L->stride);
+    st_dec_v += n; st_dec_b += n * L->stride;
+}
+
 /* ---------------------------------------------------------------- vertex cache
  * Decoded vertices of display-list draws, keyed by the vertex data address,
  * count, and a signature of everything decode reads besides guest memory (plan,
@@ -1585,7 +1792,7 @@ static VCache *vc_last;   /* entry of the last vc_draw, NULL if not kept */
 #define DL_N 4096   /* CACHE_WAYS-way */
 #define DL_ARR 12
 typedef struct {
-    const u8 *list; u32 n, sig, gen, slow, lhash, ahash, checked, used, narr, off, ixoff, ixn, prims, tris, vep, vrec, irec;
+    const u8 *list; u32 n, nv, sig, gen, slow, lhash, ahash, checked, used, narr, off, ixoff, ixn, prims, tris, vep, vrec, irec;
     const u8 *arr[DL_ARR]; u32 alen[DL_ARR], ah[DL_ARR];
 } DlCache;
 static DlCache dlcache[DL_N];
@@ -1631,15 +1838,16 @@ static void ring_evict(VcRing *g, u32 ri) {   /* the record at the front: its ow
     g->live -= g->rec[ri].len;
     g->evicted++;
 }
-/* n units for owner; *rec gets its record (index + 1). VC_NONE when this frame's draws leave
- * no room or no record is free. */
-static u32 ring_alloc(VcRing *g, u32 n, u32 owner, u32 *rec) {
+/* n units for owner, starting at a multiple of al units; *rec gets its record (index + 1).
+ * VC_NONE when this frame's draws leave no room or no record is free. */
+static u32 ring_alloc(VcRing *g, u32 n, u32 al, u32 owner, u32 *rec) {
     *rec = 0;
     if (!n || n > g->size || !g->nfree) { g->fails++; return VC_NONE; }
     u32 moved = 0;   /* units top went past without allocating: a lap, then recent ones go too; 2.5 laps: no room */
     for (;;) {
         if (moved > 2 * g->size + g->size / 2) { g->fails++; return VC_NONE; }
-        if (g->top + n > g->size) {   /* too short before the end: wrap, the allocations there stay */
+        u32 t = (g->top + al - 1) / al * al;   /* the allocation's start: [top, t) stays unused */
+        if (t + n > g->size) {   /* too short before the end: wrap, the allocations there stay */
             for (u32 k = g->qn; k && g->rec[g->q[g->qh]].off >= g->top; k--) ring_rotate(g);
             moved += g->size - g->top; g->top = 0;
             continue;
@@ -1647,7 +1855,7 @@ static u32 ring_alloc(VcRing *g, u32 n, u32 owner, u32 *rec) {
         if (!g->qn) break;
         u32 ri = g->q[g->qh];
         const VcRec *r = &g->rec[ri];
-        if (r->off < g->top || r->off >= g->top + n) break;   /* nothing (else) in the way */
+        if (r->off < g->top || r->off >= t + n) break;   /* nothing (else) in the way */
         /* drawn this frame: never evicted; drawn in the last 3 frames: only once a lap found nothing older */
         if (r->last == frames || (moved < g->size && frames - r->last < 4)) {
             moved += r->off + r->len - g->top; g->top = r->off + r->len; ring_rotate(g); continue;
@@ -1656,12 +1864,12 @@ static u32 ring_alloc(VcRing *g, u32 n, u32 owner, u32 *rec) {
     }
     u32 ri = g->freel[--g->nfree];
     VcRec *r = &g->rec[ri];
-    r->off = g->top; r->len = n; r->last = frames; r->owner = owner;
+    r->off = (g->top + al - 1) / al * al; r->len = n; r->last = frames; r->owner = owner;
     g->q[(g->qh + g->qn++) % VC_REC] = (u16)ri;
-    if (g->dhi > g->dlo && r->off != g->dhi) ring_flush(g);   /* not contiguous with what was written: flush that now */
+    if (g->dhi > g->dlo && (r->off < g->dhi || r->off >= g->dhi + al)) ring_flush(g);   /* not contiguous with what was written (up to the alignment gap): flush that now */
     if (g->dhi <= g->dlo) g->dlo = r->off;
     g->dhi = r->off + n;
-    g->top += n; g->live += n;
+    g->top = r->off + n; g->live += n;
     *rec = ri + 1;
     return r->off;
 }
@@ -1694,13 +1902,15 @@ static u32 hash_mem(const u8 *p, u32 n, u32 h) {
  * type and n, which are hashed. */
 static inline u32 gofs(const u8 *p) { return (u32)(p - ram); }
 
-static u32 plan_sig(const APlan *pl, int np, int vs, const PVtx *tm) {
+static u32 plan_sig(const APlan *pl, int np, int vs, const PVtx *tm, const VLay *L) {
     u32 h = hash_mem((const u8 *)tm, sizeof *tm, (u32)vs * 0x85ebca6bu + (u32)np);
+    h = hash_mem((const u8 *)L, sizeof *L, h);
     for (int i = 0; i < np; i++) {
         const APlan *a = &pl[i];
         u32 f[8] = {(u32)a->attr | (u32)(u8)a->d << 8 | (u32)(u8)a->type << 16 | (u32)(u8)a->n << 24,
                     (u32)a->off | (u32)a->size << 8 | (u32)a->dst << 16 | (u32)a->dpos << 24,
-                    fbits(a->scale), a->base ? gofs(a->base) : 0, a->stride, 0, (u32)a->kind, 0};
+                    fbits(a->scale), a->base ? gofs(a->base) : 0, a->stride,
+                    (u32)a->tco[0] | (u32)a->tco[1] << 8 | (u32)a->tco[2] << 16 | (u32)(u8)a->cs << 24, (u32)a->kind, 0};
         h = hash_mem((const u8 *)f, sizeof f, h);
     }
     return h;
@@ -1712,35 +1922,39 @@ static u32 plan_sig(const APlan *pl, int np, int vs, const PVtx *tm) {
  * texgen sources), compared in full on a hit. A position matrix row that is not a PNMTXn is
  * never memoised (plan_finish logs it per call). */
 typedef struct {
-    u8 desc[21], fmt; s8 tsrc[3]; u8 mv[4], mr[4]; VtxFmt vat[12];
+    u8 desc[21], fmt; s8 tsrc[3]; u8 mv[4], mr[4], pk, lit, c2z, pad; VtxFmt vat[12];
     u32 cur_mtx, base[12], stride[12];
 } PlanKey;
-#define PM_N 256
+#define PM_N 512   /* 2-way: the packed key (lit, texm column 2) put 10 of ~250 battle calls a frame on colliding slots of a 256-entry direct-mapped memo */
 #define PM_MAX 8   /* trimmed plans hold PNMTXIDX, POS, NRM, CLR0 and texcoords feeding 3 units */
-typedef struct { PlanKey k; u32 valid, sig, vs, np; APlan pl[PM_MAX]; PVtx tm; } PlanMemo;
+typedef struct { PlanKey k; u32 valid, used, kh, sig, vs, np; APlan pl[PM_MAX]; PVtx tm; VLay lay; } PlanMemo;   /* kh: hash of k */
 static PlanMemo pmemo[PM_N];
 /* NULL: build it per call (not memoised) */
-static const PlanMemo *plan_get(int fmt, const s8 tsrc[3]) {
+static const PlanMemo *plan_get(int fmt, const s8 tsrc[3], int pk, int lit, u8 c2z) {
     if (gx.cur_mtx % 3 || gx.cur_mtx >= 30) return NULL;
     PlanKey k;
     memset(&k, 0, sizeof k);
     memcpy(k.desc, gx.desc, 21); k.fmt = (u8)fmt; memcpy(k.tsrc, tsrc, 3);
     memcpy(k.mv, mat_vtx, 4); memcpy(k.mr, mat_reg, 4); k.cur_mtx = gx.cur_mtx;
+    if (pk) { k.pk = 1; k.lit = (u8)lit; k.c2z = c2z; }   /* only a packed layout depends on them */
     for (int a = A_POS; a <= 20; a++) {
         if (!gx.desc[a]) continue;
         k.vat[a - A_POS] = gx.vat[fmt][a];
         if (gx.desc[a] >= 2) { k.base[a - A_POS] = gx.array_base[a - A_POS]; k.stride[a - A_POS] = gx.array_stride[a - A_POS]; }
     }
-    PlanMemo *m = &pmemo[hash_mem((const u8 *)&k, sizeof k, 0x811c9dc5u) & (PM_N - 1)];
-    if (m->valid && !memcmp(&m->k, &k, sizeof k)) { pm_hits++; return m; }
+    u32 kh = hash_mem((const u8 *)&k, sizeof k, 0x811c9dc5u);
+    PlanMemo *set = &pmemo[(kh & (PM_N / 2 - 1)) * 2];
+    for (int i = 0; i < 2; i++) if (set[i].valid && set[i].kh == kh && !memcmp(&set[i].k, &k, sizeof k)) { set[i].used = frames; pm_hits++; return &set[i]; }
     pm_misses++;
+    PlanMemo *m = !set[0].valid ? &set[0] : !set[1].valid ? &set[1] : set[0].used <= set[1].used ? &set[0] : &set[1];
+    m->used = frames; m->kh = kh;
     APlan pl[21];
     int vs, np = make_plan(fmt, pl, &vs);
-    np = trim_plan(pl, np, tsrc);
+    np = trim_plan(pl, np, tsrc, pk && !lit);
     if (np > PM_MAX) return NULL;
     m->valid = 0;
-    plan_finish(pl, np, &m->tm);
-    m->sig = plan_sig(pl, np, vs, &m->tm) ^ ((u32)fmt << 28 | (u32)mat_vtx[0] | (u32)mat_vtx[3] << 1) * 0x85ebca6bu;
+    plan_finish(pl, np, &m->tm, &m->lay, pk, lit, c2z);
+    m->sig = plan_sig(pl, np, vs, &m->tm, &m->lay) ^ ((u32)fmt << 28 | (u32)mat_vtx[0] | (u32)mat_vtx[3] << 1) * 0x85ebca6bu;
     memcpy(m->pl, pl, np * sizeof *pl);
     m->np = np; m->vs = vs; m->k = k; m->valid = 1;
     return m;
@@ -1767,10 +1981,10 @@ static u32 vc_arrays_hash(VCache *e) {
 
 /* Display-list draw: returns the arena vertex offset of its decoded vertices
  * (decoding them there on a miss), or VC_NONE when the caller decodes into vbuf */
-static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx *tm) {
+static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx *tm, const VLay *L) {
     vc_last = NULL;
     if (!vc_arena || n > 0x8000) return VC_NONE;
-    u32 sig = plan_sig(pl, np, vs, tm);
+    u32 sig = plan_sig(pl, np, vs, tm, L);
     u32 slot = (gofs(data) * 0x9e3779b1u ^ sig ^ (u32)n * 0x85ebca6bu) >> 18 & (VC_N - 1);
     VCache *set = &vcache[slot & ~(CACHE_WAYS - 1u)], *e = NULL, *v = set;
     for (int i = 0; i < CACHE_WAYS; i++) {
@@ -1811,10 +2025,9 @@ static u32 vc_draw(const u8 *data, int n, int vs, APlan *pl, int np, const PVtx 
     }
     e->gen = 0; e->ixn = 0;
     ring_detach(&vring, &e->vrec); ring_detach(&iring, &e->irec);
-    u32 vr, off = ring_alloc(&vring, n, own_vc(e), &vr);
+    u32 vr, off = ring_alloc(&vring, n * L->stride / 4, L->stride / 4, own_vc(e), &vr);
     if (off == VC_NONE) return VC_NONE;
-    PVtx *o = vc_arena + off;
-    for (int i = 0; i < n; i++) decode_vtx(data + i * vs, pl, np, tm, &o[i]);
+    decode_run(data, n, vs, pl, np, tm, L, vc_arena + off * 4);
     u32 narr = 0;
     for (int i = 0; i < np; i++) if (pl[i].d >= 2 && pl[i].kind != K_PNMTX) {
         if (narr == VC_ARR) { ring_detach(&vring, &vr); return off; }   /* drawn from the arena, not kept */
@@ -1894,7 +2107,12 @@ static void set_mtx(int lit) {
     }
 }
 
-/* texgen for PICA unit u: rows R0, R1, R2 with (s, t) = (R0.x / R2.x, R1.x / R2.x) */
+/* texgen for PICA unit u: rows R0, R1, R2 with (s, t) = (R0.x / R2.x, R1.x / R2.x).
+ * Kept in tex_m (tex_c2z: units whose column 2 is zero) and uploaded by set_vtx_unif with
+ * the draw's packed scales folded in. */
+static float tex_m[9][4];
+static u8 tex_c2z;
+static u32 tex_m_gen = 1;   /* bumped when tex_m is recomputed */
 static void set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3], const u8 *v0, const APlan *pl, int np) {
     struct { float tscale[3][2]; int tcoord[3]; u32 n, xf[3][3]; TexGen g[8]; } key;
     static u8 last[sizeof key]; static int valid; static s8 last_src[3];
@@ -1943,8 +2161,24 @@ static void set_texgen(const float tscale[3][2], const int tcoord[3], s8 tsrc[3]
             row[2][c] = g3[2][c];
         }
     }
-    unif_set(u_tex, m, 9);
+    memcpy(tex_m, m, sizeof m); tex_m_gen++;
+    tex_c2z = 0;
+    for (int u = 0; u < 3; u++) if (m[u * 3][2] == 0 && m[u * 3 + 1][2] == 0 && m[u * 3 + 2][2] == 0) tex_c2z |= 1 << u;
     memcpy(last_src, tsrc, 3);
+}
+
+/* the draw's texm (tex_m, columns of a packed integer texcoord scaled: exact, powers of 2) and vscale */
+static void set_vtx_unif(const VLay *L) {
+    static u32 last_gen, last_ush;
+    if (last_gen == tex_m_gen && last_ush == L->ush) return;
+    last_gen = tex_m_gen; last_ush = L->ush;
+    st_vu++;
+    float m[9][4], v[1][4] = {{L->vs[0], L->vs[1], 0, 0}};
+    memcpy(m, tex_m, sizeof m);
+    for (int u = 0; u < 3; u++)
+        for (int r = 0; r < 3; r++) for (int c = 0; c < L->tn[u]; c++) m[u * 3 + r][c] *= L->ts[u];
+    unif_set(u_tex, m, 9);
+    unif_set(u_vsc, v, 1);
 }
 
 static void set_blit(int on, int n) {   /* light loop on/off and its count */
@@ -2106,22 +2340,30 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     set_mtx(lit);
     set_texgen(tscale, tcoord, tsrc, data, pl, np);
     t_mark2(PROF_GX_VTX, PROF_VX_UNIF);
-    np = trim_plan(pl, np, tsrc);
+    int pk = in_dl && !recomp_vtxpack_off && vc_arena && n <= 0x8000;   /* vbuf draws stay PVtx */
+    np = trim_plan(pl, np, tsrc, pk && !lit);
     PVtx tm;
-    plan_finish(pl, np, &tm);
-    u32 co = in_dl ? vc_draw(data, n, vs, pl, np, &tm) : VC_NONE, v0, vadd = 0;
-    if (co != VC_NONE) { u32 w = co & ~0x7fffu; use_buf(vc_arena + w); v0 = co - w; }
+    VLay L;
+    plan_finish(pl, np, &tm, &L, pk, lit, tex_c2z);
+    va_count(pl, np, lit, in_dl ? 1 : 0, n);
+    u32 co = in_dl ? vc_draw(data, n, vs, pl, np, &tm, &L) : VC_NONE, v0, vadd = 0;
+    if (co != VC_NONE) { u32 a = L.stride / 4, w = co / (a * 0x8000) * (a * 0x8000); use_buf(vc_arena + w * 4, &L); v0 = (co - w) / a; }
     else {
         if (vb_used + n > VB_VERTS) {
             if (full_logged < 8) { full_logged++; recomp_log("# gx: vertex buffer full at frame %lu (verts %lu + %d)\n", (unsigned long)frames, (unsigned long)vb_used, n); }
             return;
         }
+        if (pk) {   /* no room in the vertex cache: drawn from vbuf as PVtx */
+            np = make_plan(fmt, pl, &vs);
+            np = trim_plan(pl, np, tsrc, 0);
+            plan_finish(pl, np, &tm, &L, 0, lit, 0);
+        }
         if (vb_used + n - vb_base > 0x10000) vb_base = vb_used;
-        use_buf(vbuf[vb_half] + vb_base);
-        PVtx *o = vbuf[vb_half] + vb_used;
-        for (int i = 0; i < n; i++) decode_vtx(data + i * vs, pl, np, &tm, &o[i]);
+        use_buf(vbuf[vb_half] + vb_base, &L);
+        decode_run(data, n, vs, pl, np, &tm, &L, (u8 *)(vbuf[vb_half] + vb_used));
         v0 = vb_used - vb_base; vadd = n;
     }
+    set_vtx_unif(&L);
     t_mark2(PROF_GX_VTX, PROF_VX_DEC);
     /* a cached entry's index list is kept in vc_ixa and drawn from there */
     u16 *ix;
@@ -2130,7 +2372,7 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     if (ve && ve->ixn && ve->prim == (u32)prim) { ix = vc_ixa + ve->ixoff; k = ve->ixn; ring_used(&iring, ve->irec); }
     else {
         u32 io = VC_NONE;
-        if (ve) { ve->ixn = 0; ring_detach(&iring, &ve->irec); io = ring_alloc(&iring, ntri * 3, own_vc(ve), &ve->irec); }
+        if (ve) { ve->ixn = 0; ring_detach(&iring, &ve->irec); io = ring_alloc(&iring, ntri * 3, 1, own_vc(ve), &ve->irec); }
         if (io != VC_NONE) { ix = vc_ixa + io; ve->ixoff = io; ve->prim = prim; ve->ixn = k = gen_ix(prim, ntri, v0, ix); }
         else { ix = ibuf[vb_half] + ib_used; k = gen_ix(prim, ntri, v0, ix); own = 0; }
     }
@@ -2220,15 +2462,16 @@ static int dl_draw(const u8 *list, u32 len) {
     t_mark2(PROF_GX_VTX, PROF_VX_UNIF);
     APlan pl[21];
     PVtx tm;
-    int vs, np;
+    VLay L;
+    int vs, np, pk = !recomp_vtxpack_off;
     u32 sig;
-    const PlanMemo *pm = plan_get(fmt, tsrc);
-    if (pm) { vs = pm->vs; np = pm->np; sig = pm->sig; }   /* pl and tm are copied on a miss (decode) */
+    const PlanMemo *pm = plan_get(fmt, tsrc, pk, lit, tex_c2z);
+    if (pm) { vs = pm->vs; np = pm->np; sig = pm->sig; L = pm->lay; }   /* pl and tm are copied on a miss (decode) */
     else {
         np = make_plan(fmt, pl, &vs);
-        np = trim_plan(pl, np, tsrc);
-        plan_finish(pl, np, &tm);
-        sig = plan_sig(pl, np, vs, &tm) ^ ((u32)fmt << 28 | (u32)mat_vtx[0] | (u32)mat_vtx[3] << 1) * 0x85ebca6bu;
+        np = trim_plan(pl, np, tsrc, pk && !lit);
+        plan_finish(pl, np, &tm, &L, pk, lit, tex_c2z);
+        sig = plan_sig(pl, np, vs, &tm, &L) ^ ((u32)fmt << 28 | (u32)mat_vtx[0] | (u32)mat_vtx[3] << 1) * 0x85ebca6bu;
     }
     u32 slot = (gofs(list) * 0x9e3779b1u ^ sig ^ len * 0x85ebca6bu) >> 19 & (DL_N - 1);
     DlCache *set = &dlcache[slot & ~(CACHE_WAYS - 1u)], *e = NULL, *v = set;
@@ -2278,15 +2521,15 @@ static int dl_draw(const u8 *list, u32 len) {
         if (slow) { e->slow = 1; e->gen = 1; t_mark(PROF_GX_VTX); st_dl_slow++; return 0; }
         e->slow = 0; e->ixn = 0;
         if (!nix) { e->narr = 0; e->gen = 1; t_mark(PROF_GX_VTX); return 1; }   /* no triangles: nothing to draw */
-        u32 off = ring_alloc(&vring, nv, own_dl(e), &e->vrec), io = VC_NONE;
-        if (off != VC_NONE) io = ring_alloc(&iring, nix, own_dl(e), &e->irec);
+        u32 a = L.stride / 4, off = ring_alloc(&vring, nv * a, a, own_dl(e), &e->vrec), io = VC_NONE;
+        if (off != VC_NONE) io = ring_alloc(&iring, nix, 1, own_dl(e), &e->irec);
         if (io == VC_NONE) {   /* no room this frame: per primitive (vc_draw, or vbuf) */
             if (e->vrec) { vring.rec[e->vrec - 1].last = frames - 1; ring_detach(&vring, &e->vrec); }   /* not drawn: free to go */
             t_mark(PROF_GX_VTX); return 0;
         }
-        w = off & ~0x7fffu;
+        w = off / (a * 0x8000) * (a * 0x8000);
         t_mark(PROF_GX_VTX);
-        PVtx *o = vc_arena + off;
+        u8 *o = vc_arena + off * 4;
         u16 *ix = vc_ixa + io;
         u32 v = 0, k = 0, prims = 0;
         for (pos = p0; pos < len;) {
@@ -2294,9 +2537,9 @@ static int dl_draw(const u8 *list, u32 len) {
             if (!op) { pos++; continue; }
             u32 n = list[pos + 1] << 8 | list[pos + 2];
             const u8 *d = list + pos + 3;
-            for (u32 i = 0; i < n; i++) decode_vtx(d + i * vs, pl, np, &tm, &o[v + i]);
+            decode_run(d, n, vs, pl, np, &tm, &L, o + v * L.stride);
             int nt = tri_count(op & 0xf8, n);
-            if (nt) { k += gen_ix(op & 0xf8, nt, off - w + v, ix + k); prims++; }
+            if (nt) { k += gen_ix(op & 0xf8, nt, (off - w) / a + v, ix + k); prims++; }
             v += n;
             pos += 3 + n * vs;
         }
@@ -2309,12 +2552,15 @@ static int dl_draw(const u8 *list, u32 len) {
             if (narr == DL_ARR) { narr = DL_ARR + 1; break; }
             e->arr[narr] = pl[i].base; e->alen[narr++] = al;
         }
-        e->ixoff = io; e->ixn = k; e->prims = prims; e->tris = k / 3; e->off = off;
+        e->ixoff = io; e->ixn = k; e->nv = nv; e->prims = prims; e->tris = k / 3; e->off = off;
         if (narr <= DL_ARR) { e->narr = narr; e->ahash = dl_arrays_hash(e, 1); e->gen = 1; }   /* else drawn once, not kept: */
         else { ring_detach(&vring, &e->vrec); ring_detach(&iring, &e->irec); }                   /* the space is reused after this frame */
     }
-    w = e->off & ~0x7fffu;
-    use_buf(vc_arena + w);
+    va_count(pm ? pm->pl : pl, np, lit, 2, e->nv);
+    u32 a = L.stride / 4;
+    w = e->off / (a * 0x8000) * (a * 0x8000);
+    use_buf(vc_arena + w * 4, &L);
+    set_vtx_unif(&L);
     u32 prims = e->prims, tris = e->tris;
     st_dl_prims += prims; st_draws += prims; st_tris += tris; if (nunits) st_tex += prims;
     st_merged += prims - 1 + emit_ix(vc_ixa + e->ixoff, e->ixn, 1);
@@ -2523,9 +2769,12 @@ void recomp_gx_start(void) {
     vramtex_off = flag_file("cr_vramtex_off");   /* sdmc:/cr_vramtex_off.txt: textures stay in linear memory */
     recomp_vt_on = !vramtex_off;
     if (flag_file("cr_vcache_small")) {   /* test: rings at 5/8 so that replays evict (ring_alloc) */
-        vring.size = VC_VERTS / 8 * 5; iring.size = VC_IXN / 8 * 5;
-        recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu vertices, %lu indices\n", (unsigned long)vring.size, (unsigned long)iring.size);
+        vring.size = vring.size / 8 * 5; iring.size = VC_IXN / 8 * 5;
+        recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu KB of vertices, %lu indices\n", (unsigned long)(vring.size * 4 >> 10), (unsigned long)iring.size);
     }
+    recomp_vtxpack_off = flag_file("cr_vtxpack_off");
+    recomp_menu_bind("Vertex pack", &recomp_vtxpack_off, NULL);
+    recomp_log("# gx: vertex packing %s\n", recomp_vtxpack_off ? "off (cr_vtxpack_off.txt): every vertex 68 bytes" : "on (display-list draws: per-draw layout)");
     FILE *sf = fopen("sdmc:/cr_stereo_force.txt", "rb");
     if (sf) {
         float v[3] = {1, st_sep, st_conv};

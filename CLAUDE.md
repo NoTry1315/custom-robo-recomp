@@ -285,6 +285,16 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   custom-robo-recomp-lto.3dsx (LTO=1) for the LTO A/B; old build kept as ..._2026-10-22_pre-stereo-vram.3dsx.bak.
   Hardware checks: `# fpscr:` boot value, campaign 8.3 gpu ms with the VRAM button on/off, stereo gpu cost with
   the slider up, LTO vs normal battle game ms.
+- Vertex packing (2026-10-22): display-list draws (vertex + DL cache) store only the shader inputs the draw
+  reads, per-draw C3D_AttrInfo, one shader program: s16/s8/u8/f32 kept as GPU_SHORT/BYTE/UBYTE/FLOAT (scale
+  in a new `vscale` uniform / folded into texm, exact), normal dropped when unlit, unfed texcoord units read a
+  fixed (0,0,1,1), 2-component texcoords when texm column 2 is 0; immediate draws stay 68-byte PVtx. Measured
+  first: campaign 86% of vertices 1 texcoord set, 80% lit, positions 72% float; battle ~45% no texcoords, ~half
+  lit. Citra: logs + fb dumps identical (campaign, battle, stereo campaign, flag off); vertex fetch 68 -> 32.6 B
+  per index (campaign, 4154 -> 1992 KB/frame), 29.4 B (battle, 5815 -> 2513 KB); arena 3881 -> 1749 KB;
+  GX-thread vertex ms campaign 3.1 -> 3.2, battle 5.7 -> 6.1. Default on; sdmc:/cr_vtxpack_off.txt and
+  bottom-screen button "Vertex pack" = 68 bytes. Plan memo now 2-way. Not yet on hardware: A/B campaign
+  8.3 gpu ms (run 27: 12.2). Details: unknowns "Vertex packing".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
