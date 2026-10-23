@@ -299,6 +299,8 @@ RI void psq_st0(PS v, u32 a, int w){ wr32(a, f2u((float)v.ps0)); if (!w) wr32(a 
 RI void psq_st0_ram(PS v, u32 a, int w){ wr32_ram(a, f2u((float)v.ps0)); if (!w) wr32_ram(a + 4, f2u((float)v.ps1)); }
 RI PS psq_ld0_sp(u32 b, s32 k, int w){ PS r; r.ps0 = u2f(rd32_sp(b, k)); r.ps1 = w ? 1.0 : u2f(rd32_sp(b, k + 4)); return r; }
 RI void psq_st0_sp(PS v, u32 b, s32 k, int w){ wr32_sp(b, k, f2u((float)v.ps0)); if (!w) wr32_sp(b, k + 4, f2u((float)v.ps1)); }
+/* psq_l of a stack word pair held in C locals (recomp.py promote_stack_slots): a, b = the words' bits */
+RI PS psq_ld0_v(u32 a, u32 b, int w){ PS r; r.ps0 = u2f(a); r.ps1 = w ? 1.0 : u2f(b); return r; }
 RI PS psq_ld0_b(u32 b, s32 k, int w){ PS r; r.ps0 = u2f(rd32_b(b, k)); r.ps1 = w ? 1.0 : u2f(rd32_b(b, k + 4)); return r; }
 RI void psq_st0_b(PS v, u32 b, s32 k, int w){ wr32_b(b, k, f2u((float)v.ps0)); if (!w) wr32_b(b, k + 4, f2u((float)v.ps1)); }
 #else
