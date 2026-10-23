@@ -341,6 +341,21 @@ void recomp_sdk_call(const char *name); /* logs an SDK call that runtime/ does n
 void recomp_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 u32 recomp_fpscr(void);   /* main.c: this thread's VFP FPSCR */
 void recomp_sdk_log(const char *name);  /* same report for hand-written SDK functions */
+/* LOG() in the runtime/ files: recomp_sdk_log inline, with the name's count slot looked up once per function
+ * (static); the first RECOMP_SDK_PER_NAME calls of a name write the log line (log.c) */
+#define RECOMP_SDK_PER_NAME 20
+extern const char *volatile recomp_sdk_ring[32];
+extern volatile u32 recomp_sdk_ring_pos;
+u32 *recomp_sdk_count(const char *name);
+void recomp_sdk_log_line(const char *name);
+static inline __attribute__((always_inline)) void recomp_sdk_log_at(const char *name, u32 **slot) {
+    FNPROF((u32)(uintptr_t)name);   /* make FNPROF=1: SDK time under the SDK name */
+    u32 *n = *slot;
+    if (__builtin_expect(!n, 0)) *slot = n = recomp_sdk_count(name);
+    recomp_sdk_ring[recomp_sdk_ring_pos++ & 31] = name;
+    if (__builtin_expect(++*n <= RECOMP_SDK_PER_NAME, 0)) recomp_sdk_log_line(name);
+}
+#define RECOMP_LOG() do { static u32 *lc_; recomp_sdk_log_at(__func__ + 4, &lc_); } while (0)
 void recomp_done(const char *why) __attribute__((noreturn)); /* ends the guest run */
 int  recomp_load_dol(void);             /* main.dol + boot info into ram; 0 on success */
 void recomp_call_guest(u32 fn, u32 arg); /* interrupt-style call: guest state saved around it */

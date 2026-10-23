@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include "ppc.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 #define ARAM_SIZE 0x01000000u
 #define ARAM_RESERVED 0x4000u      /* ARInit keeps the first 16 KB for the OS/DSP */
 #define MAXPENDING 64

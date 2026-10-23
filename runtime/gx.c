@@ -18,7 +18,7 @@
 #include "ppc.h"
 #include "vshader_shbin.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 /* unemulated GX features: the first hit is logged with its frame, and every
  * site's hit count goes into the "# gx gaps" line with the frame stats */
 #define GAP_SITES 64
@@ -1443,7 +1443,15 @@ static int attr_size_in(const u8 *desc, VtxFmt (*vat)[A_MAX], int fmt, int a) {
 static int attr_size(int fmt, int a) { return attr_size_in(gx.desc, gx.vat, fmt, a); }
 static int vtx_size(int fmt) { int n = 0; for (int a = 0; a <= 20; a++) n += attr_size(fmt, a); return n; }
 /* game thread: the same from its copy of the vertex format (FIFO assembly) */
-static int vtx_size_g(int fmt) { int n = 0; for (int a = 0; a <= 20; a++) n += attr_size_in(gs.desc, gs.vat, fmt, a); return n; }
+static u8 vsz_g_ok;      /* bit fmt: vsz_g[fmt] is current (cleared when gs.desc / gs.vat change) */
+static u16 vsz_g[8];
+static int vtx_size_g(int fmt) {
+    if (!(vsz_g_ok >> fmt & 1)) {
+        int n = 0; for (int a = 0; a <= 20; a++) n += attr_size_in(gs.desc, gs.vat, fmt, a);
+        vsz_g[fmt] = n; vsz_g_ok |= 1 << fmt;
+    }
+    return vsz_g[fmt];
+}
 
 static void read_color(const u8 *p, int type, u8 *c) {
     switch (type) {
@@ -2969,13 +2977,14 @@ void sdk_GXBegin(void) {
     fifo_lim();
 }
 static void x_GXSetVtxDesc(const u32 *r) { if (r[3] < A_MAX) gx.desc[r[3]] = r[4] & 3; else ONCE("GXSetVtxDesc attr %lu\n", (unsigned long)r[3]); }
-void sdk_GXSetVtxDesc(void) { LOG(); if (R[3] < A_MAX) gs.desc[R[3]] = R[4] & 3; gq_regs(x_GXSetVtxDesc, 2); }
+void sdk_GXSetVtxDesc(void) { LOG(); if (R[3] < A_MAX) gs.desc[R[3]] = R[4] & 3; vsz_g_ok = 0; gq_regs(x_GXSetVtxDesc, 2); }
 static void x_GXClearVtxDesc(const u32 *r) { (void)r; memset(gx.desc, 0, sizeof gx.desc); gx.desc[A_POS] = 1; }
-void sdk_GXClearVtxDesc(void) { LOG(); memset(gs.desc, 0, sizeof gs.desc); gs.desc[A_POS] = 1; gq_regs(x_GXClearVtxDesc, 0); }
+void sdk_GXClearVtxDesc(void) { LOG(); memset(gs.desc, 0, sizeof gs.desc); gs.desc[A_POS] = 1; vsz_g_ok = 0; gq_regs(x_GXClearVtxDesc, 0); }
 static void x_GXSetVtxAttrFmt(const u32 *r) { if ((r[3] & 7) == r[3] && r[4] < A_MAX) gx.vat[r[3]][r[4]] = (VtxFmt){(u8)r[5], (u8)r[6], (u8)r[7]}; }
 void sdk_GXSetVtxAttrFmt(void) {
     LOG();
     if ((R[3] & 7) == R[3] && R[4] < A_MAX) gs.vat[R[3]][R[4]] = (VtxFmt){(u8)R[5], (u8)R[6], (u8)R[7]};
+    vsz_g_ok = 0;
     gq_regs(x_GXSetVtxAttrFmt, 5);
 }
 static void x_GXSetArray(const u32 *r) { if (r[3] >= A_POS && r[3] <= 20) { gx.array_base[r[3] - A_POS] = r[4]; gx.array_stride[r[3] - A_POS] = r[5] & 0xff; } }

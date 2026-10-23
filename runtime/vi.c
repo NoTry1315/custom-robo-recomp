@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include "ppc.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 #define RUN_FRAMES 2400
 u32 recomp_run_frames = RUN_FRAMES;   /* a pad script line "<n> 0 0" changes it (runtime/pad.c) */
 
