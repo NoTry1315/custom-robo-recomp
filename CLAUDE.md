@@ -357,6 +357,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   bar, so off (default output byte-identical to 39c4989). Hot particle frames keep their buffers (really passed to
   PSMTX*/OSReport). recomp.py now refuses to run with control characters in its source (a lost `\b` emptied the
   call graph and hung boot). Not on hardware. Details: unknowns "Pointer-extent stack promotion".
+- Lazy vertex descriptor (2026-10-26, branch claude/pensive-cannon-e4b2ed, not merged): GXSetVtxDesc/GXClearVtxDesc
+  only change gs.desc; desc_sync() queues one whole-descriptor record before a draw record (x_fifo, x_call_dl) or
+  a game-thread vertex size, only when it differs from the last one sent. Citra 2v2 4.2: GX-queue records 7586 ->
+  6428 per frame, game 35.7 (base) / 36.1 (flag off) -> 35.6 ms, GX busy 38.3 -> 37.9; battle/campaign unchanged;
+  2v2/battle/campaign/boot logs + fb dumps identical on and off. Default on (small); sdmc:/cr_lazydesc_off.txt and
+  button "Lazy vtx desc". New `# gx queue frame` line. Not yet on hardware. Details: unknowns "Lazy vertex descriptor".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
