@@ -388,8 +388,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   tools/buildinfo.sh takes BUILD_BRANCH / BUILD_REV from the environment (worktree builds: docker -e). Details:
   unknowns "Run-time translator toggles". Hardware run 31 (2026-10-26, @e51105e, all toggles on, no A/B, logs/
   cr_autotest_2026-10-26_hw-run31-2v2-perf-3.log): 2v2 41.8 fps, game 20.6 ms, GX busy 16.3 (run 29: 39.6 / 22.2 /
-  16.6); hand-played, Citra said -1.1%, so mostly play variance until an on/off A/B is run. No crash; one 9.5 s
-  stall in scene c before a HOME exit.
+  16.6); hand-played, Citra said -1.1%, so mostly play variance. No crash; one 9.5 s stall in scene c before a HOME
+  exit. Hardware runs 32a/32b (@c4781f5): the Citra 2v2 replay played on the 3DS (save + pad_2v2 files +
+  cr_dvdasync_off on the SD; route identical to Citra, 0 scene / pad differences). All toggles on 40.3 fps / game
+  22.2 ms, all off 39.7 / 22.5: -0.34 ms paired (sd 0.14, 71 of 72 windows) = -1.5%, as Citra said. Hardware
+  replays needed a pad.c fix: in autotest runs a resting stick (|v| < 16) counts as centred, since the real pad's
+  -5 -3 drift overrode the replay's sticks (run 32a0 left the route at r3720). Logs in logs/.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

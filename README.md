@@ -46,8 +46,14 @@ the ones that did not help, is listed in `docs/performance.md`.
 Hardware test build 2026-10-26 (branch `task/2026-10-26-2v2-perf-3`): lazy vertex descriptor, pointer-extent
 stack promotion and inlined particle helpers, each with a bottom-screen button. In Citra the 2v2 game thread
 takes 36.2 ms with all three on and 36.7 ms with them off (main: 36.7). Hardware run 31 (all on, hand-played):
-2v2 41.8 fps, game 20.6 ms, against 39.6 fps / 22.2 ms in run 29 (main's code). Most of that is likely play
-variance; an on/off comparison in one session is still to do.
+2v2 41.8 fps, game 20.6 ms, against 39.6 fps / 22.2 ms in run 29 (main's code), mostly play variance. Hardware
+runs 32a/32b replay the Citra 2v2 test on the 3DS (identical fight): all three on 40.3 fps, game 22.2 ms; all
+off 39.7 fps, 22.5 ms. A real but small gain (-1.5% game time, faster in 71 of 72 one-second windows).
+
+Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
+("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
+tools/citra/pad_2v2.log) and `cr_dvdasync_off.txt` on the SD root, launch, hands off. The route must match the
+Citra log's scene and pad lines before the timings count.
 
 Known problems:
 
