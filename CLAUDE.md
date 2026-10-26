@@ -363,6 +363,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   6428 per frame, game 35.7 (base) / 36.1 (flag off) -> 35.6 ms, GX busy 38.3 -> 37.9; battle/campaign unchanged;
   2v2/battle/campaign/boot logs + fb dumps identical on and off. Default on (small); sdmc:/cr_lazydesc_off.txt and
   button "Lazy vtx desc". New `# gx queue frame` line. Not yet on hardware. Details: unknowns "Lazy vertex descriptor".
+- sin/cos memo study (2026-10-26, not built): Citra 2v2 has ~2350 native sin/cos calls per frame, 63% repeat an
+  argument in the frame (mostly sin(a), cos(a) pairs in 0x8019fc14), but half are x ~ 0 (tiny path, costing about
+  what a lookup costs); a 256-entry memo would save ~0.1-0.15 ms of 36.7 (~0.3%). Below the 2% bar: no memo, no
+  flag. Details: unknowns "sin/cos memo study".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
