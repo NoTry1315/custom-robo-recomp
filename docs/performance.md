@@ -141,11 +141,12 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
   per 2v2 frame, 185 (526 KB) at least 10 times, spread over 5.7 MB of .text; 402k guest instructions became
   1.52M ARM instructions (3.8 each). Cold-path splitting is not available (GCC on ARM rejects
   -freorder-blocks-and-partition; see "Tried and not kept"), and GCC already puts most unlikely hardware-access
-  paths near each function's end (78% of those calls in the last 30% of the function). Next, in order: (1) a hardware run with the TLB counter pair (2026-10-26) to see
-  whether function order matters (main TLB misses) or only density (I-cache capacity); (2) code density in the
-  translator: fewer ARM instructions per guest memory access and per float op (literal-pool loads 7.0% of the
-  instructions, byte swaps 4.7%, RAM masks 4.4%, hardware checks 2.5% + their calls 3.9%); (3) the data stalls:
-  float-locals (3f77d16) on hardware; (4) function order by call counts, or PGO, if (1) shows TLB/L2 cost. Layout
+  paths near each function's end (78% of those calls in the last 30% of the function). Hardware run 34 (TLB counters): 0.22 main-TLB misses per 1000 instructions, under 1% of
+  the cycles, so function order buys nothing through the TLB and the I-cache misses are capacity misses. Next, in
+  order: (1) code density in the translator: fewer ARM instructions per guest memory access and per float op
+  (literal-pool loads 7.0% of the instructions, byte swaps 4.7%, RAM masks 4.4%, hardware checks 2.5% + their
+  calls 3.9%); (2) the data stalls: float-locals (3f77d16) on hardware; function order / PGO only if density work
+  leaves a reason (block order inside hot functions). Layout
   A/Bs use two builds run back to back on the 2v2 hardware replay (user decision 2026-10-26). GX-thread work
   stays second: 15.6 ms, under the 16.7 ms budget.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
@@ -155,6 +156,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 
 | Run | Date | Build | Log (`logs/`) | Tested |
 |---|---|---|---|---|
+| 34 | 10-26 | branch icache-cold-paths @ade9b5e | cr_autotest_2026-10-26_hw-run34-replay-2v2-tlb.log | run 33 repeated with the TLB counter pair: route identical, game 22.0 ms; I-miss 37.4/k (33: 36.6), stall inst 27.56% (33: 27.56%); instruction micro-TLB 0.15/k, main TLB 0.22/k misses (< 1% of cycles even at 100 cycles each): TLB is not a cost, function order is not a lever |
 | 33 | 10-26 | branch perf-counters @1838462 | cr_autotest_2026-10-26_hw-run33-replay-2v2-perfctr.log | the 2v2 hardware replay (as 32a, all toggles on) with cr_perfctr: route identical to 32a, game 21.9 ms / frame 24.7 (32a by the same tool: 21.9 / 24.6). Core 0 per 2v2 frame: 19.1M busy cycles, 6.65M instructions (IPC 0.35), stall for instructions 27.6% (243k I-cache misses), stall for data 26.6%, D-cache read misses 3%. Campaign 8.3: IPC 0.38, I-stall 20.8%, data stall 27.8% |
 | 32b | 10-26 | branch 2v2-perf-3 @c4781f5 | cr_autotest_2026-10-26_hw-run32b-replay-2v2-all-off.log | hardware replay of the Citra 2v2 test (data/saves/2026-10-22_pre-2v2 + tools/citra/pad_2v2.txt / pad_2v2.log, run length 8600, cr_dvdasync_off), with cr_lazydesc_off + cr_ptrext_off + cr_inline_off: route identical to Citra and to 32a (0 scene / pad line differences, no late DVD read). 2v2 4.2 (from r4300, 72 windows): 39.7 fps (66%), game 22.5 ms, GX busy 15.8, worst 53.9 |
 | 32a | 10-26 | branch 2v2-perf-3 @c4781f5 | cr_autotest_2026-10-26_hw-run32a-replay-2v2-all-on.log | same replay, all three toggles on: 40.3 fps (67%), game 22.2 ms, GX busy 15.6, worst 53.1. Paired by window vs 32b: game -0.34 ms (sd 0.14, faster in 71 of 72 windows) = -1.5%, matching Citra's -1.1%. So run 31's -7% was mostly play variance. The first attempt (32a0, @e51105e, log cr_autotest_2026-10-26_hw-run32a0-replay-2v2-diverged-dvd-late.log) left Citra's route at r3720: the real circle pad rests at -5 -3, which counted as a moved live stick and overrode the replay's sticks; fixed in pad.c (c4781f5) |

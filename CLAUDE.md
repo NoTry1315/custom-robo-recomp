@@ -413,8 +413,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   guest instruction. Stage 0: fifth counter pair, instruction micro-TLB + main TLB misses (not yet on hardware).
   Stage 1 (cold-path partitioning) is impossible: GCC on ARM rejects -freorder-blocks-and-partition, `cold` alone
   only grows code (+1.4%); reverted, recorded under "Tried and not kept". User decision 2026-10-26: layout A/Bs may
-  use two builds run back to back on the 2v2 hardware replay. Next: hardware run with the TLB pair, then translator
-  density (per-access instructions), float-locals on hardware. Details: unknowns "Cold-path partitioning".
+  use two builds run back to back on the 2v2 hardware replay. Hardware run 34 (@ade9b5e, run 33's replay with the TLB
+  pair, logs/cr_autotest_2026-10-26_hw-run34-replay-2v2-tlb.log): same route and game ms as 33, miss rates repeat
+  within ~2%; main TLB 0.22 misses per 1000 instructions (< 1% of cycles): function order is not a lever, the
+  I-cache misses are capacity misses. Next: translator density (per-access instructions), float-locals on hardware.
+  Details: unknowns "Cold-path partitioning", "Hardware performance counters".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

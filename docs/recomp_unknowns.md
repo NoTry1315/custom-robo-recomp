@@ -2374,6 +2374,17 @@ by its stall-data share, not by Citra; (3) the call glue's ~0.73M instructions a
 simple ones (unknowns "Call-boundary cost on the ARM side"), consistent with ~5% of the time.
 Not measured: which functions take the misses and stalls (counts are per core and per frame).
 
+**Hardware run 34** (2026-10-26, @ade9b5e = run 33's code plus the TLB pair; same replay, log
+logs/cr_autotest_2026-10-26_hw-run34-replay-2v2-tlb.log): route identical to run 33 (0 differing scene / pad lines),
+2v2 game 22.0 ms (33: 21.95). Repeatability between the two runs: I-cache misses 37.4 vs 36.6 per 1000
+instructions, stall inst 27.56% vs 27.56%, stall data 26.3% vs 26.6%, so a layout A/B on this replay can resolve
+changes of a few percent. **TLB**: per 2v2 frame 0.15 instruction micro-TLB and 0.22 main TLB misses per 1000
+instructions (~1,000 and ~1,430 per frame; the main-TLB event counts instruction and data walks). Even at 100 cycles
+per main-TLB miss that is ~0.14M cycles, under 1% of the 19.2M busy cycles. Likely reason (not checked): the kernel
+maps the code with large pages, so 1.5 MB of hot code needs few TLB entries. Consequence: function placement buys
+nothing through the TLB, and the 244k I-cache misses per frame are capacity misses: the lever is fewer bytes on the
+executed paths (translator density), not where functions sit.
+
 ## Cold-path partitioning (2026-10-26, not possible with GCC on ARM)
 
 Stage 1 of the I-cache plan (performance.md "Open"): mark the functions only rare paths call `cold` (hw_read,
