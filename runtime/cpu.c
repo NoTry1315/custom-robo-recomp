@@ -1,5 +1,6 @@
 /* CPU state, guest RAM and the hardware-layer hooks the translated code
  * calls. Phase 2: logging placeholders only; later phases replace them. */
+#include <3ds.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include "ppc.h"
@@ -10,13 +11,48 @@ CPU cpu;
 /* ram[] and ram_wr[] sit RAM_GUARD bytes (32 pages) inside larger blocks: a base + offset access
  * (ppc.h *_b) whose base is near either end of the mirror lands in the guard, not outside the array */
 u8 recomp_ram_block[RAM_GUARD + RAM_MASK + 1 + 8 + RAM_GUARD] __attribute__((aligned(64)));
-u32 recomp_ram_wr_block[(RAM_GUARD >> WR_PAGE_SHIFT) * 2 + ((RAM_MASK + 1) >> WR_PAGE_SHIFT)];
+#define WR_ENTRIES ((RAM_GUARD >> WR_PAGE_SHIFT) * 2 + ((RAM_MASK + 1) >> WR_PAGE_SHIFT))
+u32 recomp_ram_wr_block[WR_ENTRIES];
+u8 recomp_ram_dirty_block[WR_ENTRIES] __attribute__((aligned(32)));
 __asm__(".global ram\n.set ram, recomp_ram_block + 0x8000\n"
-        ".global ram_wr\n.set ram_wr, recomp_ram_wr_block + 4 * (0x8000 >> 10)");
+        ".global ram_wr\n.set ram_wr, recomp_ram_wr_block + 4 * (0x8000 >> 10)\n"
+        ".global ram_dirty\n.set ram_dirty, recomp_ram_dirty_block + (0x8000 >> 10)");
 u32 recomp_wr_epoch = 1;
 void recomp_mark_ram(u32 a, u32 n) {
     if (!n) return;
     for (u32 p = (a & RAM_MASK) >> WR_PAGE_SHIFT, e = ((a + n - 1) & RAM_MASK) >> WR_PAGE_SHIFT; p <= e; p++) ram_wr[p] = recomp_wr_epoch;
+}
+/* ppc.h WR_SET: the pages guest stores marked in ram_dirty[] get the current epoch in ram_wr[], then the
+ * marks are cleared. The GX thread may test pages meanwhile (gx.c range_clean reads the marks, a barrier,
+ * then ram_wr[]), so every epoch is written before any mark is cleared. Guard entries are swept too. */
+u32 recomp_wr_sweep_pages; u64 recomp_wr_sweep_ticks;   /* for the "# gx queue" line */
+void recomp_wr_sweep(void) {
+#ifdef RECOMP_WR_EPOCH_STORES
+    return;   /* make WRMAP=0: no marks */
+#endif
+    u64 t0 = svcGetSystemTick();
+    /* 32 marks per test: a 2v2 frame marks ~700 pages of 32832, in clusters */
+    u32 *d = (u32 *)recomp_ram_dirty_block, e = recomp_wr_epoch, n = 0;
+    static u16 hit[WR_ENTRIES / 32];
+    u32 nh = 0;
+    for (u32 i = 0; i < WR_ENTRIES / 4; i += 8) {
+        if (!(d[i] | d[i + 1] | d[i + 2] | d[i + 3] | d[i + 4] | d[i + 5] | d[i + 6] | d[i + 7])) continue;
+        hit[nh++] = i;
+        for (u32 w = i; w < i + 8; w++) {
+            u32 m = d[w], *p = recomp_ram_wr_block + w * 4;
+            if (!m) continue;
+            if (m & 0xffu) { p[0] = e; n++; }
+            if (m & 0xff00u) { p[1] = e; n++; }
+            if (m & 0xff0000u) { p[2] = e; n++; }
+            if (m & 0xff000000u) { p[3] = e; n++; }
+        }
+    }
+    if (nh) {
+        __dmb();
+        for (u32 h = 0; h < nh; h++) memset(d + hit[h], 0, 32);
+    }
+    recomp_wr_sweep_pages += n;
+    recomp_wr_sweep_ticks += svcGetSystemTick() - t0;
 }
 
 void cpu_init(void) {

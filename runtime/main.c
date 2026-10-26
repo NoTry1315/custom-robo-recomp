@@ -61,6 +61,7 @@ int main(void) {
         printf("main.dol loaded, running __start\n");
         recomp_log("# build %s\n", RECOMP_BUILD);
         recomp_log("# hwcheck: loads %s\n", RECOMP_HWCHECK_MODE);
+        recomp_log("# wrmap: %s\n", RECOMP_WRMAP_MODE);
         /* sdmc:/cr_runfast.txt: FZ+DN on the game thread (VFP11 traps to support code on
          * denormals unless FZ is set). Gekko keeps denormals (the game never sets FPSCR[NI]). */
         u32 fp0 = recomp_fpscr();
