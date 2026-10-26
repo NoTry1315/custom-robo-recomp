@@ -2427,6 +2427,10 @@ static int range_clean(const u8 *p, u32 n, u32 vep) {
     u32 sp = cur_r1 & RAM_MASK;
     if (a + n > sp - 0x10000 && a < sp + 0x10000) return 0;
     u32 lo = (a >> WR_PAGE_SHIFT) - (a >= (1u << WR_PAGE_SHIFT)), hi = (a + n - 1) >> WR_PAGE_SHIFT;
+    /* a store's mark (ppc.h WR_SET) = written in the current epoch; the sweep stamps ram_wr[] before it
+     * clears a mark, so marks are read first */
+    for (u32 k = lo; k <= hi; k++) if (ram_dirty[k]) return 0;
+    __dmb();
     for (u32 k = lo; k <= hi; k++) if (ram_wr[k] >= vep) return 0;
     return 1;
 }
@@ -3370,11 +3374,16 @@ void sdk_GXCopyDisp(void) {
     gq_regs(x_GXCopyDisp, 2);   /* r4: clear */
     game_frames++;
     if (game_frames % 300 == 0) {
-        recomp_log("# gx queue frame %lu: per frame %lu records, %lu words; vertex descriptor %s: %lu setter calls, %lu records\n", (unsigned long)game_frames,
+        extern u32 recomp_wr_sweep_pages; extern u64 recomp_wr_sweep_ticks;   /* cpu.c */
+        recomp_log("# gx queue frame %lu: per frame %lu records, %lu words; vertex descriptor %s: %lu setter calls, %lu records; "
+                   "write sweep %lu pages, %.1f us\n", (unsigned long)game_frames,
                    (unsigned long)(st_gq_recs / 300), (unsigned long)(st_gq_words / 300), recomp_lazydesc_off ? "eager" : "lazy",
-                   (unsigned long)(st_desc_calls / 300), (unsigned long)(st_desc_recs / 300));
+                   (unsigned long)(st_desc_calls / 300), (unsigned long)(st_desc_recs / 300),
+                   (unsigned long)(recomp_wr_sweep_pages / 300), recomp_wr_sweep_ticks * 1e6 / SYSCLOCK_ARM11 / 300);
         st_gq_recs = st_gq_words = st_desc_calls = st_desc_recs = 0;
+        recomp_wr_sweep_pages = 0; recomp_wr_sweep_ticks = 0;
     }
+    recomp_wr_sweep();   /* the frame's marked pages get the epoch that is ending */
     __dmb();   /* the frame's guest writes before the epoch that ends it (epoch_now) */
     recomp_wr_epoch = game_frames + 1;
     if (recomp_gx_thread) { gq_publish(); gq_wait(gq_copy_prev); gq_copy_prev = gq_wl; }   /* at most one frame queued */

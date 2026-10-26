@@ -63,11 +63,25 @@ u32 hw_read_verify(u32 a, int size);
 #endif
 /* guest-write epochs per 1 KB page (wr8/16/32 and the runtime's bulk writers): the GX display-list cache
  * skips re-hashing a list/array range whose pages were not written since it was last hashed. Stores
- * through r1/r11 (wr*_ram) are not marked; the cache hashes ranges near the stack. */
+ * through r1/r11 (wr*_ram) are not marked; the cache hashes ranges near the stack.
+ * A guest store sets its page's byte in ram_dirty[] to 1 (one strb with the page index as a shifted
+ * register offset, no epoch load); recomp_wr_sweep (sdk_GXCopyDisp, end of each game frame) stamps the
+ * marked pages with the frame's epoch in ram_wr[] and clears the marks. A marked page counts as written
+ * in the current epoch (gx.c range_clean). `make WRMAP=0`: stores write the epoch into ram_wr[] directly
+ * (the old way, for an A/B). Bulk writers (recomp_mark_ram) always write ram_wr[]. */
 #define WR_PAGE_SHIFT 10
 extern u32 ram_wr[];   /* (RAM_MASK + 1) >> WR_PAGE_SHIFT entries, guard space around them (cpu.c) */
+extern u8 ram_dirty[];   /* same indices, same guard */
 extern u32 recomp_wr_epoch;
-#define WR_MARK(a) (ram_wr[((a) & RAM_MASK) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
+#ifdef RECOMP_WR_EPOCH_STORES
+#define WR_SET(i) (ram_wr[i] = recomp_wr_epoch)
+#define RECOMP_WRMAP_MODE "stores write the epoch (WRMAP=0)"
+#else
+#define WR_SET(i) (ram_dirty[i] = 1)
+#define RECOMP_WRMAP_MODE "stores mark a byte map, swept per frame (default)"
+#endif
+#define WR_MARK(a) WR_SET(((a) & RAM_MASK) >> WR_PAGE_SHIFT)
+void recomp_wr_sweep(void);   /* game thread, before the epoch advances */
 void recomp_mark_ram(u32 a, u32 n);   /* bulk writers */
 void recomp_gx_fifo_write(u32 v, int size); /* WGPIPE 0xCC008000 */
 /* hw_write for an address GCC knows: WGPIPE stores (GXPosition3f32 & co. inlined in game code, lis
@@ -126,11 +140,11 @@ RI void wr64_sp(u32 b, s32 k, u64 v){ wr32_sp(b, k, (u32)(v >> 32)); wr32_sp(b, 
 /* gen/'s rA + k accesses for other base registers (recomp.py base_access): the hardware check and the
  * mask work on the base b, k is the load/store offset, so GCC checks and masks a pointer once for all
  * the fields read through it. Same result as rd32(b + k) unless b + k crosses into or out of the
- * hardware range or b & RAM_MASK is within 32 KB of either end of the mirror: ram[] and ram_wr[] have
- * guard space on both sides (cpu.c), so such an access lands there instead of wrapping. */
+ * hardware range or b & RAM_MASK is within 32 KB of either end of the mirror: ram[], ram_wr[] and ram_dirty[]
+ * have guard space on both sides (cpu.c), so such an access lands there instead of wrapping. */
 #define RAM_GUARD 0x8000u
 RI u8 *b_at(u32 b, s32 k){ return ram + (b & RAM_MASK) + k; }
-#define WR_MARK_B(b, k) (ram_wr[(s32)(((b) & RAM_MASK) + (k)) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
+#define WR_MARK_B(b, k) WR_SET((s32)(((b) & RAM_MASK) + (k)) >> WR_PAGE_SHIFT)
 RI u8  rd8_b (u32 b, s32 k){ if (LOAD_HW(b)) return HW_READ(b + k,1); return *b_at(b, k); }
 RI u16 rd16_b(u32 b, s32 k){ if (LOAD_HW(b)) return HW_READ(b + k,2); u16 v; memcpy(&v, b_at(b, k), 2); return __builtin_bswap16(v); }
 RI u32 rd32_b(u32 b, s32 k){ if (LOAD_HW(b)) return HW_READ(b + k,4); u32 v; memcpy(&v, b_at(b, k), 4); return __builtin_bswap32(v); }
