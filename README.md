@@ -200,7 +200,10 @@ can be compared with a feature on and off:
 
 Build variants (a second `.3dsx` for a hardware A/B; the bottom screen's build id names
 the variant): `make LTO=1` (link-time optimisation), `make GENOPT=-O3` (extra flags for the
-translated code only), `make FLOATOPS=0` (exact Gekko float rounding).
+translated code only), `make FLOATOPS=0` (exact Gekko float rounding), `make HWCHECK=1` (guest loads check
+for hardware-register addresses again; by default they read RAM directly) and `make HWCHECK=verify` (checked, and
+every load that reaches a hardware address is logged as `# hwcheck load`; the boot line `# hwcheck:` names the
+mode). Switching any of these needs `make clean` first.
 Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
 `RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `dual`, the default, builds both variants into the one
 `.3dsx` behind the "Ptr extent" / "Inline sites" buttons; `0` is the plain main code).
