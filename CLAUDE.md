@@ -395,6 +395,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   22.2 ms, all off 39.7 / 22.5: -0.34 ms paired (sd 0.14, 71 of 72 windows) = -1.5%, as Citra said. Hardware
   replays needed a pad.c fix: in autotest runs a resting stick (|v| < 16) counts as centred, since the real pad's
   -5 -3 drift overrode the replay's sticks (run 32a0 left the route at r3720). Logs in logs/.
+- Measurement (2026-10-26, branch task/2026-10-26-perf-counters): `tools/callcost.py` (ARM call-boundary instructions
+  per translated function from objdump -l, weighted by a RECOMP_SITEPROF replay): 2v2 call glue ~725k instructions
+  per frame, est. ~1.1 ms = ~5% of the 22.2 ms hardware game thread (Citra FNPROF said 21.8%: Citra shares are not
+  hardware shares); prologue/epilogue ~10 cycles per call. Hardware counters: `runtime/perfctr.c`, sdmc:/cr_perfctr.txt
+  or button "Perf counters" (off by default) -> `# perf` lines (core 0 cycles, IPC, I/D-cache misses, stall %,
+  mispredicts per frame; 4 event pairs rotate per frame), `tools/perf_avg.py`. Citra stubs the SVC ("no frame
+  counted"); battle logs + fb identical on/off. Not yet on hardware. Details: unknowns "Call-boundary cost on the ARM
+  side", "Hardware performance counters".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

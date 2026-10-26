@@ -51,6 +51,15 @@ takes 36.2 ms with all three on and 36.7 ms with them off (main: 36.7). Hardware
 runs 32a/32b replay the Citra 2v2 test on the 3DS (identical fight): all three on 40.3 fps, game 22.2 ms; all
 off 39.7 fps, 22.5 ms. A real but small gain (-1.5% game time, faster in 71 of 72 one-second windows).
 
+Measuring the 2v2 game thread (2026-10-26, branch `task/2026-10-26-perf-counters`): the cost at translated
+call boundaries (register stores to `cpu` around each call, reloads at entry, return stores, push/pop) is
+~725k ARM instructions per 2v2 frame (`tools/callcost.py`: main's ELF weighted by the replay's call counts),
+estimated ~1.1 ms, about 5% of the 22.2 ms hardware game thread. Citra's FNPROF had put it at 21.8%, so the
+other ~95% (function bodies, memory access helpers, C-stack spills, SDK code) is where the time is, and Citra
+cannot say how it splits. The "Perf counters" button (or `cr_perfctr.txt`) logs the ARM11's own counters per
+frame (cycles, instructions, I-cache and D-cache misses, stall cycles, branch mispredicts; `tools/perf_avg.py`
+averages them per scene). Citra only stubs the counters, so the first numbers come from the next hardware run.
+
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
 tools/citra/pad_2v2.log) and `cr_dvdasync_off.txt` on the SD root, launch, hands off. The route must match the
@@ -132,7 +141,10 @@ io  late 0 slow 3 stall 0 lin 17714K
 Touch buttons on the bottom screen switch test features live (the log records each switch,
 and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack",
 "Lazy vtx desc", "Native sin/cos", "Ptr extent" (pointer-extent stack promotion in the 16 hottest
-functions it changes) and "Inline sites" (the 5 inlined particle-helper calls), all on by default. "Dump RAM" is an action, not a switch: it writes the
+functions it changes) and "Inline sites" (the 5 inlined particle-helper calls), all on by default.
+"Perf counters" (off by default) is a measurement, not a feature: while on, the log gets a `# perf` line every
+60 retraces with the ARM11 core 0 hardware counters per frame (see Test flags, `cr_perfctr.txt`).
+"Dump RAM" is an action, not a switch: it writes the
 game's RAM (24 MB), ARAM (16 MB), the disc reads still in flight and the next frame to the SD card
 root as `cr_dump_r<retrace>_*` and `cr_fb_<frame>.bmp` (the game stops for a few seconds).
 
@@ -167,6 +179,7 @@ can be compared with a feature on and off:
 | `cr_libm_off.txt` | translated sin/cos/sinf/cosf/sqrtf instead of the native ones |
 | `cr_ptrext_off.txt` | old stack-promotion bodies (no pointer-extent promotion; button "Ptr extent") |
 | `cr_inline_off.txt` | plain calls at the 5 particle-helper sites (no inline copies; button "Inline sites") |
+| `cr_perfctr.txt` | ARM11 hardware counters on from boot (button "Perf counters"): a `# perf` line every 60 retraces with core 0's cycles, instructions (IPC), I-cache misses, D-cache reads and read/write misses, stall cycles (instruction fetch, data hazard) and branch mispredicts per frame; two events count per frame, so the four pairs take turns. `tools/perf_avg.py` averages them per scene. Citra only stubs the counters ("no frame counted") |
 | `cr_runfast.txt` | set the VFP's flush-to-zero + default-NaN mode at boot (already on: the boot log's `# fpscr:` line shows the value) |
 | `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
 | `cr_vsync_on.txt` | old pacing: wait for a vblank every frame |
@@ -194,6 +207,10 @@ deterministically (see `docs/performance.md`, "How performance is measured");
 `data/saves/2026-10-22_pre-2v2/` (copy it there from your own SD card) and plays into a 2v2
 battle, the heaviest scene so far. `-Name boot -Save <dir> -RecLog <log>` replays a
 hardware log's pad lines from a save (how the run 30 story event was replayed).
+
+Profiling tools: `tools/time_avg.py` (per-scene `# time` averages, split by toggle), `tools/perf_avg.py` (per-scene
+`# perf` hardware counter averages next to game ms), `tools/callcost.py` (the call-boundary instructions of every
+translated function in a build, weighted by a `RECOMP_SITEPROF=1` replay's call counts; workflow in its docstring).
 
 With the 3DS on Wi-Fi and Rosalina's debugger enabled, `tools/hw_dump.sh [ip]` attaches gdb
 to the running game and saves thread registers, backtraces and memory to `logs/hwdump/`.

@@ -25,7 +25,17 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
   scene and pad line and the framebuffer dumps identical. Citra's game ms follows the amount
   of ARM code run, so it measures translator and CPU-side changes well. It does **not** model
   ARM11 caches, FCRAM vs VRAM bandwidth, the PICA's real speed or VFP traps, so GPU and
-  memory changes can only be judged on hardware.
+  memory changes can only be judged on hardware. Its *shares* also mislead: FNPROF put the 2v2 call
+  glue at 21.8% of the frame, while the instruction count of that glue is ~5% of the hardware game
+  thread (unknowns "Call-boundary cost on the ARM side"). Use Citra to rank and check identity, not
+  to decide where hardware time goes.
+- **Hardware counters** (`sdmc:/cr_perfctr.txt` or the button "Perf counters", off by default): a
+  `# perf` line every 60 retraces with the ARM11 core 0 counters per frame (cycles, instructions,
+  I-cache misses, D-cache reads and misses, stall cycles, branch mispredicts; `runtime/perfctr.c`).
+  `tools/perf_avg.py <log> [--from N]` averages them per scene next to the `# time` game ms. Citra
+  only stubs the SVC. Not yet run on hardware.
+- **Static call cost** (`tools/callcost.py`): the call-boundary instructions of every translated
+  function in an ELF (objdump -l), weighted by a `RECOMP_SITEPROF=1` replay's call counts.
 
   | Replay | What it plays | Heavy part |
   |---|---|---|
@@ -120,6 +130,13 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
   gave -1.5% game time on hardware, and each item was 0.2-1.1% in Citra. No more micro-optimisation in this
   area (particle family, call glue, translator peepholes for the 2v2). The game thread needs ~6 ms less for
   60 fps, which only a structural change could give. Do not reopen these items without a new idea of that size.
+- **Where the 2v2 game thread's hardware time goes is not measured yet** (2026-10-26). The call glue is
+  ~725k ARM instructions per 2v2 frame, estimated ~1.1 ms (~5%) of the 22.2 ms hardware game thread
+  (`tools/callcost.py`, unknowns "Call-boundary cost on the ARM side"; Citra FNPROF said 21.8%), so a
+  calling-convention redesign is capped near 1 ms. Next: a hardware run of the 2v2 replay with "Perf counters"
+  on (IPC, I-cache and D-cache misses, stall shares: instruction-bound vs memory-bound), then per-function
+  hardware time (PC sampling through Rosalina's gdb stub, `tools/hw_dump.sh`'s setup) before choosing the
+  structural change. GX-thread work stays second: on hardware it is 15.6 ms, under the 16.7 ms budget.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
 
