@@ -401,8 +401,13 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   hardware shares); prologue/epilogue ~10 cycles per call. Hardware counters: `runtime/perfctr.c`, sdmc:/cr_perfctr.txt
   or button "Perf counters" (off by default) -> `# perf` lines (core 0 cycles, IPC, I/D-cache misses, stall %,
   mispredicts per frame; 4 event pairs rotate per frame), `tools/perf_avg.py`. Citra stubs the SVC ("no frame
-  counted"); battle logs + fb identical on/off. Not yet on hardware. Details: unknowns "Call-boundary cost on the ARM
-  side", "Hardware performance counters".
+  counted"); battle logs + fb identical on/off. Hardware run 33 (@1838462, 2v2 hardware replay + cr_perfctr, log
+  logs/cr_autotest_2026-10-26_hw-run33-replay-2v2-perfctr.log; route and game ms as run 32a): core 0 per 2v2 frame
+  19.1M busy cycles (CCNT stops in sleep), 6.65M instructions, IPC 0.35, stall for instructions 27.6% (~6.6 ms,
+  243k I-cache misses), stall for data 26.6% (~6.3 ms), D-cache read misses 3%. Next: I-cache (hot code layout,
+  cold paths out, smaller memory-access sequences), then data stalls (re-test float-locals 3f77d16 on hardware).
+  cr_perfctr.txt left on the SD. Details: unknowns "Call-boundary cost on the ARM side", "Hardware performance
+  counters".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

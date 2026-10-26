@@ -58,7 +58,10 @@ estimated ~1.1 ms, about 5% of the 22.2 ms hardware game thread. Citra's FNPROF 
 other ~95% (function bodies, memory access helpers, C-stack spills, SDK code) is where the time is, and Citra
 cannot say how it splits. The "Perf counters" button (or `cr_perfctr.txt`) logs the ARM11's own counters per
 frame (cycles, instructions, I-cache and D-cache misses, stall cycles, branch mispredicts; `tools/perf_avg.py`
-averages them per scene). Citra only stubs the counters, so the first numbers come from the next hardware run.
+averages them per scene). Citra only stubs the counters. Hardware run 33 (the 2v2 replay with the counters on,
+same route and timing as run 32a): per 2v2 frame the core is busy 19.1M cycles at 0.35 instructions per cycle;
+27.6% of the cycles (~6.6 ms) wait for instructions (I-cache misses), 26.6% (~6.3 ms) wait on data dependencies.
+The instruction-fetch stalls alone are about the ~5.5 ms the 2v2 is over 60 fps, so code layout and size are next.
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
