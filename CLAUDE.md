@@ -385,8 +385,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   sites", flags cr_ptrext_off / cr_inline_off, both on by default; `# codegen:` boot line, `# time .. split` ends with
   "lazy desc / ptr extent / inline sites". Citra 2v2 game 36.2 ms on / 36.7 off (plain 36.6, main 36.7), battle 14.0
   / 14.1, .text +4.35% vs plain; 2v2/battle/campaign/boot logs + fb dumps identical to main, all on and all off.
-  tools/buildinfo.sh takes BUILD_BRANCH / BUILD_REV from the environment (worktree builds: docker -e). Not yet on
-  hardware. Details: unknowns "Run-time translator toggles".
+  tools/buildinfo.sh takes BUILD_BRANCH / BUILD_REV from the environment (worktree builds: docker -e). Details:
+  unknowns "Run-time translator toggles". Hardware run 31 (2026-10-26, @e51105e, all toggles on, no A/B, logs/
+  cr_autotest_2026-10-26_hw-run31-2v2-perf-3.log): 2v2 41.8 fps, game 20.6 ms, GX busy 16.3 (run 29: 39.6 / 22.2 /
+  16.6); hand-played, Citra said -1.1%, so mostly play variance until an on/off A/B is run. No crash; one 9.5 s
+  stall in scene c before a HOME exit.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
