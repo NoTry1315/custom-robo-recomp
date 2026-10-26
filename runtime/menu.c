@@ -40,6 +40,7 @@ static struct btn {
 } btn[] = {
     { "VRAM textures", "",   vt_get,   recomp_vt_toggle, 0, 0, 0, 0, -2 },   /* cr_vramtex_off */
     { "Vertex pack",   "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_vtxpack_off, bound by gx.c (plans/cache entries are keyed by the mode) */
+    { "Lazy vtx desc", "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_lazydesc_off, bound by gx.c */
     { "Native sin/cos", "",  0,        0,                1, 0, 0, 0, -2 },   /* cr_libm_off (libm.c binds it) */
     { "Dump RAM",      "",   0,  recomp_memdump_request, 0, 0, 0, 0, -2, &recomp_memdump_n },   /* memdump.c: guest RAM + ARAM to SD */
 };

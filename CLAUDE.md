@@ -344,6 +344,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   sdmc:/cr_dump_r<n>_*: press it when a box breaks on hardware, then compare with Citra at the same point.
   On the SD since 2026-10-25 (main@7ab93e7); previous build kept as ..._2026-10-25_pre-memdump-1a78d4d.3dsx.bak.
   Details: unknowns "Run 30 text hang".
+- Lazy vertex descriptor (2026-10-26, branch claude/pensive-cannon-e4b2ed, not merged): GXSetVtxDesc/GXClearVtxDesc
+  only change gs.desc; desc_sync() queues one whole-descriptor record before a draw record (x_fifo, x_call_dl) or
+  a game-thread vertex size, only when it differs from the last one sent. Citra 2v2 4.2: GX-queue records 7586 ->
+  6428 per frame, game 35.7 (base) / 36.1 (flag off) -> 35.6 ms, GX busy 38.3 -> 37.9; battle/campaign unchanged;
+  2v2/battle/campaign/boot logs + fb dumps identical on and off. Default on (small); sdmc:/cr_lazydesc_off.txt and
+  button "Lazy vtx desc". New `# gx queue frame` line. Not yet on hardware. Details: unknowns "Lazy vertex descriptor".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

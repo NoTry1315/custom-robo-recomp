@@ -117,8 +117,8 @@ io  late 0 slow 3 stall 0 lin 17714K
 ```
 
 Touch buttons on the bottom screen switch test features live (the log records each switch,
-and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack"
-and "Native sin/cos" (all on by default). "Dump RAM" is an action, not a switch: it writes the
+and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack",
+"Lazy vtx desc" and "Native sin/cos" (all on by default). "Dump RAM" is an action, not a switch: it writes the
 game's RAM (24 MB), ARAM (16 MB), the disc reads still in flight and the next frame to the SD card
 root as `cr_dump_r<retrace>_*` and `cr_fb_<frame>.bmp` (the game stops for a few seconds).
 
@@ -149,6 +149,7 @@ can be compared with a feature on and off:
 | `cr_mtx_off.txt` | translated MTX functions instead of the native ones |
 | `cr_vramtex_off.txt` | textures stay in linear memory (no VRAM textures) |
 | `cr_vtxpack_off.txt` | every vertex in the full 68-byte layout (no vertex packing) |
+| `cr_lazydesc_off.txt` | a GX-queue record for every GXSetVtxDesc/GXClearVtxDesc call (no lazy vertex descriptor) |
 | `cr_libm_off.txt` | translated sin/cos/sinf/cosf/sqrtf instead of the native ones |
 | `cr_runfast.txt` | set the VFP's flush-to-zero + default-NaN mode at boot (already on: the boot log's `# fpscr:` line shows the value) |
 | `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
