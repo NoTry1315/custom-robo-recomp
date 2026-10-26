@@ -108,6 +108,14 @@ void sdk_PADRead(void) {
     if (irrst > 0) { irrstScanInput(); irrstCstickRead(&cs); }
     int port = held & KEY_SELECT ? 1 : 0;   /* SELECT: this input goes to controller 2 */
     s8 sx = axis(cp.dx), sy = axis(cp.dy), cx = axis(cs.dx), cy = axis(cs.dy);
+    /* autotest runs (script or replay): a resting stick counts as centred. A real circle pad drifts a few
+     * units (-5 -3 on the user's New 3DS), which counted as "moved", so the replay's sticks were never
+     * applied and hardware replays left Citra's route (hw run 32a0) */
+    if (rp_n < 0) replay_load();
+    if (script_n > 0 || rp_n > 0) {
+        if (sx > -16 && sx < 16 && sy > -16 && sy < 16) sx = sy = 0;
+        if (cx > -16 && cx < 16 && cy > -16 && cy < 16) cx = cy = 0;
+    }
     replay_apply(&b, &port, &sx, &sy, &cx, &cy);
     st += 12 * port;
     wr16(st, b);
