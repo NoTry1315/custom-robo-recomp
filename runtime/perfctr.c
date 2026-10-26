@@ -1,7 +1,7 @@
 /* ARM11 hardware performance counters per frame (sdmc:/cr_perfctr.txt at boot, or the bottom-screen
  * button "Perf counters", live): the core's CP15 counters through svcControlPerformanceCounter.
  *
- * A core has one cycle counter (CCNT) and two event counters (PMN0, PMN1), so the event pairs in
+ * A core has one cycle counter (CCNT) and two event counters (PMN0, PMN1), so the five event pairs in
  * pairs[] rotate one per frame and each event is averaged over the frames its pair counted. The
  * counters are read and reset at every VIWaitForRetrace (recomp_prof_frame, game thread, core 0),
  * so a frame's counts are core 0 for the whole frame: the game thread plus whatever else runs on
@@ -22,6 +22,7 @@ static const struct { PerfCounterEvent ev[2]; } pairs[] = {   /* PMN0, PMN1 */
     { { PERFCOUNTEREVT_CORE_DATA_CACHE_READ_MISS, PERFCOUNTEREVT_CORE_DATA_CACHE_WRITE_MISS } },
     { { PERFCOUNTEREVT_CORE_STALL_BY_LACK_OF_INST, PERFCOUNTEREVT_CORE_STALL_BY_DATA_HAZARD } },
     { { PERFCOUNTEREVT_CORE_DATA_CACHE_READ, PERFCOUNTEREVT_CORE_BRANCH_MISS_PREDICTED } },
+    { { PERFCOUNTEREVT_CORE_INST_MICRO_TLB_MISS, PERFCOUNTEREVT_CORE_MAIN_TLB_MISS } },
 };
 #define NP (int)(sizeof pairs / sizeof pairs[0])
 
@@ -120,10 +121,12 @@ void recomp_perfctr_frame(u32 retrace) {
     /* per frame: cycles and events; per 1000 instructions for the misses; stalls as a share of cycles */
     recomp_log("# perf r%lu: core 0 per frame (%lu frames, %lu dropped): cycles %.0f (ccnt MHz %.0f, wall %.2f ms), inst %.0f (ipc %.2f), "
                "icache miss %.0f (%.2f/k inst), dcache reads %.0f, read miss %.0f (%.2f/k inst), write miss %.0f (%.2f/k inst), "
-               "stall inst %.0f (%.1f%%), stall data %.0f (%.1f%%), branch mispredict %.0f (%.2f/k inst); svc %.0f us\n",
+               "stall inst %.0f (%.1f%%), stall data %.0f (%.1f%%), branch mispredict %.0f (%.2f/k inst), "
+               "inst micro-TLB miss %.0f (%.2f/k inst), main TLB miss %.0f (%.2f/k inst); svc %.0f us\n",
                (unsigned long)retrace, (unsigned long)cycf, (unsigned long)dropped, cy, cy / wall_us, wall_us / 1000, inst, cy ? inst / cy : 0,
                v[0][1], inst ? v[0][1] * 1000 / inst : 0, v[3][0], v[1][0], inst ? v[1][0] * 1000 / inst : 0, v[1][1], inst ? v[1][1] * 1000 / inst : 0,
                v[2][0], cy ? v[2][0] * 100 / cy : 0, v[2][1], cy ? v[2][1] * 100 / cy : 0, v[3][1], inst ? v[3][1] * 1000 / inst : 0,
+               v[4][0], inst ? v[4][0] * 1000 / inst : 0, v[4][1], inst ? v[4][1] * 1000 / inst : 0,
                svc_ticks * 1e6 / SYSCLOCK_ARM11 / (n + dropped));
     clear();
 }

@@ -105,6 +105,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
+| 10-26 | **Cold-path partitioning** (`cold` on hw_read/hw_write/recomp_bad/recomp_log.., `-freorder-blocks-and-partition` on gen/, .text.unlikely linked first) | GCC 16.1 for ARM: "-freorder-blocks-and-partition not supported on this architecture", so nothing was split; `cold` alone +1.4% code (recomp_036.c), with a WGPIPE test ahead of the cold hw_write +8.1% (.text 6.82 -> 7.89 MB) | not possible on this target; would only grow the hot code. GCC already places most __builtin_expect'ed hardware paths near the function end. Not built for hardware (unknowns "Cold-path partitioning") |
 | 10-26 | **Pointer-extent stack promotion** (translator: frame words outside every byte range reached through a frame pointer, with per-callee r3-r12 extents and `tools/recomp/native_ptr_ext.tsv` for natives; 3439 -> 4578 words) | Citra 2v2 game 36.0 -> 35.6 ms (-1.1%, 2 runs), battle 14.0 -> 13.9, campaign 8.0 -> 7.9; .text -0.7%; logs + fb identical (branch ptr-extent-promo) | below the 2% bar: the hot particle frames' remaining words are buffers really passed to PSMTX*/OSReport. Off by default; `RECOMP_PTR_EXTENT=1` at generation turns it on. Not on hardware. 2026-10-26: in the test build as a run-time toggle (hottest 16 functions; see "Hardware test build 2v2-perf-3") |
 | 10-26 | Memo for repeated sin/cos arguments in `runtime/libm.c` (last-value, direct-mapped table, sincos pair) | measured only (Citra 2v2 probe): 2350 calls/frame, 63% repeat in the frame, but half the calls are x ~ 0 (tiny path, ~ the cost of a lookup); best shape ~0.1-0.15 ms of 36.7 (~0.3%) | below the 2% bar; not built (unknowns "sin/cos memo study") |
 | 10-26 | Selective inlining of the per-particle helpers (`RECOMP_INLINE_SITES=1`: 5 listed bl sites to ps_disp_tev_setup / chan_color / tev_color / ps_disp_quad call an always_inline copy; logs + fb dumps identical) | Citra 2v2 game 36.72 -> 36.64 ms (-0.2%), +0.63% .text (ps_disp sites alone -0.02 ms) | below the 2% bar; the `cpu` stores stay (unknowns "Selective inlining of the per-particle helpers"). Not on hardware. 2026-10-26: in the test build as a run-time toggle |
@@ -136,12 +137,18 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
   (~6.3 ms) wait on data dependencies (load-use, VFP latency; D-cache read misses only 3%), and the rest issues 6.65M
   instructions. The call glue is ~0.73M of them, ~5% of the time (`tools/callcost.py`, unknowns "Call-boundary cost
   on the ARM side"; Citra FNPROF said 21.8%): a calling-convention redesign is capped near 1 ms.
-  Next, in order: (1) code layout and size for the I-cache: hot translated functions placed together by call
-  counts, cold paths (hardware-address helpers, asserts, logs) out of the hot lines, fewer instructions per guest
-  memory access; (2) the data-dependency stalls: re-test the float-locals branch (3f77d16) on hardware by its
-  stall-data share; (3) per-function hardware time (PC sampling through Rosalina's gdb stub) to aim both. Layout is
-  a build property, so its A/B needs two builds run on the same hardware replay, one after the other (an
-  exception to the one-build rule, user decision). GX-thread work stays second: 15.6 ms, under the 16.7 ms budget.
+  The hot code is far larger than the 16 KB I-cache: 446 translated functions (1.5 MB) are entered at least once
+  per 2v2 frame, 185 (526 KB) at least 10 times, spread over 5.7 MB of .text; 402k guest instructions became
+  1.52M ARM instructions (3.8 each). Cold-path splitting is not available (GCC on ARM rejects
+  -freorder-blocks-and-partition; see "Tried and not kept"), and GCC already puts most unlikely hardware-access
+  paths near each function's end (78% of those calls in the last 30% of the function). Hardware run 34 (TLB counters): 0.22 main-TLB misses per 1000 instructions, under 1% of
+  the cycles, so function order buys nothing through the TLB and the I-cache misses are capacity misses. Next, in
+  order: (1) code density in the translator: fewer ARM instructions per guest memory access and per float op
+  (literal-pool loads 7.0% of the instructions, byte swaps 4.7%, RAM masks 4.4%, hardware checks 2.5% + their
+  calls 3.9%); (2) the data stalls: float-locals (3f77d16) on hardware; function order / PGO only if density work
+  leaves a reason (block order inside hot functions). Layout
+  A/Bs use two builds run back to back on the 2v2 hardware replay (user decision 2026-10-26). GX-thread work
+  stays second: 15.6 ms, under the 16.7 ms budget.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
 
@@ -149,6 +156,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 
 | Run | Date | Build | Log (`logs/`) | Tested |
 |---|---|---|---|---|
+| 34 | 10-26 | branch icache-cold-paths @ade9b5e | cr_autotest_2026-10-26_hw-run34-replay-2v2-tlb.log | run 33 repeated with the TLB counter pair: route identical, game 22.0 ms; I-miss 37.4/k (33: 36.6), stall inst 27.56% (33: 27.56%); instruction micro-TLB 0.15/k, main TLB 0.22/k misses (< 1% of cycles even at 100 cycles each): TLB is not a cost, function order is not a lever |
 | 33 | 10-26 | branch perf-counters @1838462 | cr_autotest_2026-10-26_hw-run33-replay-2v2-perfctr.log | the 2v2 hardware replay (as 32a, all toggles on) with cr_perfctr: route identical to 32a, game 21.9 ms / frame 24.7 (32a by the same tool: 21.9 / 24.6). Core 0 per 2v2 frame: 19.1M busy cycles, 6.65M instructions (IPC 0.35), stall for instructions 27.6% (243k I-cache misses), stall for data 26.6%, D-cache read misses 3%. Campaign 8.3: IPC 0.38, I-stall 20.8%, data stall 27.8% |
 | 32b | 10-26 | branch 2v2-perf-3 @c4781f5 | cr_autotest_2026-10-26_hw-run32b-replay-2v2-all-off.log | hardware replay of the Citra 2v2 test (data/saves/2026-10-22_pre-2v2 + tools/citra/pad_2v2.txt / pad_2v2.log, run length 8600, cr_dvdasync_off), with cr_lazydesc_off + cr_ptrext_off + cr_inline_off: route identical to Citra and to 32a (0 scene / pad line differences, no late DVD read). 2v2 4.2 (from r4300, 72 windows): 39.7 fps (66%), game 22.5 ms, GX busy 15.8, worst 53.9 |
 | 32a | 10-26 | branch 2v2-perf-3 @c4781f5 | cr_autotest_2026-10-26_hw-run32a-replay-2v2-all-on.log | same replay, all three toggles on: 40.3 fps (67%), game 22.2 ms, GX busy 15.6, worst 53.1. Paired by window vs 32b: game -0.34 ms (sd 0.14, faster in 71 of 72 windows) = -1.5%, matching Citra's -1.1%. So run 31's -7% was mostly play variance. The first attempt (32a0, @e51105e, log cr_autotest_2026-10-26_hw-run32a0-replay-2v2-diverged-dvd-late.log) left Citra's route at r3720: the real circle pad rests at -5 -3, which counted as a moved live stick and overrode the replay's sticks; fixed in pad.c (c4781f5) |
