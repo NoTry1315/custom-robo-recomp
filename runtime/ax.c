@@ -435,8 +435,32 @@ static u32 ndsp_lead(void) {
 
 static void rt_start(u64 now) { rt_last = now; rt_acc = (u64)PREBUF * SYSCLOCK_ARM11; lead_min = ~0u; lead_t = 0; trim = 0; }
 
+/* sdmc:/cr_ax_stall.txt = "<retrace> <ms> [sleep]" (Citra test, no button): a stall of <ms>
+ * before that retrace's AX frames, like a HOME/Rosalina pause: added to the real-time pacing
+ * clock, or with "sleep" the game thread really sleeps (OS time moves too). Real-time pacing
+ * then skips all but MAX_DUE frames; hw run 30's snr_t_06 hang does not come from that
+ * (recomp_unknowns.md "Run 30 text hang") */
+static u32 stall_r = ~0u, stall_ms, stall_sleep, stall_read;
+static void stall_init(void) {
+    stall_read = 1;
+    FILE *f = fopen("sdmc:/cr_ax_stall.txt", "rb");
+    if (!f) return;
+    char mode[16] = "";
+    unsigned long r, ms;
+    if (fscanf(f, "%lu %lu %15s", &r, &ms, mode) >= 2) { stall_r = r; stall_ms = ms; stall_sleep = !strcmp(mode, "sleep"); }
+    fclose(f);
+    recomp_log("# AX: injected stall at r%lu: %lu ms (%s)\n", (unsigned long)stall_r, (unsigned long)stall_ms, stall_sleep ? "sleep" : "pacing clock");
+}
+
 void recomp_ax_service(void) {
     u64 t0 = recomp_ticks();
+    if (!stall_read) stall_init();
+    if (recomp_retrace_count() == stall_r) {
+        stall_r = ~0u;
+        recomp_log("# AX r%lu: injected stall %lu ms\n", (unsigned long)recomp_retrace_count(), (unsigned long)stall_ms);
+        if (stall_sleep) { svcSleepThread((s64)stall_ms * 1000000); t0 = recomp_ticks(); }
+        else if (rt_last) rt_last -= (u64)stall_ms * (SYSCLOCK_ARM11 / 1000);
+    }
     if (ndsp_ok < 0) out_init();
     if (recomp_ax_rt < 0) recomp_ax_pacing_init();
     if (rt_req) {                        /* touch screen (runtime/pad.c), applied between retraces */
