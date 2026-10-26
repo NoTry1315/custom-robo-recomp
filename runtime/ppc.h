@@ -38,6 +38,29 @@ extern u8 ram[];            /* 0x80000000 mirror, RAM_MASK+1 bytes (+8 pad) */
 u32  hw_read(u32 a, int size);
 void hw_write(u32 a, u32 v, int size);
 #define IS_HW(a) (((a) & 0xFE000000u) == 0xCC000000u)
+/* Loads and the hardware range (make HWCHECK=..): by default a guest load does not check for a hardware
+ * address and reads RAM through the mask. No translated load has reached a hardware register in any log
+ * (Citra replays, hardware runs 31-34), hw_read returns 0 anyway (register reads are not emulated), and the
+ * check cost ~3 hot ARM instructions per load plus a never-run hw_read call (2026-10-26, unknowns "Loads
+ * without the hardware check"). HWCHECK=1 (RECOMP_HWCHECK) = the old checked loads; HWCHECK=verify
+ * (RECOMP_HWCHECK_VERIFY) = checked loads that log each hardware load ("# hwcheck load", cpu.c), to prove a
+ * replay never makes one. Stores keep their check: the GX write-gather pipe is a hardware address. */
+#if defined(RECOMP_HWCHECK) || defined(RECOMP_HWCHECK_VERIFY)
+#define LOAD_HW(a) __builtin_expect(IS_HW(a), 0)
+#else
+#define LOAD_HW(a) 0
+#endif
+#ifdef RECOMP_HWCHECK_VERIFY
+u32 hw_read_verify(u32 a, int size);
+#define HW_READ(a, n) hw_read_verify(a, n)
+#define RECOMP_HWCHECK_MODE "verify (loads checked, each hardware load logged)"
+#elif defined(RECOMP_HWCHECK)
+#define HW_READ(a, n) hw_read(a, n)
+#define RECOMP_HWCHECK_MODE "checked (HWCHECK=1)"
+#else
+#define HW_READ(a, n) hw_read(a, n)
+#define RECOMP_HWCHECK_MODE "unchecked (default)"
+#endif
 /* guest-write epochs per 1 KB page (wr8/16/32 and the runtime's bulk writers): the GX display-list cache
  * skips re-hashing a list/array range whose pages were not written since it was last hashed. Stores
  * through r1/r11 (wr*_ram) are not marked; the cache hashes ranges near the stack. */
@@ -67,9 +90,9 @@ static inline __attribute__((always_inline)) void gx_fifo_put(u32 v, int n) {
 
 /* forced inline: in gen/'s large functions GCC stopped inlining these (37.5k out-of-line calls) */
 #define RI static inline __attribute__((always_inline))
-RI u8  rd8 (u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,1); return ram[a & RAM_MASK]; }
-RI u16 rd16(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,2); u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
-RI u32 rd32(u32 a){ if (__builtin_expect(IS_HW(a),0)) return hw_read(a,4); u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
+RI u8  rd8 (u32 a){ if (LOAD_HW(a)) return HW_READ(a,1); return ram[a & RAM_MASK]; }
+RI u16 rd16(u32 a){ if (LOAD_HW(a)) return HW_READ(a,2); u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
+RI u32 rd32(u32 a){ if (LOAD_HW(a)) return HW_READ(a,4); u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
 RI u64 rd64(u32 a){ return ((u64)rd32(a) << 32) | rd32(a + 4); }
 RI void wr8 (u32 a, u8 v){ if (__builtin_expect(IS_HW(a),0)) { HW_WRITE(a,v,1); return; } WR_MARK(a); ram[a & RAM_MASK] = v; }
 RI void wr16(u32 a, u16 v){ if (__builtin_expect(IS_HW(a),0)) { HW_WRITE(a,v,2); return; } WR_MARK(a); v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
@@ -108,9 +131,9 @@ RI void wr64_sp(u32 b, s32 k, u64 v){ wr32_sp(b, k, (u32)(v >> 32)); wr32_sp(b, 
 #define RAM_GUARD 0x8000u
 RI u8 *b_at(u32 b, s32 k){ return ram + (b & RAM_MASK) + k; }
 #define WR_MARK_B(b, k) (ram_wr[(s32)(((b) & RAM_MASK) + (k)) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
-RI u8  rd8_b (u32 b, s32 k){ if (__builtin_expect(IS_HW(b),0)) return hw_read(b + k,1); return *b_at(b, k); }
-RI u16 rd16_b(u32 b, s32 k){ if (__builtin_expect(IS_HW(b),0)) return hw_read(b + k,2); u16 v; memcpy(&v, b_at(b, k), 2); return __builtin_bswap16(v); }
-RI u32 rd32_b(u32 b, s32 k){ if (__builtin_expect(IS_HW(b),0)) return hw_read(b + k,4); u32 v; memcpy(&v, b_at(b, k), 4); return __builtin_bswap32(v); }
+RI u8  rd8_b (u32 b, s32 k){ if (LOAD_HW(b)) return HW_READ(b + k,1); return *b_at(b, k); }
+RI u16 rd16_b(u32 b, s32 k){ if (LOAD_HW(b)) return HW_READ(b + k,2); u16 v; memcpy(&v, b_at(b, k), 2); return __builtin_bswap16(v); }
+RI u32 rd32_b(u32 b, s32 k){ if (LOAD_HW(b)) return HW_READ(b + k,4); u32 v; memcpy(&v, b_at(b, k), 4); return __builtin_bswap32(v); }
 RI u64 rd64_b(u32 b, s32 k){ return ((u64)rd32_b(b, k) << 32) | rd32_b(b, k + 4); }
 RI void wr8_b (u32 b, s32 k, u8 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,1); return; } WR_MARK_B(b, k); *b_at(b, k) = v; }
 RI void wr16_b(u32 b, s32 k, u16 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,2); return; } WR_MARK_B(b, k); v = __builtin_bswap16(v); memcpy(b_at(b, k), &v, 2); }

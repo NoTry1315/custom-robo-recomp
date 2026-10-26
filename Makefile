@@ -38,6 +38,16 @@ LTO ?= 0
 ifeq ($(LTO),1)
 CFLAGS	+=	-flto
 endif
+# HWCHECK: guest loads skip the hardware-address check by default (runtime/ppc.h LOAD_HW); HWCHECK=1 keeps it,
+# HWCHECK=verify keeps it and logs every load that reaches a hardware address ("# hwcheck load"). Switching
+# needs `make clean` (make does not track CFLAGS)
+HWCHECK ?= 0
+ifeq ($(HWCHECK),1)
+CFLAGS	+=	-DRECOMP_HWCHECK
+endif
+ifeq ($(HWCHECK),verify)
+CFLAGS	+=	-DRECOMP_HWCHECK_VERIFY
+endif
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 ASFLAGS	:=	-g $(ARCH)
 # --wrap=linear*: a lock around libctru's linear heap, which the game and GX threads both use (runtime/gx.c)
@@ -69,7 +79,7 @@ export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 
 .PHONY: all clean
 all: $(BUILD)
-	@sh tools/buildinfo.sh $(BUILD)/buildinfo.h "$(strip $(if $(filter 1,$(LTO)),lto) $(GENOPT))"
+	@sh tools/buildinfo.sh $(BUILD)/buildinfo.h "$(strip $(if $(filter 1,$(LTO)),lto) $(if $(filter 1,$(HWCHECK)),hwcheck) $(if $(filter verify,$(HWCHECK)),hwverify) $(GENOPT))"
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 	@python3 tools/check_3dsx.py $(TARGET).3dsx
 $(BUILD):
