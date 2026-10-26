@@ -24,7 +24,7 @@
 #include <string.h>
 #include "ppc.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 
 #define VPB_BASE 0x81800000u
 #define VPB_SIZE 0x200u

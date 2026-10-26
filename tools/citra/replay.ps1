@@ -10,12 +10,13 @@
 # memory card (sdmc:/cr_card_off.txt, as the recordings were made). 2v2 (or -Save <dir>) copies a save into
 # sdmc:/custom-robo/save/ for the run and puts the previous files back afterwards, so the game's own save
 # writes never carry over between runs. -Pad '<from> <to> <hex>; ...' adds pad script lines and -RunLen the run
-# length (exploring a route). Every flag file it sets is removed afterwards. autotest.ps1 kills a running
+# length (exploring a route), -Fb '<frame> ...' the framebuffer dump frames, -RecLog <log> replays that log's
+# pad lines (e.g. a hardware log, with -Save and -Name boot). Every flag file it sets is removed afterwards. autotest.ps1 kills a running
 # Citra, so several checkouts share one Citra through a lock file: use this script, not autotest.ps1
 # directly, while other sessions may run.
 param([Parameter(Mandatory)][ValidateSet('battle', 'campaign', 'boot', '2v2')][string]$Name, [string]$Tag = 'run',
       [string]$Out = 'logs\perf', [string[]]$Flags = @(), [int]$Shots = 0, [string]$Save = '', [string]$Pad = '',
-      [int]$RunLen = 0)
+      [int]$RunLen = 0, [string]$Fb = '', [string]$RecLog = '')
 $sp = Split-Path $MyInvocation.MyCommand.Path
 $repo = Resolve-Path "$sp\..\.."
 $citra = 'C:\Users\Alexander\AppData\Roaming\EmuDeck\Emulators\citra\user'
@@ -29,6 +30,8 @@ if ($Name -eq '2v2') {
     $Pad = (@($script, $Pad) | Where-Object { $_ }) -join ';'
 }
 if ($RunLen -gt 0) { $len[$Name] = "$RunLen 0 0" }
+if ($RecLog) { $rec[$Name] = (Resolve-Path $RecLog).Path }   # -RecLog <log>: replay that log's "# pad r" lines instead
+if ($Fb) { $fbs[$Name] = (($Fb -split '[ ,;]+' | Where-Object { $_ }) -join "`n") + "`n" }   # -Fb '1500 2000': framebuffer dumps
 $padArg = (@($len[$Name], $Pad) | Where-Object { $_ }) -join ';'
 if (-not [IO.Path]::IsPathRooted($Out)) { $Out = Join-Path $repo $Out }
 New-Item -ItemType Directory -Force $Out | Out-Null

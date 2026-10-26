@@ -15,7 +15,7 @@
 #include <strings.h>
 #include "ppc.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 #define DISC_DIR "sdmc:/custom-robo/"
 #define DVD_STATE_END 0
 #define DVD_STATE_BUSY 1

@@ -367,8 +367,9 @@ def psq_op(d, D, W, I):
     return f'F[{D}] = psq_ld(ea, {W}, {I});' if d.startswith('psq_l') else f'psq_st(F[{D}], ea, {W}, {I});'
 
 
-def emit_op(p, a, w, d):
-    """Straight-line instruction -> list of C statements. Control flow is handled by the caller."""
+def emit_op(p, a, w, d, sp11=False):
+    """Straight-line instruction -> list of C statements. Control flow is handled by the caller.
+    sp11: r11 is a stack pointer (inline_body), so its accesses are left to stack_access."""
     D, A, B, C = rD(w), rA(w), rB(w), rC(w)
     S = D
     rec = rc(w)
@@ -668,6 +669,8 @@ def emit_op(p, a, w, d):
     if A == 1 and (d in LOADS or d in STORES or d[:-1] in LOADS or d[:-1] in STORES or
                    d in ('lmw', 'stmw') or d[:3] in ('lfs', 'lfd', 'stf', 'psq')):
         out = [stack_access(x) for x in out]
+    elif BASE_ACCESS and A != 0 and not (sp11 and A == 11) and d in BASE_OPS:
+        out = [base_access(x, A) for x in out]
     return out
 
 
@@ -692,6 +695,28 @@ def stack_access(x):
             return '{ ' + body + ' }'
     x = re.sub(r'\b(rd|wr)(8|16|32|64)\(', r'\1\2_ram(', x)
     return re.sub(r'\bpsq_(ld|st)0\(', r'psq_\g<1>0_ram(', x)
+
+
+# D-form (base + constant offset) loads/stores, no update: base_access
+BASE_OPS = {'lwz', 'lbz', 'lhz', 'lha', 'stw', 'stb', 'sth', 'lfs', 'lfd', 'stfs', 'stfd', 'psq_l', 'psq_st'}
+BASE_ACCESS = os.environ.get('RECOMP_BASE_ACCESS', '1') != '0'
+BASE_EA = re.compile(r'\{ u32 ea = R\[(\d+)\](?: ([+-]) (-?\d+))?; (.*) \}$')
+BASE_USE = re.compile(r'\b(?:(rd|wr)(8|16|32|64)|psq_(ld|st)0)\((F\[\d+\], )?ea(?=[,)])')
+
+
+def base_access(x, A):
+    """rA + k access (rA not r1) -> *_b(rA, k) (ppc.h): the hardware check and the RAM mask work on
+    the base register, k is the load/store offset, so accesses off one pointer share one check and
+    one masked base. RECOMP_BASE_ACCESS=0 keeps rd32(rA + k)."""
+    x = re.sub(rf'\b(rd|wr)(8|16|32|64)\(R\[{A}\](?: ([+-]) (\d+))?(?=[,)])',
+               lambda m: f'{m[1]}{m[2]}_b(R[{A}], {(m[3] or "") + (m[4] or "0")}'.replace('+', ''), x)
+    m = BASE_EA.match(x)
+    if m and int(m[1]) == A and ' = ea;' not in m[4]:
+        k = (-1 if m[2] == '-' else 1) * int(m[3] or 0)
+        body = BASE_USE.sub(lambda u: (f'{u[1]}{u[2]}_b(' if u[1] else f'psq_{u[3]}0_b({u[4] or ""}') + f'R[{A}], {k}', m[4])
+        if not re.search(r'\bea\b', body):
+            return '{ ' + body + ' }'
+    return x
 
 
 def cond_expr(w):
@@ -726,7 +751,7 @@ def inline_body(p, t):
         if d == 'bclr':
             return out
         assert d in ('stw', 'lwz', 'stfd', 'lfd') and rA(w) == 11, f'save/restore helper {t:08x}: {d}'
-        out += [stack_access(x) for x in emit_op(p, t, w, d)]
+        out += [stack_access(x) for x in emit_op(p, t, w, d, sp11=True)]
         t += 4
 
 
@@ -1204,6 +1229,313 @@ def drop_nv_saves(fns):
 
 
 SP_SIZE = {'8': 1, '16': 2, '32': 4, '64': 8}
+# natives that read their caller's stack: GXInitTexObjCI's 9th argument at r1 + 8 (runtime/gx.c)
+NATIVE_STACK_READS = {'sdk_GXInitTexObjCI': {8}}
+STWU_RE = re.compile(r'\{ u32 ea = R\[1\] - (\d+); wr32_ram\(ea, R\[1\]\); R\[1\] = ea; \}')
+R1_ACC = re.compile(r'\b(?:(?P<op>rd|wr)(?P<w>8|16|32|64)_sp\(|psq_(?P<q>ld|st)0_sp\((?:F\[\d+\], )?)R\[1\], (?P<k>-?\d+)')
+DERIVE_RE = re.compile(r'R\[(\d+)\] = R\[(\d+)\](?: ([+-]) (\d+|R\[\d+\]))?;')
+
+
+def call_args(x, i):
+    """x[i] is just past '(': -> (list of top-level argument strings, index just past ')')"""
+    depth, start, args = 0, i, []
+    while True:
+        ch = x[i]
+        if ch in '([':
+            depth += 1
+        elif ch in ')]':
+            if depth == 0:
+                args.append(x[start:i].strip())
+                return args, i + 1
+            depth -= 1
+        elif ch == ',' and depth == 0:
+            args.append(x[start:i].strip())
+            start = i + 1
+        i += 1
+
+
+NO_BOUND = -(1 << 30)
+LOAD_RHS = re.compile(r'(?:\(u32\)\(s32\)\(s1[56]\))?(?:rd(?:8|16|32|64)(?:_b|_sp|_ram)?|u2f|u2d)\(')
+
+
+def frame_pointers(fn, skip):
+    """Forward may-analysis of the registers that hold r1 + k (r1 = the value after the frame's stwu;
+    instructions in skip, the prologue up to it, are left out). -> frame offsets reached where such a
+    register is used: its k, lowered by a negative constant offset used with it. A register is r1 + k
+    after `R[d] = R[s] (+|-) k`, after `R[d] = R[s] + R[x]` (index taken as >= 0, as C indexes an
+    array from its address up) and through an update form; anything else computed from one (masks,
+    shifts) gets k - 4096; minus a register, or a loop that keeps lowering it, has no bound; loads
+    are data. After a call r3/r4 may return a pointer argument (memcpy-style)."""
+    first = max(skip) + 4 if skip else fn.entry
+    if first not in fn.body:
+        return []
+    st_in, visits, uses, work = {first: {1: 0}}, defaultdict(int), [], [first]
+
+    def value(rhs, state):
+        if LOAD_RHS.match(rhs):
+            return None
+        d = re.fullmatch(r'R\[(\d+)\](?: ([+-]) (-?\d+|R\[\d+\]))?u?', rhs)
+        if d and int(d[1]) in state:
+            off = state[int(d[1])]
+            if d[2] and not d[3].startswith('R['):
+                return off + int(d[3]) * (1 if d[2] == '+' else -1)
+            return NO_BOUND if d[2] == '-' else off
+        srcs = [state[int(r)] for r in re.findall(r'R\[(\d+)\]', rhs) if int(r) in state]
+        return min(srcs) - 4096 if srcs else None
+
+    while work:
+        a = work.pop()
+        if a not in fn.body:
+            continue
+        pre = st_in[a]
+        x = ' '.join(fn.body[a])
+        state, ea = dict(pre), None
+        for s in re.finditer(r'(?:u32 ea|R\[(\d+)\]) = ([^;]*);|\b(?:f_[0-9a-f]{8}|sdk_\w+|call_indirect)\(', x):
+            if s[0].endswith('('):   # a call: volatile registers change, r3/r4 may be a pointer argument
+                args = [state[r] for r in range(3, 11) if r in state]
+                for r in (0, *range(3, 13)):
+                    state.pop(r, None)
+                if args:
+                    state[3] = state[4] = min(args)
+                continue
+            v = ea if s[2] == 'ea' else value(s[2].strip(), state)
+            if s[1] is None:
+                ea = v
+            elif int(s[1]) != 1:
+                if v is None:
+                    state.pop(int(s[1]), None)
+                else:
+                    state[int(s[1])] = v
+        if re.search(r'\bif \(', x):   # conditional parts: either state may follow
+            for r, v in pre.items():
+                state[r] = min(v, state.get(r, v))
+        for r in set(pre) | set(state):   # uses (stores into them included): k and negative offsets
+            if r == 1:
+                continue
+            for u in re.finditer(rf'\bR\[{r}\](?:, (-?\d+)| ([+-]) (\d+))?', x):
+                k = int(u[1]) if u[1] else int(u[3]) * (1 if u[2] == '+' else -1) if u[2] else 0
+                for st in (pre, state):
+                    if r in st:
+                        uses.append(st[r] + min(k, 0))
+        for t in fn.succ[a]:
+            if t in skip or t not in fn.body:
+                continue
+            old = st_in.get(t)
+            new = dict(state) if old is None else {r: min(old.get(r, v), v) for r, v in state.items()} | \
+                {r: v for r, v in old.items() if r not in state}
+            if new != old:
+                visits[t] += 1
+                if visits[t] > 6 and old is not None:   # keeps going down: no bound
+                    new = {r: (NO_BOUND if r in old and v < old[r] else v) for r, v in new.items()}
+                st_in[t] = new
+                work.append(t)
+    return uses
+
+
+def promote_stack_slots(fns, psq_ok=True):
+    """Guest stack words a function alone uses become C locals (sp_s<k>, the word's bits in host
+    order): no address mask, byte swap or RAM round trip for MWCC's spills (stfs/lfs, stfd/lfd, the
+    stw/stw/lfd int->double idiom, psq). A word r1 + k of a frame (one stwu at the entry, r1 written
+    otherwise only by the epilogue `addi r1, r1, size`, no stack access after it) qualifies when:
+    8 <= k (0 = back chain, 4 = callee LR save) and k + 4 <= the frame size; it lies below every
+    address derived from r1 in the function, counting pointer arithmetic on those registers and
+    negative constant offsets used with them (assumption: code reaches a local array or struct only
+    from its address upward, as C does); no callee reaches into its caller's frame at that offset
+    (callers' parameter areas: stack accesses above a callee's own frame, or pointers derived there,
+    collected over all functions); and every access to it is a 32-bit, 64-bit or psq access that
+    only touches promoted words. The local starts as the word's memory value after the stwu (a read
+    before any write sees what it saw before; GCC drops the load where it is dead). The frame's
+    memory keeps older contents in those words: only a reader of another function's dead stack, or
+    of this frame through a pointer the rules above missed, sees a difference.
+    psq_ok: psq accesses are GQR0 = 0 floats (no translated mtspr GQR0, as psq_ld0/psq_st0 assume).
+    RECOMP_STACK_SLOTS=0 keeps every stack access in memory."""
+    if os.environ.get('RECOMP_STACK_SLOTS', '1') == '0':
+        print('note: stack slots kept in memory (RECOMP_STACK_SLOTS=0)')
+        return fns
+    reads = [f'{f.name}:{n}' for f in sorted((ROOT / 'runtime').glob('*.c')) if f.name not in NATIVE_WRITE_OK
+             for n, line in enumerate(f.read_text(encoding='utf-8').splitlines(), 1) if re.search(r'R\[1\] [-+]', line)]
+    if len(reads) != sum(len(v) for v in NATIVE_STACK_READS.values()):
+        sys.exit('runtime/ reads the guest stack through r1 (recomp.py NATIVE_STACK_READS lists each):\n' + '\n'.join(reads))
+    stat = defaultdict(int)
+    info = {}
+    # per function: words of the frame that transferred control to it (bl or tail b, same r1) it may
+    # touch, and the lowest such offset a pointer it derives may reach
+    g_ext, g_from, calls, framed, ind = {}, {}, {}, set(), set()
+    for fn in fns:
+        ge, gf = set(), 1 << 30
+        # the stwu: in the straight-line prologue (MWCC: mflr r0; stw r0, 4(r1); stwu r1, -N(r1))
+        m, pro, prev = None, set(), fn.entry - 4
+        for a in fn.order[fn.order.index(fn.entry):] if fn.entry in fn.order else []:
+            x = ' '.join(fn.body[a])
+            if a != prev + 4 or (a in fn.labels and a != fn.entry):
+                break
+            m = STWU_RE.fullmatch(x)
+            if m:
+                pro.add(a)
+                break
+            if re.search(r'goto |return;|\bif \(|switch|recomp_|\bf_[0-9a-f]{8}\(|\bsdk_\w+\(|call_indirect|R\[1\] = ', x):
+                break
+            pro.add(a)
+            prev = a
+        if not m:
+            pro = set()
+        size = int(m[1]) if m else 0
+        top = size if m else 0   # offsets >= top are the caller's frame
+        lo, bad, acc = 1 << 30, None, defaultdict(list)
+        uses = frame_pointers(fn, pro)
+        lo = min(uses + [lo])
+        gf = min([u - top for u in uses if u >= top + (0 if m else 8)] + [gf])
+        for a in fn.order:
+            x = ' '.join(fn.body[a])
+            if a in pro:   # before the stwu: r1 is the caller's (LR save at 4); the stwu itself
+                if not STWU_RE.fullmatch(x):
+                    for s in R1_ACC.finditer(x):
+                        if int(s['k']) != 4:
+                            ge.add(int(s['k']) & ~3)
+                    if re.search(r'R\[\d+\] = R\[1\]', x):
+                        bad = 'pointer before the stwu'
+                continue
+            if re.search(r'R\[1\] = ', x) and x.strip() != f'R[1] = R[1] + {size};':
+                bad = 'r1 write'
+            elif m and re.search(r'R\[1\] = ', x):   # the epilogue: no stack access until the return
+                seen, todo = set(), list(fn.succ[a])
+                while todo:
+                    t = todo.pop()
+                    if t in seen or t not in fn.body:
+                        continue
+                    seen.add(t)
+                    y = ' '.join(fn.body[t])
+                    if 'R[1]' in y or R1_ACC.search(y):
+                        bad = 'stack access after the epilogue'
+                    if 'return;' not in y:
+                        todo += list(fn.succ[t])
+            for s in R1_ACC.finditer(x):
+                k = int(s['k'])
+                w = SP_SIZE[s['w']] if s['w'] else 8 if s['q'] else 0
+                acc[k].append((s['op'] or s['q'], w))
+            # any other read of r1: a pointer the access patterns above do not see
+            rest = R1_ACC.sub('', x)
+            rest = re.sub(r'R\[\d+\] = R\[1\](?: [+-] \d+)?;', '', rest)
+            if m:
+                rest = rest.replace(f'R[1] = R[1] + {size};', '')
+            if 'R[1]' in rest:
+                bad = bad or 'other r1 use'
+        for k, L in acc.items():
+            if k >= top and k != top + 4:
+                for op, w in L:
+                    ge |= {c & ~3 for c in range(k - top, k - top + max(w, 1))}
+        text = ' '.join(x for a in fn.order for x in fn.body[a])
+        calls[fn.entry] = set(re.findall(r'\b(f_[0-9a-f]{8}|sdk_\w+)\(', text))
+        if 'call_indirect' in text:
+            ind.add(fn.entry)
+        if m:
+            framed.add(fn.entry)
+        g_ext[fn.entry], g_from[fn.entry] = ge, gf
+        if bad or not m:
+            stat['skipped' if m else 'frameless'] += 1
+            continue
+        info[fn.entry] = (size, lo, acc, pro)
+    for e, n in NATIVE_STACK_READS.items():
+        g_ext[e], g_from[e], calls[e] = set(n), 1 << 30, set()
+    changed = True
+    while changed:   # a frameless function leaves r1 alone: what its callees touch is its transferrer's too
+        changed = False
+        for e in g_ext:
+            if e in framed or isinstance(e, str):
+                continue
+            for c in calls[e]:
+                c = int(c[2:], 16) if c.startswith('f_') else c
+                if c in g_ext and not (g_ext[c] <= g_ext[e] and g_from[c] >= g_from[e]):
+                    g_ext[e] |= g_ext[c]
+                    g_from[e] = min(g_from[e], g_from[c])
+                    changed = True
+    # call_indirect: any frameless function (conservative; frames move r1, their own words are theirs)
+    ind_ext = set().union(*(g_ext[e] for e in g_ext if e not in framed and not isinstance(e, str)))
+    ind_from = min([g_from[e] for e in g_ext if e not in framed and not isinstance(e, str)] + [1 << 30])
+    for i, fn in enumerate(fns):
+        if fn.entry not in info:
+            continue
+        size, lo, acc, pro = info[fn.entry]
+        stwu = max(pro)
+        ext, ext_from = (set(ind_ext), ind_from) if fn.entry in ind else (set(), 1 << 30)
+        for c in calls[fn.entry]:
+            c = int(c[2:], 16) if c.startswith('f_') else c
+            if c in g_ext:
+                ext |= g_ext[c]
+                ext_from = min(ext_from, g_from[c])
+        stat['ext'] += bool(ext) or ext_from < size
+        limit = min(size, lo, ext_from)
+        words = set()
+        for k, L in acc.items():
+            for op, w in L:
+                for kk in range(k, k + max(w, 4), 4):
+                    words.add(kk)
+        ok = {k for k in words if k % 4 == 0 and 8 <= k and k + 4 <= limit and k not in ext}
+        if not psq_ok:
+            ok -= {kk for k, L in acc.items() for op, w in L if op in ('ld', 'st') for kk in (k, k + 4)}
+        changed = True
+        while changed:   # an access counts only if it covers whole promoted words
+            changed = False
+            for k, L in acc.items():
+                for op, w in L:
+                    cover = {c & ~3 for c in range(k, k + max(w, 1))}
+                    if (w < 4 or k % 4 or not cover <= ok) and cover & ok:
+                        ok -= cover
+                        changed = True
+        if not ok:
+            continue
+        body = {a: list(v) for a, v in fn.body.items()}
+
+        def rewrite(x):
+            res, j = [], 0
+            for s in R1_ACC.finditer(x):
+                if s.start() < j:
+                    continue
+                k = int(s['k'])
+                st = s.start()
+                op, w = s['op'] or s['q'], SP_SIZE[s['w']] if s['w'] else 8
+                is_q = bool(s['q'])
+                head = x.index('(', st) + 1
+                args, end = call_args(x, head)
+                W = int(args[-1]) if is_q else 0
+                cover = [k] if (is_q and W) or w == 4 else [k, k + 4]
+                if k % 4 or w < 4:
+                    continue
+                if not all(c in ok for c in cover):
+                    continue
+                if op in ('rd', 'ld'):
+                    if is_q:
+                        rep = f'psq_ld0_v(sp_s{k}, {f"sp_s{k + 4}" if not W else "0u"}, {W})'
+                    elif w == 4:
+                        rep = f'sp_s{k}'
+                    else:
+                        rep = f'((u64)sp_s{k} << 32 | sp_s{k + 4})'
+                    res.append((st, end, rep))
+                else:
+                    if not x[end:].startswith(';'):
+                        continue
+                    if is_q:
+                        rep = f'{{ PS sv_ = {args[0]}; sp_s{k} = f2u((float)sv_.ps0);' + ('' if W else f' sp_s{k + 4} = f2u((float)sv_.ps1);') + ' }'
+                    elif w == 4:
+                        rep = f'sp_s{k} = {args[2]};'
+                    else:
+                        rep = f'{{ u64 sv_ = {args[2]}; sp_s{k} = (u32)(sv_ >> 32); sp_s{k + 4} = (u32)sv_; }}'
+                    res.append((st, end + 1, rep))
+                j = end
+                stat['accesses'] += 1
+            for st, end, rep in reversed(res):
+                x = x[:st] + rep + x[end:]
+            return x
+        for a in fn.order:
+            if a not in pro:
+                body[a] = [rewrite(x) for x in body[a]]
+        body[stwu] = body[stwu] + [f'u32 sp_s{k} = rd32_sp(R[1], {k});' for k in sorted(ok)]
+        stat['functions'] += 1
+        stat['words'] += len(ok)
+        fns[i] = Func(fn.entry, fn.order, body, fn.labels, fn.gotos)
+    print(f"stack slots in locals: {stat['words']} words in {stat['functions']} functions, {stat['accesses']} accesses; "
+          f"{stat['skipped']} frames left in memory (other r1 use), {stat['ext']} frames with words their callees reach")
+    return fns
 
 
 def check_gqr_writes():
@@ -1666,6 +1998,7 @@ def main():
     fns = fold_base_regs(fns)
     fns = fold_so(fns)
     fns = drop_nv_saves(fns)
+    fns = promote_stack_slots(fns, not p.gqr0_written)
     n = sum(len(re.findall(r'/\* inlined f_', x)) for fn in fns for v in fn.body.values() for x in v)
     print(f'{n} calls to {len(p.inline)} leaf functions inlined')
     for fn in fns:

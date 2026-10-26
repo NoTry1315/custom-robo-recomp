@@ -7,7 +7,7 @@
 #include <stdlib.h>
 #include "ppc.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 #define PAD_ERR_NO_CONTROLLER 0xff
 
 enum { PAD_LEFT = 0x1, PAD_RIGHT = 0x2, PAD_DOWN = 0x4, PAD_UP = 0x8, PAD_Z = 0x10, PAD_R = 0x20,

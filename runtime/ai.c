@@ -11,7 +11,7 @@
  * chain every 5 ms frame and plays the buffer left in the DMA registers (runtime/ax.c). */
 #include "ppc.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 
 static u32 dsp_rate = 1, stream_rate, stream_state, vol_l, vol_r;   /* DSP 32 kHz */
 u32 recomp_ai_dma_cb = AX_AI_CALLBACK, recomp_ai_dma_addr, recomp_ai_dma_len;

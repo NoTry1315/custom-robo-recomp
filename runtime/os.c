@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include "ppc.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 #define ROUNDUP(x, a) (((x) + (a) - 1) & ~((a) - 1))
 #define ROUNDDOWN(x, a) ((x) & ~((a) - 1))
 

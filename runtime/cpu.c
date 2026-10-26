@@ -7,8 +7,12 @@
 CPU cpu;
 /* static: its address is a link-time constant in gen/, not a pointer reloaded after
  * every byte store (gen/ is built with -fno-strict-aliasing) */
-u8 ram[RAM_MASK + 1 + 8] __attribute__((aligned(64)));
-u32 ram_wr[(RAM_MASK + 1) >> WR_PAGE_SHIFT];
+/* ram[] and ram_wr[] sit RAM_GUARD bytes (32 pages) inside larger blocks: a base + offset access
+ * (ppc.h *_b) whose base is near either end of the mirror lands in the guard, not outside the array */
+u8 recomp_ram_block[RAM_GUARD + RAM_MASK + 1 + 8 + RAM_GUARD] __attribute__((aligned(64)));
+u32 recomp_ram_wr_block[(RAM_GUARD >> WR_PAGE_SHIFT) * 2 + ((RAM_MASK + 1) >> WR_PAGE_SHIFT)];
+__asm__(".global ram\n.set ram, recomp_ram_block + 0x8000\n"
+        ".global ram_wr\n.set ram_wr, recomp_ram_wr_block + 4 * (0x8000 >> 10)");
 u32 recomp_wr_epoch = 1;
 void recomp_mark_ram(u32 a, u32 n) {
     if (!n) return;

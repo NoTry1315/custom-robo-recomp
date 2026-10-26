@@ -237,14 +237,16 @@ void recomp_prof_frame(u32 retrace) {
 }
 
 #define LOG_PATH "sdmc:/cr_autotest.log"
-#define PER_NAME 20         /* calls logged in full per SDK function */
+#define PER_NAME RECOMP_SDK_PER_NAME   /* calls logged in full per SDK function (ppc.h) */
 #define HANG_MS 20000      /* a 30-retrace log gap on the title's 3D background in real-time Citra exceeds 4 s */
 
 static FILE *log_fp;
 static LightLock lock;
 static volatile u32 heartbeat;
-static const char *volatile ring[32];
-static volatile u32 ring_pos;
+const char *volatile recomp_sdk_ring[32];   /* last SDK calls (ppc.h recomp_sdk_log_at) */
+volatile u32 recomp_sdk_ring_pos;
+#define ring recomp_sdk_ring
+#define ring_pos recomp_sdk_ring_pos
 jmp_buf recomp_exit_jmp;
 
 static struct { const char *name; u32 n; } counts[2048];
@@ -348,13 +350,16 @@ void recomp_log(const char *fmt, ...) {
     LightEvent_Signal(&log_ev);
 }
 
+u32 *recomp_sdk_count(const char *name) { return count_of(name); }
+void recomp_sdk_log_line(const char *name) {
+    recomp_log("sdk %s r3=%08lx r4=%08lx r5=%08lx r6=%08lx lr=%08lx\n", name, (unsigned long)R[3],
+               (unsigned long)R[4], (unsigned long)R[5], (unsigned long)R[6], (unsigned long)cpu.lr);
+}
 void recomp_sdk_log(const char *name) {
     FNPROF((u32)(uintptr_t)name);   /* make FNPROF=1: SDK time under the SDK name */
     u32 *n = count_of(name);
     ring[ring_pos++ & 31] = name;
-    if (++*n <= PER_NAME)
-        recomp_log("sdk %s r3=%08lx r4=%08lx r5=%08lx r6=%08lx lr=%08lx\n", name, (unsigned long)R[3],
-                   (unsigned long)R[4], (unsigned long)R[5], (unsigned long)R[6], (unsigned long)cpu.lr);
+    if (++*n <= PER_NAME) recomp_sdk_log_line(name);
 }
 
 void recomp_sdk_call(const char *name) { recomp_sdk_log(name); }

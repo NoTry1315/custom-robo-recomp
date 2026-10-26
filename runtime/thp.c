@@ -5,7 +5,7 @@
 #include <3ds.h>
 #include "ppc.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 
 /* 0x801b6008 THPInit() -> TRUE, as the guest minus OSRegisterVersion: six locked-cache
  * pointers at 0x8044c380 (LC + 0, 0x2000, 0x2800, then 0, 0x2800, 0x3200), GQR2-5 =

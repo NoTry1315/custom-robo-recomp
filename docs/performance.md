@@ -37,6 +37,8 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
   GX thread busy 37.7 ms (two runs identical, 5269/5269 log lines). Citra ms are slower than hardware
   (2v2 on hardware: game 29.8 ms) but rank changes the same way for CPU-side work.
   After d1e6d03 + 3f87081 (2026-10-22): 2v2 game 43.2 ms, battle 4.2 (`--from 2460`) 17.1, campaign 8.3 8.9.
+  After the 2026-10-23 2v2 work (branch claude/2v2-perf-2-5cf2f9 @ 40381bd): 2v2 game 36.0 ms (GX thread busy 38.6,
+  now longer than the game thread in Citra), battle 14.1, campaign 8.0.
 
 ## Where it stands (hardware run 28, 2026-10-22, main@75ea35d LTO build)
 
@@ -55,6 +57,10 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Measured effect | Status | Details (unknowns) |
 |---|---|---|---|---|
+| 10-23 | **Stack words in C locals** (translator `promote_stack_slots`: frame words only the function uses, below every r1-derived pointer and not reached by a callee; 3439 words in 483 functions) | Citra 2v2 game 37.4 -> 36.0 ms, battle 14.6 -> 14.1, campaign 8.2 -> 8.0; logs + fb identical (40381bd) | on; `RECOMP_STACK_SLOTS=0` at generation = memory; not yet on hardware | 2v2 game CPU 2 |
+| 10-23 | **SDK call path**: `LOG()` inline with a per-function count slot (no hash probe); GXBegin's vertex size cached per format | Citra 2v2 game 39.0 -> 37.4 ms, battle 15.5 -> 14.6, campaign 8.4 -> 8.2; logs + fb identical (136d224) | always on; not yet on hardware | 2v2 game CPU 2 |
+| 10-23 | **WGPIPE stores inline** (immediate-mode vertex bytes go straight into the FIFO while the primitive is incomplete) | Citra 2v2 game 40.9 -> 39.0 ms, battle 16.3 -> 15.5; logs + fb identical (0c8c024) | always on; not yet on hardware | 2v2 game CPU 2 |
+| 10-23 | **Base-register accesses** (translator: `rA + k` loads/stores check and mask rA, k is the offset; guard space around ram[]) | Citra 2v2 game 43.2 -> 40.9 ms, battle 17.1 -> 16.3, campaign 8.9 -> 8.4; logs + fb identical (c27c2f2) | on; `RECOMP_BASE_ACCESS=0` at generation = old; not yet on hardware | 2v2 game CPU 2 |
 | 10-22 | **Vertex packing**: display-list draws store only the inputs the draw reads, in the GX source format (s16/s8/u8/f32) where the PICA has one; normal dropped when unlit | Citra: vertex fetch 68 -> 32.6 B per index (campaign, 4154 -> 1992 KB/frame), 29.4 B (battle, 5815 -> 2513 KB/frame); logs + fb dumps identical. GPU effect not yet on hardware | on; button "Vertex pack", `cr_vtxpack_off.txt` | Vertex packing |
 | 10-22 | **Non-volatile saves dropped** (translator: MWCC prologue saves / epilogue restores of r14-r31, f14-f31 that only fed dead locals; 1886 functions) | Citra 2v2 game 50.4 -> 43.2 ms, battle 19.2 -> 17.1, campaign 9.8 -> 8.9; logs + fb identical (3f87081) | on; `RECOMP_KEEP_NV_SAVES=1` at generation keeps them; not yet on hardware | 2v2 game CPU |
 | 10-22 | **Native MSL sin/cos/sinf/cosf + sqrtf**; double fmadd as inline `a*c + b` instead of newlib's (already non-fused) `fma()` | Citra 2v2 game 52.9 -> 50.4 ms (libm off in the same build: 52.3), battle 20.0 -> 19.2, campaign 9.9 -> 9.8; logs + fb identical (d1e6d03) | on; button "Native sin/cos", `cr_libm_off.txt`; not yet on hardware | 2v2 game CPU |
@@ -87,6 +93,8 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
+| 10-23 | Inline copies: `static inline` copies of translated functions of <= 32 instructions in each gen/ file that calls them (GCC inlines across files) | Citra 2v2 game 37.4 -> 37.2 ms (-0.5%), +5.5% ARM instructions | below the 2% bar; small callees are cheap to call already |
+| 10-23 | Per-native in-sets, LR save/restore removal | sized from site counts: < 0.1 ms and ~0.3 ms | not built (see unknowns "2v2 game CPU 2") |
 | 10-22 | -O3 on gen/ (`make GENOPT=-O3`) | Citra battle game 19.96 -> 19.94 ms, +9% code | no gain; more code for the 16 KB I-cache |
 | 10-22 | LTO (`make LTO=1`) | Citra battle game -1.5%, +2% code | decided 2026-10-22: off by default (small Citra-only gain, no hardware evidence; one test build, so it cannot be A/B tested on hardware). `make LTO=1` stays available. Run 28 ran an LTO build without problems |
 | 10-22 | FPSCR RunFast (`cr_runfast.txt`) | boot FPSCR is already 03000000 (flush-to-zero + default NaN) on Citra and on hardware (run 28) | nothing to gain: already on |
@@ -98,9 +106,11 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 ## Open (next)
 
 - **2v2 battle is game-CPU bound** (29.8 ms of a 32.8 ms frame, run 28). Profiled 2026-10-22 (unknowns
-  "2v2 game CPU"); after native sin/cos and dropped saves, Citra 2v2 game 52.9 -> 43.2 ms (-18%), not yet on
-  hardware. Left: call glue (19% of the FNPROF frame), the 0x8017b000-0x80185000 code family that only the 2v2
-  runs (~4 ms), 0x80060fa4.
+  "2v2 game CPU"); after native sin/cos and dropped saves, Citra 2v2 game 52.9 -> 43.2 ms (-18%), and after the
+  2026-10-23 work (unknowns "2v2 game CPU 2") 36.0 ms. Hardware run 29 (both together): 2v2 30.5 -> 39.6 fps,
+  game 29.7 -> 22.2 ms, GX thread 16.6 ms, so the game thread still decides the frame. Next: stack
+  words between address-taken locals (needs per-callee pointer extents); call glue (22% of the FNPROF frame, mostly
+  the C call itself); MTX native schedule (hardware only).
 - Hardware run of main@dad2161 (vertex packing + 2v2 CPU work): campaign/battle GPU ms with the "Vertex pack"
   button on/off, 2v2 game ms vs run 28 (29.8), "Native sin/cos" on/off.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
@@ -110,6 +120,8 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Run | Date | Build | Log (`logs/`) | Tested |
 |---|---|---|---|---|
+| 30 | 10-25 | branch 2v2-perf-2 @40381bd | cr_autotest_2026-10-25_hw-run30-t06-text-hang.log (+ hw-run30-shots/) | story event snr_t_06 hangs after a Rosalina screenshot pause: real-time audio pacing skipped 807 AX frames, no voice started afterwards, fade/text never continue. Same build, save and event run fine in Citra (per-retrace pacing). Not a 2v2-perf-2 change |
+| 29 | 10-23 | branch 2v2-perf-2 @40381bd | cr_autotest_2026-10-23_hw-run29-2v2-perf2.log | 2v2 battle 4.2: 39.6 fps (66%), game 22.2 ms, GX busy 16.6, gpu 2.6 (run 28: 30.5 fps, game 29.7, GX 18.6); campaign 8.3 58.5 fps, game 11.0 |
 | 28 | 10-22 | main@75ea35d LTO | cr_autotest_2026-10-22_hw-run28-merged-lto.log | VRAM textures, stereo 3D, FPSCR value, 2v2 battle |
 | 27 | 10-22 | main 8575bae | cr_autotest_2026-10-22_hw-run27-clean-main.log | campaign GPU clean build |
 | 26 | 10-22 | campaign-gpu | cr_autotest_2026-10-22_hw-run26-campaign-gpu-vsh-single.log | culling, vertex shader |

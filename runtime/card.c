@@ -10,7 +10,7 @@
 #include <sys/stat.h>
 #include "ppc.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 #define CARD_RESULT_READY 0
 #define CARD_RESULT_NOCARD (-3)
 #define CARD_RESULT_NOFILE (-4)

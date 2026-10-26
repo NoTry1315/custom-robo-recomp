@@ -42,14 +42,28 @@ void hw_write(u32 a, u32 v, int size);
  * skips re-hashing a list/array range whose pages were not written since it was last hashed. Stores
  * through r1/r11 (wr*_ram) are not marked; the cache hashes ranges near the stack. */
 #define WR_PAGE_SHIFT 10
-extern u32 ram_wr[(RAM_MASK + 1) >> WR_PAGE_SHIFT];
+extern u32 ram_wr[];   /* (RAM_MASK + 1) >> WR_PAGE_SHIFT entries, guard space around them (cpu.c) */
 extern u32 recomp_wr_epoch;
 #define WR_MARK(a) (ram_wr[((a) & RAM_MASK) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
 void recomp_mark_ram(u32 a, u32 n);   /* bulk writers */
 void recomp_gx_fifo_write(u32 v, int size); /* WGPIPE 0xCC008000 */
 /* hw_write for an address GCC knows: WGPIPE stores (GXPosition3f32 & co. inlined in game code, lis
  * 0xCC01 / -0x8000) call the FIFO directly, as hw_write would */
-#define HW_WRITE(a, v, n) ((__builtin_constant_p(a) && ((a) & ~7u) == 0xCC008000u) ? recomp_gx_fifo_write(v, n) : hw_write(a, v, n))
+#define HW_WRITE(a, v, n) ((__builtin_constant_p(a) && ((a) & ~7u) == 0xCC008000u) ? gx_fifo_put(v, n) : hw_write(a, v, n))
+/* WGPIPE store inline: the bytes go straight into gx.c's FIFO (big-endian) while the primitive GXBegin
+ * started is still incomplete after them (recomp_fifo_lim, gx.c fifo_lim); the store that completes it
+ * (or any other) goes through recomp_gx_fifo_write, which flushes */
+extern unsigned char recomp_fifo[];
+extern u32 recomp_fifo_n, recomp_fifo_lim;
+static inline __attribute__((always_inline)) void gx_fifo_put(u32 v, int n) {
+    u32 f = recomp_fifo_n;
+    if (__builtin_expect(f + n < recomp_fifo_lim, 1)) {
+        if (n == 4) { u32 b = __builtin_bswap32(v); memcpy(recomp_fifo + f, &b, 4); }
+        else if (n == 2) { u16 b = __builtin_bswap16((u16)v); memcpy(recomp_fifo + f, &b, 2); }
+        else recomp_fifo[f] = (u8)v;
+        recomp_fifo_n = f + n;
+    } else recomp_gx_fifo_write(v, n);
+}
 
 /* forced inline: in gen/'s large functions GCC stopped inlining these (37.5k out-of-line calls) */
 #define RI static inline __attribute__((always_inline))
@@ -85,6 +99,23 @@ RI void wr8_sp (u32 b, s32 k, u8 v){ *sp_at(b, k) = v; }
 RI void wr16_sp(u32 b, s32 k, u16 v){ v = __builtin_bswap16(v); memcpy(sp_at(b, k), &v, 2); }
 RI void wr32_sp(u32 b, s32 k, u32 v){ v = __builtin_bswap32(v); memcpy(sp_at(b, k), &v, 4); }
 RI void wr64_sp(u32 b, s32 k, u64 v){ wr32_sp(b, k, (u32)(v >> 32)); wr32_sp(b, k + 4, (u32)v); }
+
+/* gen/'s rA + k accesses for other base registers (recomp.py base_access): the hardware check and the
+ * mask work on the base b, k is the load/store offset, so GCC checks and masks a pointer once for all
+ * the fields read through it. Same result as rd32(b + k) unless b + k crosses into or out of the
+ * hardware range or b & RAM_MASK is within 32 KB of either end of the mirror: ram[] and ram_wr[] have
+ * guard space on both sides (cpu.c), so such an access lands there instead of wrapping. */
+#define RAM_GUARD 0x8000u
+RI u8 *b_at(u32 b, s32 k){ return ram + (b & RAM_MASK) + k; }
+#define WR_MARK_B(b, k) (ram_wr[(s32)(((b) & RAM_MASK) + (k)) >> WR_PAGE_SHIFT] = recomp_wr_epoch)
+RI u8  rd8_b (u32 b, s32 k){ if (__builtin_expect(IS_HW(b),0)) return hw_read(b + k,1); return *b_at(b, k); }
+RI u16 rd16_b(u32 b, s32 k){ if (__builtin_expect(IS_HW(b),0)) return hw_read(b + k,2); u16 v; memcpy(&v, b_at(b, k), 2); return __builtin_bswap16(v); }
+RI u32 rd32_b(u32 b, s32 k){ if (__builtin_expect(IS_HW(b),0)) return hw_read(b + k,4); u32 v; memcpy(&v, b_at(b, k), 4); return __builtin_bswap32(v); }
+RI u64 rd64_b(u32 b, s32 k){ return ((u64)rd32_b(b, k) << 32) | rd32_b(b, k + 4); }
+RI void wr8_b (u32 b, s32 k, u8 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,1); return; } WR_MARK_B(b, k); *b_at(b, k) = v; }
+RI void wr16_b(u32 b, s32 k, u16 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,2); return; } WR_MARK_B(b, k); v = __builtin_bswap16(v); memcpy(b_at(b, k), &v, 2); }
+RI void wr32_b(u32 b, s32 k, u32 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,4); return; } WR_MARK_B(b, k); v = __builtin_bswap32(v); memcpy(b_at(b, k), &v, 4); }
+RI void wr64_b(u32 b, s32 k, u64 v){ wr32_b(b, k, (u32)(v >> 32)); wr32_b(b, k + 4, (u32)v); }
 
 RI float  u2f(u32 v){ float f; memcpy(&f, &v, 4); return f; }
 RI u32    f2u(float f){ u32 v; memcpy(&v, &f, 4); return v; }
@@ -268,7 +299,13 @@ RI void psq_st0(PS v, u32 a, int w){ wr32(a, f2u((float)v.ps0)); if (!w) wr32(a 
 RI void psq_st0_ram(PS v, u32 a, int w){ wr32_ram(a, f2u((float)v.ps0)); if (!w) wr32_ram(a + 4, f2u((float)v.ps1)); }
 RI PS psq_ld0_sp(u32 b, s32 k, int w){ PS r; r.ps0 = u2f(rd32_sp(b, k)); r.ps1 = w ? 1.0 : u2f(rd32_sp(b, k + 4)); return r; }
 RI void psq_st0_sp(PS v, u32 b, s32 k, int w){ wr32_sp(b, k, f2u((float)v.ps0)); if (!w) wr32_sp(b, k + 4, f2u((float)v.ps1)); }
+/* psq_l of a stack word pair held in C locals (recomp.py promote_stack_slots): a, b = the words' bits */
+RI PS psq_ld0_v(u32 a, u32 b, int w){ PS r; r.ps0 = u2f(a); r.ps1 = w ? 1.0 : u2f(b); return r; }
+RI PS psq_ld0_b(u32 b, s32 k, int w){ PS r; r.ps0 = u2f(rd32_b(b, k)); r.ps1 = w ? 1.0 : u2f(rd32_b(b, k + 4)); return r; }
+RI void psq_st0_b(PS v, u32 b, s32 k, int w){ wr32_b(b, k, f2u((float)v.ps0)); if (!w) wr32_b(b, k + 4, f2u((float)v.ps1)); }
 #else
+#define psq_ld0_b(b, k, w) psq_ld((b) + (k), w, 0)
+#define psq_st0_b(v, b, k, w) psq_st(v, (b) + (k), w, 0)
 #define psq_ld0(a, w) psq_ld(a, w, 0)
 #define psq_ld0_ram(a, w) psq_ld(a, w, 0)
 #define psq_st0(v, a, w) psq_st(v, a, w, 0)
@@ -306,6 +343,21 @@ void recomp_sdk_call(const char *name); /* logs an SDK call that runtime/ does n
 void recomp_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 u32 recomp_fpscr(void);   /* main.c: this thread's VFP FPSCR */
 void recomp_sdk_log(const char *name);  /* same report for hand-written SDK functions */
+/* LOG() in the runtime/ files: recomp_sdk_log inline, with the name's count slot looked up once per function
+ * (static); the first RECOMP_SDK_PER_NAME calls of a name write the log line (log.c) */
+#define RECOMP_SDK_PER_NAME 20
+extern const char *volatile recomp_sdk_ring[32];
+extern volatile u32 recomp_sdk_ring_pos;
+u32 *recomp_sdk_count(const char *name);
+void recomp_sdk_log_line(const char *name);
+static inline __attribute__((always_inline)) void recomp_sdk_log_at(const char *name, u32 **slot) {
+    FNPROF((u32)(uintptr_t)name);   /* make FNPROF=1: SDK time under the SDK name */
+    u32 *n = *slot;
+    if (__builtin_expect(!n, 0)) *slot = n = recomp_sdk_count(name);
+    recomp_sdk_ring[recomp_sdk_ring_pos++ & 31] = name;
+    if (__builtin_expect(++*n <= RECOMP_SDK_PER_NAME, 0)) recomp_sdk_log_line(name);
+}
+#define RECOMP_LOG() do { static u32 *lc_; recomp_sdk_log_at(__func__ + 4, &lc_); } while (0)
 void recomp_done(const char *why) __attribute__((noreturn)); /* ends the guest run */
 int  recomp_load_dol(void);             /* main.dol + boot info into ram; 0 on success */
 void recomp_call_guest(u32 fn, u32 arg); /* interrupt-style call: guest state saved around it */

@@ -18,7 +18,7 @@
 #include "ppc.h"
 #include "vshader_shbin.h"
 
-#define LOG() recomp_sdk_log(__func__ + 4)
+#define LOG() RECOMP_LOG()
 /* unemulated GX features: the first hit is logged with its frame, and every
  * site's hit count goes into the "# gx gaps" line with the frame stats */
 #define GAP_SITES 64
@@ -1443,7 +1443,15 @@ static int attr_size_in(const u8 *desc, VtxFmt (*vat)[A_MAX], int fmt, int a) {
 static int attr_size(int fmt, int a) { return attr_size_in(gx.desc, gx.vat, fmt, a); }
 static int vtx_size(int fmt) { int n = 0; for (int a = 0; a <= 20; a++) n += attr_size(fmt, a); return n; }
 /* game thread: the same from its copy of the vertex format (FIFO assembly) */
-static int vtx_size_g(int fmt) { int n = 0; for (int a = 0; a <= 20; a++) n += attr_size_in(gs.desc, gs.vat, fmt, a); return n; }
+static u8 vsz_g_ok;      /* bit fmt: vsz_g[fmt] is current (cleared when gs.desc / gs.vat change) */
+static u16 vsz_g[8];
+static int vtx_size_g(int fmt) {
+    if (!(vsz_g_ok >> fmt & 1)) {
+        int n = 0; for (int a = 0; a <= 20; a++) n += attr_size_in(gs.desc, gs.vat, fmt, a);
+        vsz_g[fmt] = n; vsz_g_ok |= 1 << fmt;
+    }
+    return vsz_g[fmt];
+}
 
 static void read_color(const u8 *p, int type, u8 *c) {
     switch (type) {
@@ -2817,9 +2825,14 @@ void recomp_gx_start(void) {
  * command, then the game writes the vertices to 0xCC008000 itself). Each run of
  * complete commands becomes one record (x_fifo: r1, byte count, bytes), which the GX
  * thread parses and draws (parse_cmds). */
-static u8 fifo[0x40000];
-static u32 fifo_n;
+u8 recomp_fifo[0x40000];
+u32 recomp_fifo_n, recomp_fifo_lim;   /* ppc.h gx_fifo_put: the inline WGPIPE path */
+#define fifo recomp_fifo
+#define fifo_n recomp_fifo_n
 static u32 fifo_need;   /* bytes of the primitive GXBegin started (header + n * vtx_size), 0 = unknown */
+/* gx_fifo_put appends inline while fifo_n + size < recomp_fifo_lim: the primitive GXBegin started is
+ * still incomplete after the write (no flush due) and the buffer has room; 0 = every write comes here */
+static void fifo_lim(void) { recomp_fifo_lim = fifo_need < sizeof fifo ? fifo_need : sizeof fifo; }
 
 /* size of the command at b (avail bytes there; fewer than the result = not complete yet),
  * 0 = unknown opcode. vsize: the vertex size from the calling thread's vertex format */
@@ -2914,6 +2927,7 @@ static void fifo_flush(void) {
     memmove(fifo, fifo + pos, fifo_n - pos);
     fifo_n -= pos;
     fifo_need = 0;
+    fifo_lim();
 }
 
 static void fifo_put(u32 v, int size) {
@@ -2930,6 +2944,7 @@ void recomp_gx_fifo_write(u32 v, int size) {
         u32 n = fifo[1] << 8 | fifo[2];
         if (fifo_n >= 3 + n * vtx_size_g(fifo[0] & 7)) fifo_flush();
     } else if (fifo_n && fifo[0] < 0x80) fifo_flush();
+    fifo_lim();
 }
 
 /* ---------------------------------------------------------------- draw-done
@@ -2959,15 +2974,17 @@ void sdk_GXBegin(void) {
     int vs = vtx_size_g(R[4] & 7);
     if ((R[5] & 0xffff) == 0 || vs == 0) fifo_n = 0;
     else fifo_need = 3 + (R[5] & 0xffff) * vs;
+    fifo_lim();
 }
 static void x_GXSetVtxDesc(const u32 *r) { if (r[3] < A_MAX) gx.desc[r[3]] = r[4] & 3; else ONCE("GXSetVtxDesc attr %lu\n", (unsigned long)r[3]); }
-void sdk_GXSetVtxDesc(void) { LOG(); if (R[3] < A_MAX) gs.desc[R[3]] = R[4] & 3; gq_regs(x_GXSetVtxDesc, 2); }
+void sdk_GXSetVtxDesc(void) { LOG(); if (R[3] < A_MAX) gs.desc[R[3]] = R[4] & 3; vsz_g_ok = 0; gq_regs(x_GXSetVtxDesc, 2); }
 static void x_GXClearVtxDesc(const u32 *r) { (void)r; memset(gx.desc, 0, sizeof gx.desc); gx.desc[A_POS] = 1; }
-void sdk_GXClearVtxDesc(void) { LOG(); memset(gs.desc, 0, sizeof gs.desc); gs.desc[A_POS] = 1; gq_regs(x_GXClearVtxDesc, 0); }
+void sdk_GXClearVtxDesc(void) { LOG(); memset(gs.desc, 0, sizeof gs.desc); gs.desc[A_POS] = 1; vsz_g_ok = 0; gq_regs(x_GXClearVtxDesc, 0); }
 static void x_GXSetVtxAttrFmt(const u32 *r) { if ((r[3] & 7) == r[3] && r[4] < A_MAX) gx.vat[r[3]][r[4]] = (VtxFmt){(u8)r[5], (u8)r[6], (u8)r[7]}; }
 void sdk_GXSetVtxAttrFmt(void) {
     LOG();
     if ((R[3] & 7) == R[3] && R[4] < A_MAX) gs.vat[R[3]][R[4]] = (VtxFmt){(u8)R[5], (u8)R[6], (u8)R[7]};
+    vsz_g_ok = 0;
     gq_regs(x_GXSetVtxAttrFmt, 5);
 }
 static void x_GXSetArray(const u32 *r) { if (r[3] >= A_POS && r[3] <= 20) { gx.array_base[r[3] - A_POS] = r[4]; gx.array_stride[r[3] - A_POS] = r[5] & 0xff; } }
