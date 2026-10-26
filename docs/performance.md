@@ -107,8 +107,8 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 - **2v2 battle is game-CPU bound** (29.8 ms of a 32.8 ms frame, run 28). Profiled 2026-10-22 (unknowns
   "2v2 game CPU"); after native sin/cos and dropped saves, Citra 2v2 game 52.9 -> 43.2 ms (-18%), and after the
-  2026-10-23 work (unknowns "2v2 game CPU 2") 36.0 ms; none of it on hardware yet. Next: a hardware run (2v2
-  game ms vs 29.7, and the GX thread, busy 18.6 ms in run 28, which the game thread is now close to); stack
+  2026-10-23 work (unknowns "2v2 game CPU 2") 36.0 ms. Hardware run 29 (both together): 2v2 30.5 -> 39.6 fps,
+  game 29.7 -> 22.2 ms, GX thread 16.6 ms, so the game thread still decides the frame. Next: stack
   words between address-taken locals (needs per-callee pointer extents); call glue (22% of the FNPROF frame, mostly
   the C call itself); MTX native schedule (hardware only).
 - Hardware run of main@dad2161 (vertex packing + 2v2 CPU work): campaign/battle GPU ms with the "Vertex pack"
@@ -120,6 +120,8 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Run | Date | Build | Log (`logs/`) | Tested |
 |---|---|---|---|---|
+| 30 | 10-25 | branch 2v2-perf-2 @40381bd | cr_autotest_2026-10-25_hw-run30-t06-text-hang.log (+ hw-run30-shots/) | story event snr_t_06 hangs after a Rosalina screenshot pause: real-time audio pacing skipped 807 AX frames, no voice started afterwards, fade/text never continue. Same build, save and event run fine in Citra (per-retrace pacing). Not a 2v2-perf-2 change |
+| 29 | 10-23 | branch 2v2-perf-2 @40381bd | cr_autotest_2026-10-23_hw-run29-2v2-perf2.log | 2v2 battle 4.2: 39.6 fps (66%), game 22.2 ms, GX busy 16.6, gpu 2.6 (run 28: 30.5 fps, game 29.7, GX 18.6); campaign 8.3 58.5 fps, game 11.0 |
 | 28 | 10-22 | main@75ea35d LTO | cr_autotest_2026-10-22_hw-run28-merged-lto.log | VRAM textures, stereo 3D, FPSCR value, 2v2 battle |
 | 27 | 10-22 | main 8575bae | cr_autotest_2026-10-22_hw-run27-clean-main.log | campaign GPU clean build |
 | 26 | 10-22 | campaign-gpu | cr_autotest_2026-10-22_hw-run26-campaign-gpu-vsh-single.log | culling, vertex shader |
