@@ -15,7 +15,8 @@ GPUF = [('cull', re.compile(r'cull (\w+)')), ('vsh', re.compile(r'vsh (\w+)')), 
         ('t16', re.compile(r'tex 16-bit (\w+)')), ('vram', re.compile(r'vram tex (\w+)')),
         ('vpack', re.compile(r'vtx pack (\w+)')),
         ('libm', re.compile(r'libm (\w+)')), ('lazyd', re.compile(r'lazy desc (\w+)')),
-        ('ptrx', re.compile(r'ptr extent (\w+)')), ('inl', re.compile(r'inline sites (\w+)'))]   # A/B flags; absent in older logs
+        ('ptrx', re.compile(r'ptr extent (\w+)')), ('inl', re.compile(r'inline sites (\w+)')),
+        ('perf', re.compile(r'perfctr (\w+)'))]   # A/B flags; absent in older logs
 MENU = re.compile(r'^# menu r(\d+): ')
 SCENE = re.compile(r'^# retrace (\d+) scene (\w+) sub (\w+)')
 KEYS = ['frame', 'worst', 'game', 'gxwait', 'busy', 'vtx', 'tex', 'state', 'sync', 'audio', 'gpu', 'span']

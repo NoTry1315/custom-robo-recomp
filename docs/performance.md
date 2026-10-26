@@ -25,7 +25,17 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
   scene and pad line and the framebuffer dumps identical. Citra's game ms follows the amount
   of ARM code run, so it measures translator and CPU-side changes well. It does **not** model
   ARM11 caches, FCRAM vs VRAM bandwidth, the PICA's real speed or VFP traps, so GPU and
-  memory changes can only be judged on hardware.
+  memory changes can only be judged on hardware. Its *shares* also mislead: FNPROF put the 2v2 call
+  glue at 21.8% of the frame, while the instruction count of that glue is ~5% of the hardware game
+  thread (unknowns "Call-boundary cost on the ARM side"). Use Citra to rank and check identity, not
+  to decide where hardware time goes.
+- **Hardware counters** (`sdmc:/cr_perfctr.txt` or the button "Perf counters", off by default): a
+  `# perf` line every 60 retraces with the ARM11 core 0 counters per frame (cycles, instructions,
+  I-cache misses, D-cache reads and misses, stall cycles, branch mispredicts; `runtime/perfctr.c`).
+  `tools/perf_avg.py <log> [--from N]` averages them per scene next to the `# time` game ms. Citra
+  only stubs the SVC. First hardware run: run 33 (costs ~10 us per frame).
+- **Static call cost** (`tools/callcost.py`): the call-boundary instructions of every translated
+  function in an ELF (objdump -l), weighted by a `RECOMP_SITEPROF=1` replay's call counts.
 
   | Replay | What it plays | Heavy part |
   |---|---|---|
@@ -120,6 +130,18 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
   gave -1.5% game time on hardware, and each item was 0.2-1.1% in Citra. No more micro-optimisation in this
   area (particle family, call glue, translator peepholes for the 2v2). The game thread needs ~6 ms less for
   60 fps, which only a structural change could give. Do not reopen these items without a new idea of that size.
+- **Where the 2v2 game thread's hardware time goes** (2026-10-26, hardware run 33 with "Perf counters"; unknowns
+  "Hardware performance counters"): core 0 is busy 19.1M cycles (23.8 ms) per 2v2 frame, IPC 0.35. **27.6% of the
+  cycles (~6.6 ms) wait for instructions** (243k I-cache misses per frame, 36.6 per 1000 instructions), 26.6%
+  (~6.3 ms) wait on data dependencies (load-use, VFP latency; D-cache read misses only 3%), and the rest issues 6.65M
+  instructions. The call glue is ~0.73M of them, ~5% of the time (`tools/callcost.py`, unknowns "Call-boundary cost
+  on the ARM side"; Citra FNPROF said 21.8%): a calling-convention redesign is capped near 1 ms.
+  Next, in order: (1) code layout and size for the I-cache: hot translated functions placed together by call
+  counts, cold paths (hardware-address helpers, asserts, logs) out of the hot lines, fewer instructions per guest
+  memory access; (2) the data-dependency stalls: re-test the float-locals branch (3f77d16) on hardware by its
+  stall-data share; (3) per-function hardware time (PC sampling through Rosalina's gdb stub) to aim both. Layout is
+  a build property, so its A/B needs two builds run on the same hardware replay, one after the other (an
+  exception to the one-build rule, user decision). GX-thread work stays second: 15.6 ms, under the 16.7 ms budget.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
 
@@ -127,6 +149,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 
 | Run | Date | Build | Log (`logs/`) | Tested |
 |---|---|---|---|---|
+| 33 | 10-26 | branch perf-counters @1838462 | cr_autotest_2026-10-26_hw-run33-replay-2v2-perfctr.log | the 2v2 hardware replay (as 32a, all toggles on) with cr_perfctr: route identical to 32a, game 21.9 ms / frame 24.7 (32a by the same tool: 21.9 / 24.6). Core 0 per 2v2 frame: 19.1M busy cycles, 6.65M instructions (IPC 0.35), stall for instructions 27.6% (243k I-cache misses), stall for data 26.6%, D-cache read misses 3%. Campaign 8.3: IPC 0.38, I-stall 20.8%, data stall 27.8% |
 | 32b | 10-26 | branch 2v2-perf-3 @c4781f5 | cr_autotest_2026-10-26_hw-run32b-replay-2v2-all-off.log | hardware replay of the Citra 2v2 test (data/saves/2026-10-22_pre-2v2 + tools/citra/pad_2v2.txt / pad_2v2.log, run length 8600, cr_dvdasync_off), with cr_lazydesc_off + cr_ptrext_off + cr_inline_off: route identical to Citra and to 32a (0 scene / pad line differences, no late DVD read). 2v2 4.2 (from r4300, 72 windows): 39.7 fps (66%), game 22.5 ms, GX busy 15.8, worst 53.9 |
 | 32a | 10-26 | branch 2v2-perf-3 @c4781f5 | cr_autotest_2026-10-26_hw-run32a-replay-2v2-all-on.log | same replay, all three toggles on: 40.3 fps (67%), game 22.2 ms, GX busy 15.6, worst 53.1. Paired by window vs 32b: game -0.34 ms (sd 0.14, faster in 71 of 72 windows) = -1.5%, matching Citra's -1.1%. So run 31's -7% was mostly play variance. The first attempt (32a0, @e51105e, log cr_autotest_2026-10-26_hw-run32a0-replay-2v2-diverged-dvd-late.log) left Citra's route at r3720: the real circle pad rests at -5 -3, which counted as a moved live stick and overrode the replay's sticks; fixed in pad.c (c4781f5) |
 | 31 | 10-26 | branch 2v2-perf-3 @e51105e | cr_autotest_2026-10-26_hw-run31-2v2-perf-3.log | all three toggles on the whole run (lazyd, ptrx, inl; no on/off A/B). 2v2 battle 4.2: 41.8 fps (70%), game 20.6 ms, GX busy 16.3, worst 40.3 (run 29: 39.6 fps, game 22.2, GX 16.6, worst 50.1); hand-played, and Citra predicted only -1.1%, so most of the -7% is likely play variance. Title, menus, campaign 8.3 (58.8 fps) and 1v1 as run 29. No crash. Scene c average 31.9 fps comes from one 9.5 s stall (r11086 gx sync 5981 ms, r11087 game 3569 ms) right after a p2 button press, followed by a HOME exit (APT); without it 59.8 fps |

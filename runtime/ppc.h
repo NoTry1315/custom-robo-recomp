@@ -423,6 +423,11 @@ extern int recomp_lazydesc_off;         /* gx.c: a GX-queue record per vertex de
 extern int recomp_ptr_extent;           /* main.c: gen/ f_X with a second body runs fp_X (pointer-extent stack promotion; sdmc:/cr_ptrext_off.txt = 0) */
 extern int recomp_inline_sites;         /* main.c: the INLINE_SITES bl sites run their inline copy (sdmc:/cr_inline_off.txt = 0) */
 extern u32 recomp_codegen_flips;        /* main.c: toggles of the two above (# time split: "mixed") */
+extern int recomp_perfctr_on;           /* perfctr.c: ARM11 counters per frame, "# perf" lines (sdmc:/cr_perfctr.txt = 1, button "Perf counters") */
+extern u32 recomp_perfctr_flips;        /* perfctr.c: toggles so far (# time split: "mixed") */
+void recomp_perfctr_init(void);         /* main.c at boot: flag file, button, enable */
+void recomp_perfctr_frame(u32 retrace); /* recomp_prof_frame (game thread): read, rotate, log every 60 retraces */
+void recomp_perfctr_exit(void);         /* main.c at exit: release the counters */
 void recomp_memdump_request(void);    /* bottom-screen button "Dump RAM": snapshot at the next retrace (memdump.c) */
 void recomp_memdump_retrace(void);     /* recomp_gx_retrace after the sync: button / sdmc:/cr_memdump.txt dumps */
 extern u32 recomp_memdump_n;           /* dumps written */

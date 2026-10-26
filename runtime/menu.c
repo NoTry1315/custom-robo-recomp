@@ -45,6 +45,7 @@ static struct btn {
     { "Ptr extent",    "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_ptr_extent, cr_ptrext_off (main.c binds it) */
     { "Inline sites",  "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_inline_sites, cr_inline_off (main.c binds it) */
     { "Dump RAM",      "",   0,  recomp_memdump_request, 0, 0, 0, 0, -2, &recomp_memdump_n },   /* memdump.c: guest RAM + ARAM to SD */
+    { "Perf counters", "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_perfctr_on, cr_perfctr (perfctr.c binds it) */
 };
 #define NBTN (int)(sizeof btn / sizeof btn[0])
 

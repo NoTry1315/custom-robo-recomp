@@ -2289,6 +2289,91 @@ campaign and boot against main, with all toggles on and with all off. Not yet on
 Pitfall met: `make FNPROF=1` and then a plain `make` kept the FNPROF runtime objects (make does not track
 CFLAGS). The summary then listed native call counts and game ms rose by about 1 ms. `make clean` first.
 
+## Call-boundary cost on the ARM side (2026-10-26, measurement only)
+
+Task: how much of the 2v2 game thread is the cost of crossing translated function boundaries, measured in the ARM
+code GCC emitted rather than from Citra's FNPROF share (21.8%, "2v2 game CPU 2"). `tools/callcost.py` (workflow in
+its docstring): main@b9642be generated plain (`RECOMP_PTR_EXTENT=0 RECOMP_INLINE_SITES=0`), objdump -d -l of the ELF,
+every instruction of every f_ put in a class by the gen/ line it comes from (each call site, entry reload and return
+is one gen/ line); a `RECOMP_SITEPROF=1` generation of the same code (same line numbers) replayed in Citra
+(`replay.ps1 -Name 2v2`, log logs/perf/2026-10-26-siteprof-2v2.log, not committed) gives the counts, r4500-8400.
+
+**Static** (1.52M ARM instructions, 2742 functions): body 74.2%, call-site lines 11.9% (~15 instructions per call
+site), cstack 10.1% (loads/stores through sp outside those lines: guest registers GCC keeps on the C stack), return
+lines 1.2%, entry reload 1.0%, bl 0.8%, push/pop/sp adjust 0.7%. 1542 functions push 9 GPRs; 83 vpush d8-d15.
+
+**Per 2v2 frame** (17,420 translated entries, 31,612 calls; the same totals as the 2026-10-23 SITEPROF run):
+
+| class | ARM instructions | of which |
+|---|---|---|
+| call-site spill/reload | 361,755 | GPR stores 174k, GPR loads 101k, FPR stores 45k, FPR loads 19k, other 21k |
+| entry reload | 141,564 | GPR loads 83k, FPR loads 24k, stores to the C stack 28k (registers that do not fit) |
+| return stores | 94,512 | GPR stores 45k, FPR stores 33k, loads 15k |
+| push/pop/sp adjust | 77,438 | 249k GPRs and 38k D registers moved |
+| bl + return branch | ~49,000 | |
+| **total** | **~725,000** | |
+
+Estimate, not measured: at ~1 cycle per single load/store/ALU instruction, ~2 registers per cycle for push/pop,
+a few cycles per call/return, and L1 hits (the `cpu` struct and the stack are hot), that is ~0.9M cycles = ~1.1 ms
+at 804 MHz, about 5% of the 22.2 ms hardware game thread (run 32a). Citra's FNPROF charges memory accesses more
+than ALU work, and its glue bucket also catches the callee prologue, so its 21.8% overstates the hardware share
+about 4x. Consequences: (1) prologue/epilogue is not "most of the glue" (as "2v2 game CPU 2" guessed): ~10 cycles
+per call; (2) a calling-convention redesign (C arguments for r3-r10/f1-f8, fewer spills) is capped near 1 ms of the
+~5.5 ms the 2v2 needs; (3) ~95% of the hardware game thread is function bodies (guest memory accesses: mask, swap,
+hardware-range check; C-stack traffic; SDK/runtime code; waits), which no tool here splits yet.
+Leaders by call-boundary instructions per frame: 0x801829d0 ps_disp_quad 34.8k (186 entries), 0x80195ee4 30.7k,
+0x8019c340 21.8k, 0x8019fc14 21.6k, 0x80195c50 21.5k, 0x8017b4a4 ps_interpret 20.2k, 0x8006207c 18.5k.
+Not counted: cstack and body instructions by execution (site counts do not count loop iterations).
+
+## Hardware performance counters (2026-10-26, hardware run 33)
+
+`runtime/perfctr.c`: sdmc:/cr_perfctr.txt (or the bottom-screen button "Perf counters", live) enables the ARM11's
+CP15 counters through svcControlPerformanceCounter. A core has CCNT plus two event counters, so four event pairs
+rotate one per frame (instructions + I-cache misses, D-cache read + write misses, stall for instruction fetch + stall
+for data hazard, D-cache reads + branch mispredicts); each is averaged over its frames. Read and reset at every
+VIWaitForRetrace (game thread, core 0); frames with an overflow flag are dropped. `# perf r<n>` every 60 retraces,
+per frame: cycles, "ccnt MHz" (cycles per wall-clock microsecond: ~804 means CCNT counts while the core sleeps in a
+wait, lower means it stops and cycles are busy time), IPC, misses per 1000 instructions, stall cycles as % of
+cycles, and the SVC cost. The boot line `# perfctr:` has the SVC results.
+
+Assumptions to check on the first hardware run: the counters are per core, and the values are core 0's for the
+whole frame, so they include whatever else runs on core 0 (kernel, libctru's service threads) besides the game
+thread; whether SET_EVENT / GET_VALUE act on the calling core (the boot line reads the events back); that a 3dsx
+under Luma may call the SVC at all (else the boot line says "not available" and the button stays off).
+Citra stubs the SVC (returns success, junk outputs, overflow flags 4): every frame is dropped and the log says
+"no frame counted". Citra battle replay with the flag on and off: 2690/2690 key lines identical, fb dumps
+r2100/2700/3300 identical, game 14.0 ms both.
+
+**Hardware run 33** (2026-10-26, @1838462, the Citra 2v2 replay on the 3DS with cr_perfctr + cr_dvdasync_off, all
+three 2v2-perf-3 toggles on; log logs/cr_autotest_2026-10-26_hw-run33-replay-2v2-perfctr.log). Boot line: enable 0,
+cycle event 0, events read back 8 / 0 / ff (= INST_EXECUTED, INST_CACHE_MISS, CYCLE_COUNT): the 3dsx may use the SVC
+and SET_EVENT acts on the calling core. 0 dropped frames. Route identical to run 32a (0 differing scene / pad lines),
+and `time_avg.py` gives the same 2v2 game 21.9 ms, frame 24.7 / 24.6 ms, as run 32a: the counters cost ~10 us per
+frame ("svc us"). CCNT stops while the core sleeps: "ccnt MHz" is 41-75 on the title and menus (core 0 mostly idle)
+and 774 in the 2v2, so cycles = busy time.
+
+`tools/perf_avg.py`, per frame (all on core 0, which also runs the audio mix, ~2.2 ms of the frame):
+
+| scene | windows | wall ms | Mcycles (busy ms) | Minst | IPC | I-miss /k inst | stall inst | stall data | D read miss /k | D write miss /k | br mispredict /k |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2v2 4.2 | 74 | 24.66 | 19.14 (23.8) | 6.65 | 0.35 | 36.6 | 27.6% | 26.6% | 8.6 | 3.1 | 4.4 |
+| campaign 8.3 | 37 | 17.94 | 6.14 (7.6) | 2.35 | 0.38 | 27.1 | 20.8% | 27.8% | 8.1 | 3.5 | 3.7 |
+| menus 2.1 | 5 | 16.83 | 1.25 | 0.53 | 0.42 | 20.1 | 17.6% | 29.6% | 8.5 | 4.5 | 3.0 |
+
+2v2 per frame: 243k I-cache misses, 1.87M D-cache reads with 57k read misses (3.0%), 21k write misses, 29k
+mispredicts. **Where the 2v2's 19.1M busy cycles go:** ~5.3M (27.6%, ~6.6 ms) the core waits for instructions
+(~22 cycles per I-cache miss, so L2 hits mostly), ~5.1M (26.6%, ~6.3 ms) it waits on a data dependency (load-use,
+VFP latency, D-cache misses), and ~8.8M it issues the 6.65M instructions. The I-cache miss rate grows with the
+scene's code footprint (menus 20, campaign 27, 2v2 37, battle intro 4.0/4.1 53 per 1000 instructions).
+Consequences: (1) the 2v2's instruction-fetch stalls alone (~6.6 ms) are about the ~5.5 ms the frame is over
+60 fps: code layout and size (hot functions together, cold paths out of the hot lines, fewer instructions per
+guest memory access) is the largest lever measured so far; (2) data-dependency stalls are as large, and Citra
+cannot see them (it models no VFP latency): the unmerged float-locals branch (3f77d16, claude/float-locals-d57296:
+single-precision FPR halves as float locals, vcvt 17.5k -> 13.7k static, Citra -0.6%) should be judged on hardware
+by its stall-data share, not by Citra; (3) the call glue's ~0.73M instructions are 11% of the instructions but
+simple ones (unknowns "Call-boundary cost on the ARM side"), consistent with ~5% of the time.
+Not measured: which functions take the misses and stalls (counts are per core and per frame).
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
