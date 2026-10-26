@@ -120,7 +120,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Run | Date | Build | Log (`logs/`) | Tested |
 |---|---|---|---|---|
-| 30 | 10-25 | branch 2v2-perf-2 @40381bd | cr_autotest_2026-10-25_hw-run30-t06-text-hang.log (+ hw-run30-shots/) | story event snr_t_06 hangs after a Rosalina screenshot pause: real-time audio pacing skipped 807 AX frames, no voice started afterwards, fade/text never continue. Same build, save and event run fine in Citra (per-retrace pacing). Not a 2v2-perf-2 change |
+| 30 | 10-25 | branch 2v2-perf-2 @40381bd | cr_autotest_2026-10-25_hw-run30-t06-text-hang.log (+ hw-run30-shots/) | story event snr_t_06 hangs ("Awex!" box without text, A/B do nothing). A Rosalina pause at r14951 made real-time audio pacing skip 807 AX frames, but that is not the cause: Citra replays with an injected 4.3 s stall (cr_ax_stall.txt, real-time pacing) play through, and the screenshot taken during the pause already shows the previous box broken (unknowns "Run 30 text hang"). Same build, save and event run fine in Citra. Not a 2v2-perf-2 change; cause open |
 | 29 | 10-23 | branch 2v2-perf-2 @40381bd | cr_autotest_2026-10-23_hw-run29-2v2-perf2.log | 2v2 battle 4.2: 39.6 fps (66%), game 22.2 ms, GX busy 16.6, gpu 2.6 (run 28: 30.5 fps, game 29.7, GX 18.6); campaign 8.3 58.5 fps, game 11.0 |
 | 28 | 10-22 | main@75ea35d LTO | cr_autotest_2026-10-22_hw-run28-merged-lto.log | VRAM textures, stereo 3D, FPSCR value, 2v2 battle |
 | 27 | 10-22 | main 8575bae | cr_autotest_2026-10-22_hw-run27-clean-main.log | campaign GPU clean build |
