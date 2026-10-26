@@ -114,9 +114,13 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 - **2v2 battle is game-CPU bound** (29.8 ms of a 32.8 ms frame, run 28). Profiled 2026-10-22 (unknowns
   "2v2 game CPU"); after native sin/cos and dropped saves, Citra 2v2 game 52.9 -> 43.2 ms (-18%), and after the
   2026-10-23 work (unknowns "2v2 game CPU 2") 36.0 ms. Hardware run 29 (both together): 2v2 30.5 -> 39.6 fps,
-  game 29.7 -> 22.2 ms, GX thread 16.6 ms, so the game thread still decides the frame. Next: stack
-  words between address-taken locals (needs per-callee pointer extents); call glue (22% of the FNPROF frame, mostly
-  the C call itself); MTX native schedule (hardware only).
+  game 29.7 -> 22.2 ms, GX thread 16.6 ms, so the game thread still decides the frame.
+  **Closed for small fixes (2026-10-26, user decision):** the 2v2-perf-3 round (particle probe plus five
+  experiments: pointer extents, lazy vertex descriptor, sin/cos memo, particle inlining, particle quad merge) gave
+  -1.5% game time on hardware (runs 32a/32b: 22.5 -> 22.2 ms, 39.7 -> 40.3 fps), and each item was 0.2-1.1% in
+  Citra. Diminishing returns: no more micro-optimisation in this area (particle family, call glue, translator
+  peepholes for the 2v2). The game thread needs ~6 ms less for 60 fps, which only a structural change could
+  give. Do not reopen these items without a new idea of that size.
 - **2v2 particle family profiled** (2026-10-25, Citra, main@ad99a97, no change made; unknowns "2v2 particle
   family"): 0x8017b000-0x80185000 is the HSD particle system. Inclusive it costs 7.0 ms of the 2v2 game thread
   (18.6%; draw 5.56, generators 0.86, interpreter 0.58) against 0.47 ms in the 1v1. It scales with particles

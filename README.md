@@ -43,8 +43,9 @@ Textures in VRAM (2026-10-22) cut GPU time to under a third: campaign 12.2 -> 3.
 game's own code: 29.8 ms per frame in run 28, 22.2 ms after the 2v2 CPU work (run 29: 30.5 -> 39.6 fps). Every performance change and its measured effect, including
 the ones that did not help, is listed in `docs/performance.md`.
 
-Hardware test build 2026-10-26 (branch `task/2026-10-26-2v2-perf-3`): lazy vertex descriptor, pointer-extent
-stack promotion and inlined particle helpers, each with a bottom-screen button. In Citra the 2v2 game thread
+2v2-perf-3 (merged to main 2026-10-26, from `task/2026-10-26-2v2-perf-3`): lazy vertex descriptor, pointer-extent
+stack promotion and inlined particle helpers, each with a bottom-screen button, all three on by default. This
+closes small-scale 2v2 CPU work: the gains have run out (see docs/performance.md "Open"). In Citra the 2v2 game thread
 takes 36.2 ms with all three on and 36.7 ms with them off (main: 36.7). Hardware run 31 (all on, hand-played):
 2v2 41.8 fps, game 20.6 ms, against 39.6 fps / 22.2 ms in run 29 (main's code), mostly play variance. Hardware
 runs 32a/32b replay the Citra 2v2 test on the 3DS (identical fight): all three on 40.3 fps, game 22.2 ms; all
