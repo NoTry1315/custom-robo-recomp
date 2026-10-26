@@ -425,6 +425,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   14.0 -> 13.1, campaign 8.0 -> 7.6. Hardware A/B (runs 35a = HWCHECK=1, 35b = default, back to back on the 2v2
   replay): 2v2 game 22.24 -> 20.25 ms (-9%, faster in 74/74 windows), 40.0 -> 43.4 fps; instructions -7%, I-cache
   misses -12%; campaign game 7.3 -> 6.6. Details: unknowns "Loads without the hardware check".
+- Write tracking byte map (2026-10-26, branch task/2026-10-26-wr-tracking, density step D2): guest stores set their
+  page's byte in `ram_dirty[]` to 1 (ppc.h WR_SET, one strb) instead of loading and storing the epoch; sdk_GXCopyDisp
+  calls recomp_wr_sweep (cpu.c) to stamp marked pages with the ending epoch and clear the marks; gx.c range_clean reads
+  marks, then ram_wr[]. `make WRMAP=0` = old. .text 5.31 -> 5.14 MB, 2v2 hot set -2.5% instructions; Citra 2v2 game
+  32.9 -> 32.6 ms (sweep 0.21 ms in Citra), battle/campaign unchanged; boot/battle/campaign/2v2 logs + fb identical to
+  D1. Not yet on hardware. Details: unknowns "Write tracking through a byte map".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
