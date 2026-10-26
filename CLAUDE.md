@@ -376,7 +376,19 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   (~219 single particle quads) become ~113 DrawElements; TEV-only causes ~37 of the batch breaks, texture+TEV ~36,
   texture+uniform ~28. A TEV-colour merge (palette texture on a third unit) is worth at most ~1.3 ms of the ~40 ms
   GX thread, so not built. C3D_DrawElements is ~25 us per call in Citra. Details: unknowns "Particle quad merge".
-- `make clean` deletes build/ including logs: keep measurement logs elsewhere.
+- Hardware test build 2v2-perf-3 (2026-10-26, branch task/2026-10-26-2v2-perf-3, not merged to main): merges
+  particle-probe, ptr-extent-promo, lazy-vtx-desc and the sin/cos memo, particle-inline and quad-merge studies.
+  Pointer-extent promotion and the inline sites are run-time toggles in the one build (recomp.py
+  RECOMP_PTR_EXTENT / RECOMP_INLINE_SITES = dual, the default; 0 = plain main code): `PTR_EXTENT_DUAL` lists the 16
+  hottest changed functions (FNPROF), each gets a second body fp_X and f_X dispatches on recomp_ptr_extent at entry
+  (all 142 would be +15.7% .text); the 5 inline sites test recomp_inline_sites. Buttons "Ptr extent" / "Inline
+  sites", flags cr_ptrext_off / cr_inline_off, both on by default; `# codegen:` boot line, `# time .. split` ends with
+  "lazy desc / ptr extent / inline sites". Citra 2v2 game 36.2 ms on / 36.7 off (plain 36.6, main 36.7), battle 14.0
+  / 14.1, .text +4.35% vs plain; 2v2/battle/campaign/boot logs + fb dumps identical to main, all on and all off.
+  tools/buildinfo.sh takes BUILD_BRANCH / BUILD_REV from the environment (worktree builds: docker -e). Not yet on
+  hardware. Details: unknowns "Run-time translator toggles".
+- `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
+  FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
 ## Build / test
 
