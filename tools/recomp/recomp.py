@@ -9,7 +9,7 @@ gen/sdk_stubs.c, overridden by runtime/). MetroTRK is skipped.
 Every translated function is `void f_XXXXXXXX(void)` over the global CPU
 state in runtime/ppc.h. Anything the translator cannot decide is collected
 and written to docs/recomp_unknowns.md (generated section)."""
-import copy, os, re, struct, sys
+import copy, heapq, os, re, struct, sys
 from collections import defaultdict
 from pathlib import Path
 from ppc import *
@@ -1332,7 +1332,464 @@ def frame_pointers(fn, skip):
     return uses
 
 
-def promote_stack_slots(fns, psq_ok=True):
+INF = 1 << 30
+PF_RANGE = [int(x, 16) for x in os.environ.get('RECOMP_PTR_RANGE', '0-ffffffff').split('-')]   # RECOMP_PTR_RANGE=lo-hi: extents only for functions in [lo, hi) (bisecting)
+PF_REPORT = {int(a, 16) for a in os.environ.get('RECOMP_PTR_REPORT', '').split(',') if a}   # RECOMP_PTR_REPORT=addr,..: per-frame detail
+
+
+def native_ptr_ext():
+    """tools/recomp/native_ptr_ext.tsv -> {native: {reg: byte ranges reached}} for the natives it lists
+    without a `ret` row: value = (), ptr N = [0, N), unknown = [0, INF). A native not listed (or with a
+    ret row) keeps the default rule: [0, INF) through the registers it reads (native_arg_reads)."""
+    ext, ret = defaultdict(dict), set()
+    for line in (ROOT / 'tools/recomp/native_ptr_ext.tsv').read_text(encoding='utf-8').splitlines():
+        f = line.split('	')
+        if line.startswith('#') or len(f) < 3 or f[0] == 'native':
+            continue
+        if f[1] == 'ret':
+            ret.add(f[0])
+            continue
+        c = f[2].split()
+        ext[f[0]][int(f[1][1:])] = () if c[0] == 'value' else ((0, int(c[1])),) if c[0] == 'ptr' else ((0, INF),)
+    return {n: e for n, e in ext.items() if n not in ret}
+# r[d] = r[s], r[s] +/- decimal, r[s] +/- r[x]: tracked offsets (hex constants are addis: generic)
+PF_DERIV = re.compile(r'R\[(\d+)\](?: ([+-]) (-?\d+|R\[\d+\]))?u?|ea')
+PF_ASSIGN = re.compile(r'(?:u32 (ea)|R\[(\d+)\]) = (.*)$')
+PF_CALL = re.compile(r'\b(f_[0-9a-f]{8}|sdk_\w+|call_indirect|recomp_skipped)\(')
+PF_CMP = re.compile(r'^(?:pv_)?cr\d = cmp_[su]\(')
+# accesses through a register (rN + k) or through ea (an update or indexed form's address)
+PF_ACC = re.compile(r'\b(?:(?:rd|wr)(8|16|32|64)_b\(R\[(\d+)\], (-?\d+)|psq_(?:ld|st)0_b\((?:[\w\[\].]+, )?R\[(\d+)\], (-?\d+), (\d)'
+                    r'|(?:rd|wr)(8|16|32|64)\((ea)(?: \+ (\d+))?[,)]|psq_(?:ld|st)0?\((?:[\w\[\].]+, )?(ea), )')
+PF_IDX = re.compile(r'\b(?:rd|wr)(?:8|16|32|64)\(R\[(\d+)\] \+ (R\[\d+\])')
+
+
+def native_arg_reads():
+    """-> {sdk_ native defined in runtime/*.c: the argument registers r3-r12 it (or a runtime function
+    it calls, transitively) reads}. Printing (LOG / recomp_sdk_call / recomp_sdk_log_at) is not a
+    read; gq_regs(fn, n) reads r3..r3+n-1; a computed index reads what INDEX_READS lists, else all of
+    r3-r12; calling translated code (recomp_call_guest, f_) reads all. A register a native does not
+    read is not reached through (ptr_flow), whatever it holds."""
+    ALL = set(range(3, 13))
+    defs, files = {}, {}
+    for f in sorted((ROOT / 'runtime').glob('*.[ch]')):
+        src = re.sub(r'/\*.*?\*/|//[^\n]*', '', f.read_text(encoding='utf-8'), flags=re.S)
+        for m in re.finditer(r'^[A-Za-z_][\w \t\*]*?\b([A-Za-z_]\w*)\s*\(([^;{}()]*)\)\s*\{', src, re.M):
+            i, depth = m.end() - 1, 0
+            for j in range(i, len(src)):
+                depth += {'{': 1, '}': -1}.get(src[j], 0)
+                if depth == 0:
+                    break
+            if m[1] not in ('if', 'for', 'while', 'switch'):
+                defs.setdefault(m[1], []).append(src[i:j + 1])
+                files[m[1]] = f.name
+        for m in re.finditer(r'^WRAP\((\w+), (f_[0-9a-f]{8}), (.*)\)$', src, re.M):   # mtx.c natives
+            defs.setdefault('sdk_' + m[1], []).append(m[0])
+            files['sdk_' + m[1]] = f.name
+    quiet = {'recomp_sdk_log_at', 'recomp_sdk_call', 'gq_regs'}
+    own = {}
+    for n, bodies in defs.items():
+        r, b = set(), ' '.join(bodies)
+        if n not in quiet:
+            for x in re.finditer(r'\b(?:R|cpu\.gpr)\[([^\]]+)\](\s*=(?!=))?', b):
+                if x[2]:
+                    continue   # plain write
+                idx = x[1].strip()
+                if idx.isdigit():
+                    r.add(int(idx))
+                elif (files[n], idx) in INDEX_READS:
+                    r |= {k for k in ALL if INDEX_READS[(files[n], idx)] & GB(k)}
+                else:
+                    r |= ALL
+            for x in re.finditer(r'\bgq_regs\([^,]+,\s*(\d+)\)', b):
+                r |= set(range(3, 3 + int(x[1])))
+            if re.search(r'\bgq_regs\([^,]+,\s*[^\d\s]', b) or re.search(r'\brecomp_call_guest\b|\bcall_indirect\b|\bf_[0-9a-f]{8}\(', b):
+                r |= ALL
+        calls = {c for c in re.findall(r'\b([A-Za-z_]\w*)\s*\(', b) if c in defs and c != n and c not in quiet}
+        own[n] = (r & ALL, calls)
+    reads = {n: set(r) for n, (r, _) in own.items()}
+    changed = True
+    while changed:
+        changed = False
+        for n, (_, calls) in own.items():
+            for c in calls:
+                if not reads[c] <= reads[n]:
+                    reads[n] |= reads[c]
+                    changed = True
+    return {n: r for n, r in reads.items() if n.startswith('sdk_')}
+
+
+def pf_add(x, k):
+    """offset + k, saturating at NO_BOUND / INF (else repeated composition keeps moving a bound)"""
+    return x if x >= INF or x <= NO_BOUND else max(NO_BOUND, min(INF, x + k))
+
+
+def pf_norm(L):
+    """offset intervals [lo, hi] (inclusive) -> sorted, overlapping ones merged, at most 4 (else the hull)"""
+    out = []
+    for lo, hi in sorted(set(L)):
+        if out and lo <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return tuple(out) if len(out) <= 4 else ((out[0][0], max(h for _, h in out)),)
+
+
+def pf_join(a, b):
+    """two values {origin: intervals} -> their union"""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return {o: pf_norm(a.get(o, ()) + b.get(o, ())) for o in set(a) | set(b)}
+
+
+PF_CACHE = {}
+
+
+def pf_parse(fn, a):
+    """the statements of instruction a, parsed once for ptr_flow -> list of ops (last two items: whether
+    it is the stwu's `R[1] = ea`, the statement text): ('ret',), ('call', name), ('deriv', target,
+    derivation), ('use', target or None, accesses [(reg or 'ea', lo, hi)], indexed bases, other
+    register occurrences [(reg, k)], ea used otherwise)"""
+    key = (fn.entry, a)
+    if key in PF_CACHE:
+        return PF_CACHE[key]
+    ops = []
+    for piece in ' '.join(fn.body[a]).split(';'):
+        piece = re.sub(r'/\*.*?\*/|@\w+@', '', piece).strip(' {}')   # inlined leaves start with a comment
+        if not piece:
+            continue
+        if re.search(r'(?<![=!<>])(?:\bR\[\d+\]|\bu32 ea) = ', piece) and not PF_ASSIGN.match(piece):
+            sys.exit(f'recomp.py ptr_flow: assignment not at the start of a statement at {a:08x}: {piece}')
+        if piece == 'return' or piece.endswith(' return') or piece.endswith('{ return'):
+            ops.append(('ret', False, piece))
+            continue
+        mc = PF_CALL.search(piece)
+        if mc:
+            ops.append(('call', mc[1], False, piece))
+            continue
+        if PF_CMP.match(piece):   # compares are not uses
+            continue
+        m = PF_ASSIGN.match(piece)
+        tgt = ('ea' if m[1] else int(m[2])) if m else None
+        rhs = m[3].strip() if m else piece
+        r1ea = piece.startswith('R[1] = ea')
+        if m and not LOAD_RHS.search(rhs) and not re.search(r'\b(?:rd|wr)(?:8|16|32|64)', rhs):
+            d = PF_DERIV.fullmatch(rhs)
+            regs = [int(r) for r in re.findall(r'R\[(\d+)\]', rhs)]
+            has_ea = bool(re.search(r'\bea\b', rhs))
+            if d and d[0] == 'ea':
+                dv = ('ea', None, None, None, None, regs, has_ea)
+            elif d:
+                x = int(d[3][2:-1]) if d[3] and d[3].startswith('R[') else None
+                k = int(d[3]) * (1 if d[2] == '+' else -1) if d[3] and x is None else None
+                dv = ('reg', int(d[1]), d[2], k, x, regs, has_ea)
+            else:
+                dv = ('other', None, None, None, None, regs, has_ea)
+            ops.append(('deriv', tgt, dv, r1ea, piece))
+            continue
+        rest, accs, idxs = rhs, [], []
+        for s in PF_ACC.finditer(rhs):
+            if s[2] is not None:
+                accs.append((int(s[2]), int(s[3]), int(s[3]) + SP_SIZE[s[1]]))
+            elif s[4] is not None:
+                accs.append((int(s[4]), int(s[5]), int(s[5]) + (4 if s[6] != '0' else 8)))
+            elif s[8] is not None:
+                k = int(s[9] or 0)
+                accs.append(('ea', k, k + SP_SIZE[s[7]]))
+            else:
+                accs.append(('ea', 0, 8))
+            rest = rest.replace(s[0], ' ' * len(s[0]), 1)
+        for s in PF_IDX.finditer(rest):   # blank the base only: the index register stays a use
+            idxs.append(int(s[1]))
+            rest = rest[:s.start()] + ' ' * (s.start(2) - s.start()) + rest[s.start(2):]
+        others = [(int(u[1]), int(u[2]) if u[2] else int(u[4]) * (1 if u[3] == '+' else -1) if u[3] else 0)
+                  for u in re.finditer(r'\bR\[(\d+)\](?:, (-?\d+)| ([+-]) (\d+))?', rest)]
+        ops.append(('use', tgt, accs, idxs, others, bool(re.search(r'\bea\b', rest)), r1ea, piece))
+    PF_CACHE[key] = ops
+    return ops
+
+
+def ptr_flow(fn, stwu, summ, why=None):
+    """Forward may-analysis of the pointers a function derives from its own frame (origin 0: r1 after
+    the stwu at `stwu`, or at the entry when frameless) and from its argument registers (origins 3-10:
+    the entry values of r3-r12 (r11/r12: MWCC helpers)). A register's value: per origin, offset intervals it may equal.
+    -> (reach, ret, frame_ret): reach[origin] = byte ranges [a, b) (b may be INF) read or written
+    through it, here or in a callee; ret = {3: .., 4: ..}: argument-derived values left in r3/r4 at a
+    return (None: unknown); frame_ret: a frame pointer is left in r3/r4 at a return.
+    A use: an access rN + k / through ea (its bytes); an indexed access, a store of the pointer, a
+    call_indirect, or any other use: [lo + min(k, 0), INF) (the old rule: code reaches an object only
+    from its address upward); a call: the callee's reach per argument register (summ). Derivations:
+    rN +/- decimal and update forms keep exact offsets; + rX (index) has no upper bound; other
+    arithmetic gets lo - 4096 and no upper bound; minus a register no bound. Compares are not uses.
+    After a call registers keep their values (a callee may leave them) and r3/r4 may also hold the
+    callee's ret. A loop that keeps moving a value widens it (no bound in that direction)."""
+    reach, ret, fret = defaultdict(list), {3: set(), 4: set()}, [False]
+    seeds = {r: {r: ((0, 0),)} for r in range(3, 13)}
+    if stwu is None:
+        seeds[1] = {0: ((0, 0),)}
+    pos = {x: n for n, x in enumerate(fn.order)}   # worklist in program order (heap)
+    st_in, visits, work, queued = {fn.entry: seeds}, defaultdict(int), [(pos.get(fn.entry, 0), fn.entry)], {fn.entry}
+    if fn.entry not in fn.body:
+        return reach, ret, False
+
+    cur = [0, '']
+
+    def use(v, a, b):
+        for o, L in v.items():
+            for lo, hi in L:
+                reach[o].append((NO_BOUND if lo <= NO_BOUND else pf_add(lo, a), INF if b >= INF else pf_add(hi, b)))
+                if why is not None and reach[o][-1][1] >= INF:   # unbounded uses (debugging)
+                    why.append((o, cur[0], reach[o][-1][0], cur[1]))
+
+    def escape(v, k=0):
+        use(v, min(k, 0), INF)
+
+    def call(name, state):
+        key = int(name[2:], 16) if name.startswith('f_') else name
+        s = summ.get(key) if name not in ('call_indirect', 'recomp_skipped') else None
+        args = {r: state[r] for r in range(3, 13) if r in state}
+        for r, v in args.items():
+            if s is None:
+                escape(v)
+            else:
+                for a, b in s[0].get(r, ()):
+                    use(v, a, b)
+        for rr in (3, 4):
+            if s is None or s[1] is None:
+                nv = None
+                for v in args.values():
+                    nv = pf_join(nv, {o: ((min(lo for lo, _ in L), INF),) for o, L in v.items()})
+            else:
+                nv = None
+                for r, lo2, hi2 in s[1][rr]:
+                    if r in args:
+                        nv = pf_join(nv, {o: tuple((pf_add(lo, lo2), INF if hi2 >= INF else pf_add(hi, hi2)) for lo, hi in L)
+                                          for o, L in args[r].items()})
+            if nv is not None:
+                state[rr] = pf_join(state.get(rr), nv)
+
+    def value(d, state):   # d: pf_parse's derivation
+        kind, s, sign, k, x, regs, has_ea = d
+        if kind == 'ea':
+            return state.get('ea')
+        if kind == 'reg' and s in state:
+            v = state[s]
+            if sign is None:
+                return v
+            if x is None:
+                return {o: tuple((pf_add(lo, k), pf_add(hi, k)) for lo, hi in L) for o, L in v.items()}
+            x = state.get(x, {})   # either operand may be the pointer
+            if sign == '-':
+                return {o: ((NO_BOUND, INF),) for o in set(v) | set(x)}
+            return pf_join({o: ((L[0][0], INF),) for o, L in v.items()},
+                           {o: ((pf_add(L[0][0], -4096), INF),) for o, L in x.items()})
+        srcs = [state[r] for r in regs if r in state]
+        if has_ea and 'ea' in state:
+            srcs.append(state['ea'])
+        out = None
+        for v in srcs:
+            out = pf_join(out, {o: ((pf_add(L[0][0], -4096), INF),) for o, L in v.items()})
+        return out
+
+    while work:
+        a = heapq.heappop(work)[1]
+        queued.discard(a)
+        if a not in fn.body:
+            continue
+        state = dict(st_in[a])
+        state.pop('ea', None)
+        for op in pf_parse(fn, a):
+            cur[:] = a, op[-1]
+            if op[0] == 'ret':
+                for rr in (3, 4):
+                    for o, L in state.get(rr, {}).items():
+                        if o == 0:   # own frame: dead after the return (C); frameless: the caller's, an escape
+                            fret[0] = True
+                            if stwu is None:
+                                escape({0: L})
+                        else:
+                            ret[rr] |= {(o, lo, hi) for lo, hi in L}
+                continue
+            if op[0] == 'call':
+                call(op[1], state)
+                continue
+            tgt = op[1]
+            if op[0] == 'deriv':   # a derivation (or a constant): no use
+                v = value(op[2], state)
+            else:
+                for r, lo, hi in op[2]:   # accesses through rN + k / ea: their bytes
+                    if r in state:
+                        use(state[r], lo, hi)
+                for r in op[3]:   # indexed accesses: from the base upward
+                    if r in state:
+                        escape(state[r])
+                for r, k in op[4]:   # anything else: the old rule
+                    if r != 1 and r in state:
+                        escape(state[r], k)
+                if op[5] and 'ea' in state:
+                    escape(state['ea'])
+                v = None   # loads are data
+            if tgt is not None and tgt != 1:
+                if v is None:
+                    state.pop(tgt, None)
+                else:
+                    state[tgt] = v
+            if op[-2] and a == stwu:
+                state[1] = {0: ((0, 0),)}
+        state.pop('ea', None)
+        for t in fn.succ[a]:
+            if t not in fn.body:
+                continue
+            old = st_in.get(t)
+            new = dict(state) if old is None else {r: pf_join(old.get(r), state.get(r)) for r in set(old) | set(state)}
+            if new != old:
+                visits[t] += 1
+                if visits[t] > 6 and old is not None:   # keeps moving: no bound in that direction
+                    for r, v in new.items():
+                        if r in old and v != old[r]:
+                            wv = {}
+                            for o, L in v.items():
+                                lo, hi = L[0][0], max(h for _, h in L)
+                                ol = old[r].get(o)
+                                if ol:
+                                    lo = NO_BOUND if lo < ol[0][0] else lo
+                                    hi = INF if hi > max(h for _, h in ol) else hi
+                                wv[o] = ((lo, hi),)
+                            new[r] = wv
+                st_in[t] = new
+                if t not in queued:
+                    queued.add(t)
+                    heapq.heappush(work, (pos.get(t, 0), t))
+    return reach, ret, fret[0]
+
+
+def pf_ranges(L):
+    """byte ranges [a, b) -> merged tuple"""
+    out = []
+    for a, b in sorted(set(L)):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return tuple(out) if len(out) <= 8 else ((out[0][0], max(b for _, b in out)),)
+
+
+def pf_rv(v):
+    """returned values {(origin, lo, hi)} -> one interval per origin (their hull)"""
+    h = {}
+    for o, lo, hi in v:
+        h[o] = (min(lo, h[o][0]), max(hi, h[o][1])) if o in h else (lo, hi)
+    return frozenset((o, lo, hi) for o, (lo, hi) in h.items())
+
+
+def ptr_summaries(fns, stwus, stubs):
+    """Fixpoint over the call graph: per translated function, the bytes reached through each argument
+    register r3-r12 and the argument-derived values it returns in r3/r4 (ptr_flow). Natives: the
+    NATIVE_PTR_EXT table, MTX/MSL bodies: also their translated body's. Recursion that keeps growing a
+    summary is widened (no upper bound / unknown return). -> (summaries, per function ptr_flow result)"""
+    by = {fn.entry: fn for fn in fns}
+    summ = {e: ({}, {3: frozenset(), 4: frozenset()}) for e in by}
+    body_of = {n: a for a, n in stubs.items() if a in BODY_NATIVE}
+    # natives: unlisted ones reach [0, INF) through the registers they read and may return those
+    for n, rd in native_arg_reads().items():
+        if n not in body_of:   # (the table below overrides)
+            summ[n] = ({r: ((0, INF),) for r in rd}, {rr: frozenset((r, 0, INF) for r in rd) for rr in (3, 4)})
+    table, reads = native_ptr_ext(), native_arg_reads()
+    for n in set(table) | set(body_of):   # a register the native reads but the table omits: [0, INF)
+        e = {r: ((0, INF),) for r in reads.get(n, ()) if n not in body_of} | table.get(n, {})
+        summ[n] = ({r: pf_ranges(v) for r, v in e.items() if v}, {3: frozenset(), 4: frozenset()})
+    callees = {}
+    for fn in fns:
+        cs = set()
+        for c in set(re.findall(r'\b(f_[0-9a-f]{8}|sdk_\w+)\(', ' '.join(x for v in fn.body.values() for x in v))):
+            c = int(c[2:], 16) if c.startswith('f_') else body_of.get(c)
+            if c in by:
+                cs.add(c)
+        callees[fn.entry] = cs
+    # strongly connected components, callees first (Tarjan, iterative)
+    index, low, onst, stack, sccs, n = {}, {}, set(), [], [], [0]
+    for root in sorted(by):
+        if root in index:
+            continue
+        work = [(root, iter(sorted(callees[root])))]
+        index[root] = low[root] = n[0]; n[0] += 1; stack.append(root); onst.add(root)
+        while work:
+            v, it = work[-1]
+            w = next(it, None)
+            if w is None:
+                work.pop()
+                if work:
+                    low[work[-1][0]] = min(low[work[-1][0]], low[v])
+                if low[v] == index[v]:
+                    comp = []
+                    while True:
+                        x = stack.pop(); onst.discard(x); comp.append(x)
+                        if x == v:
+                            break
+                    sccs.append(comp)
+            elif w not in index:
+                index[w] = low[w] = n[0]; n[0] += 1; stack.append(w); onst.add(w)
+                work.append((w, iter(sorted(callees[w]))))
+            elif w in onst:
+                low[v] = min(low[v], index[w])
+    res, rounds = {}, defaultdict(int)
+    big = sorted((len(c) for c in sccs), reverse=True)[:5]
+    print(f"ptr summaries: {len(sccs)} call-graph components, largest {big}")
+    for comp in sccs:
+        work = set(comp)
+        while work:
+            e = work.pop()
+            reach, ret, fret = ptr_flow(by[e], stwus.get(e), summ)
+            res[e] = (reach, fret)
+            ext = {r: pf_ranges(reach[r]) for r in range(3, 13) if reach.get(r)}
+            rv = {rr: pf_rv(ret[rr]) for rr in (3, 4)}
+            old = summ[e]   # summaries only grow (else a widened one can shrink back and oscillate)
+            ext = {r: pf_ranges(list(ext.get(r, ())) + list(old[0].get(r, ()))) for r in set(ext) | set(old[0])}
+            rv = {rr: pf_rv(rv[rr] | old[1][rr]) for rr in (3, 4)}
+            if (ext, rv) == old:
+                continue
+            rounds[e] += 1
+            if rounds[e] > 8:   # recursion that keeps growing: no bound in the direction it moves
+                def wid(a, b, oa, ob):
+                    return (NO_BOUND if oa is not None and a < oa else a, INF if ob is not None and b > ob else b)
+                ext = {r: (wid(min(a for a, _ in Lr), max(b for _, b in Lr),
+                               min((a for a, _ in old[0].get(r, ())), default=None), max((b for _, b in old[0].get(r, ())), default=None)),)
+                       for r, Lr in ext.items()}
+                ov = {rr: {o: (lo, hi) for o, lo, hi in old[1][rr]} for rr in (3, 4)}
+                rv = {rr: frozenset((o, *wid(lo, hi, *ov[rr].get(o, (None, None)))) for o, lo, hi in v) for rr, v in rv.items()}
+                if (ext, rv) == old:
+                    continue
+            summ[e] = (ext, rv)
+            work |= {c for c in comp if e in callees[c]}
+            for nm, ba in body_of.items():   # an MTX/MSL native: also its translated body's reach
+                if ba == e:
+                    t = table.get(nm, {})
+                    summ[nm] = ({r: pf_ranges(list(ext.get(r, ())) + list(pf_ranges(t.get(r, ()))))
+                                 for r in set(ext) | set(t)}, rv)
+    return summ, res
+
+
+def frame_prologue(fn):
+    """the stwu: in the straight-line prologue (MWCC: mflr r0; stw r0, 4(r1); stwu r1, -N(r1))
+    -> (STWU_RE match or None, prologue addresses up to and including it)"""
+    m, pro, prev = None, set(), fn.entry - 4
+    for a in fn.order[fn.order.index(fn.entry):] if fn.entry in fn.order else []:
+        x = ' '.join(fn.body[a])
+        if a != prev + 4 or (a in fn.labels and a != fn.entry):
+            break
+        m = STWU_RE.fullmatch(x)
+        if m:
+            pro.add(a)
+            break
+        if re.search(r'goto |return;|\bif \(|switch|recomp_|\bf_[0-9a-f]{8}\(|\bsdk_\w+\(|call_indirect|R\[1\] = ', x):
+            break
+        pro.add(a)
+        prev = a
+    return (m, pro) if m else (None, set())
+
+
+def promote_stack_slots(fns, psq_ok=True, stubs=None):
     """Guest stack words a function alone uses become C locals (sp_s<k>, the word's bits in host
     order): no address mask, byte swap or RAM round trip for MWCC's spills (stfs/lfs, stfd/lfd, the
     stw/stw/lfd int->double idiom, psq). A word r1 + k of a frame (one stwu at the entry, r1 written
@@ -1348,7 +1805,9 @@ def promote_stack_slots(fns, psq_ok=True):
     memory keeps older contents in those words: only a reader of another function's dead stack, or
     of this frame through a pointer the rules above missed, sees a difference.
     psq_ok: psq accesses are GQR0 = 0 floats (no translated mtspr GQR0, as psq_ld0/psq_st0 assume).
-    RECOMP_STACK_SLOTS=0 keeps every stack access in memory."""
+    RECOMP_STACK_SLOTS=0 keeps every stack access in memory. RECOMP_PTR_EXTENT=1 replaces "below every
+    address derived from r1" with the byte ranges reached through frame pointers (ptr_summaries: this
+    function's accesses, its callees' per-argument extents, native_ptr_ext.tsv); off by default."""
     if os.environ.get('RECOMP_STACK_SLOTS', '1') == '0':
         print('note: stack slots kept in memory (RECOMP_STACK_SLOTS=0)')
         return fns
@@ -1358,33 +1817,30 @@ def promote_stack_slots(fns, psq_ok=True):
         sys.exit('runtime/ reads the guest stack through r1 (recomp.py NATIVE_STACK_READS lists each):\n' + '\n'.join(reads))
     stat = defaultdict(int)
     info = {}
+    prologues = {fn.entry: frame_prologue(fn) for fn in fns}
+    pf = None
+    if os.environ.get('RECOMP_PTR_EXTENT', '0') == '1':   # off by default: Citra 2v2 -1.1%, below the 2% bar
+        pf = ptr_summaries(fns, {e: max(p) if m else None for e, (m, p) in prologues.items()}, stubs or {})[1]
+    else:
+        print('note: frame pointers reach from their address upward (RECOMP_PTR_EXTENT=1: per-callee pointer extents)')
     # per function: words of the frame that transferred control to it (bl or tail b, same r1) it may
     # touch, and the lowest such offset a pointer it derives may reach
     g_ext, g_from, calls, framed, ind = {}, {}, {}, set(), set()
     for fn in fns:
         ge, gf = set(), 1 << 30
-        # the stwu: in the straight-line prologue (MWCC: mflr r0; stw r0, 4(r1); stwu r1, -N(r1))
-        m, pro, prev = None, set(), fn.entry - 4
-        for a in fn.order[fn.order.index(fn.entry):] if fn.entry in fn.order else []:
-            x = ' '.join(fn.body[a])
-            if a != prev + 4 or (a in fn.labels and a != fn.entry):
-                break
-            m = STWU_RE.fullmatch(x)
-            if m:
-                pro.add(a)
-                break
-            if re.search(r'goto |return;|\bif \(|switch|recomp_|\bf_[0-9a-f]{8}\(|\bsdk_\w+\(|call_indirect|R\[1\] = ', x):
-                break
-            pro.add(a)
-            prev = a
-        if not m:
-            pro = set()
+        m, pro = prologues[fn.entry]
         size = int(m[1]) if m else 0
         top = size if m else 0   # offsets >= top are the caller's frame
-        lo, bad, acc = 1 << 30, None, defaultdict(list)
-        uses = frame_pointers(fn, pro)
-        lo = min(uses + [lo])
-        gf = min([u - top for u in uses if u >= top + (0 if m else 8)] + [gf])
+        lo, bad, acc, rng = 1 << 30, None, defaultdict(list), None
+        if pf is None or not PF_RANGE[0] <= fn.entry < PF_RANGE[1]:
+            uses = frame_pointers(fn, pro)
+            lo = min(uses + [lo])
+            gf = min([u - top for u in uses if u >= top + (0 if m else 8)] + [gf])
+        else:   # byte ranges reached through frame pointers; an unbounded one from inside the frame stays there
+            rng = pf_ranges(pf[fn.entry][0].get(0, ()))
+            thr = top + (0 if m else 8)   # frameless: every range into the caller's frame counts
+            gf = min([max(a, thr) - top for a, b in rng if a >= thr or thr < b < INF or not m and b > thr] + [gf])
+            stat['frame_ret'] += pf[fn.entry][1]
         for a in fn.order:
             x = ' '.join(fn.body[a])
             if a in pro:   # before the stwu: r1 is the caller's (LR save at 4); the stwu itself
@@ -1434,7 +1890,7 @@ def promote_stack_slots(fns, psq_ok=True):
         if bad or not m:
             stat['skipped' if m else 'frameless'] += 1
             continue
-        info[fn.entry] = (size, lo, acc, pro)
+        info[fn.entry] = (size, lo, acc, pro, rng)
     for e, n in NATIVE_STACK_READS.items():
         g_ext[e], g_from[e], calls[e] = set(n), 1 << 30, set()
     changed = True
@@ -1455,7 +1911,7 @@ def promote_stack_slots(fns, psq_ok=True):
     for i, fn in enumerate(fns):
         if fn.entry not in info:
             continue
-        size, lo, acc, pro = info[fn.entry]
+        size, lo, acc, pro, rng = info[fn.entry]
         stwu = max(pro)
         ext, ext_from = (set(ind_ext), ind_from) if fn.entry in ind else (set(), 1 << 30)
         for c in calls[fn.entry]:
@@ -1470,18 +1926,27 @@ def promote_stack_slots(fns, psq_ok=True):
             for op, w in L:
                 for kk in range(k, k + max(w, 4), 4):
                     words.add(kk)
-        ok = {k for k in words if k % 4 == 0 and 8 <= k and k + 4 <= limit and k not in ext}
-        if not psq_ok:
-            ok -= {kk for k, L in acc.items() for op, w in L if op in ('ld', 'st') for kk in (k, k + 4)}
-        changed = True
-        while changed:   # an access counts only if it covers whole promoted words
-            changed = False
-            for k, L in acc.items():
-                for op, w in L:
-                    cover = {c & ~3 for c in range(k, k + max(w, 1))}
-                    if (w < 4 or k % 4 or not cover <= ok) and cover & ok:
-                        ok -= cover
-                        changed = True
+        def qualify(limit, rng):
+            ok = {k for k in words if k % 4 == 0 and 8 <= k and k + 4 <= limit and k not in ext
+                  and not any(a < k + 4 and b > k for a, b in rng)}
+            if not psq_ok:
+                ok -= {kk for k, L in acc.items() for op, w in L if op in ('ld', 'st') for kk in (k, k + 4)}
+            changed = True
+            while changed:   # an access counts only if it covers whole promoted words
+                changed = False
+                for k, L in acc.items():
+                    for op, w in L:
+                        cover = {c & ~3 for c in range(k, k + max(w, 1))}
+                        if (w < 4 or k % 4 or not cover <= ok) and cover & ok:
+                            ok -= cover
+                            changed = True
+            return ok
+        ok = qualify(limit, rng or ())
+        free = qualify(min(size, ext_from), ())   # the words frame pointers alone keep in memory: free - ok
+        stat['ptr_blocked'] += len(free - ok)
+        if fn.entry in PF_REPORT:
+            print(f'  f_{fn.entry:08x}: frame {size}, {len(ok)} words promoted, {len(free - ok)} kept for frame pointers '
+                  f'{sorted(free - ok)}; frame pointer ranges {list(rng) if rng is not None else f"from {lo}"}')
         if not ok:
             continue
         body = {a: list(v) for a, v in fn.body.items()}
@@ -1534,7 +1999,8 @@ def promote_stack_slots(fns, psq_ok=True):
         stat['words'] += len(ok)
         fns[i] = Func(fn.entry, fn.order, body, fn.labels, fn.gotos)
     print(f"stack slots in locals: {stat['words']} words in {stat['functions']} functions, {stat['accesses']} accesses; "
-          f"{stat['skipped']} frames left in memory (other r1 use), {stat['ext']} frames with words their callees reach")
+          f"{stat['skipped']} frames left in memory (other r1 use), {stat['ext']} frames with words their callees reach, "
+          f"{stat['ptr_blocked']} words kept for frame pointers, {stat['frame_ret']} functions return a frame pointer in r3/r4")
     return fns
 
 
@@ -1978,6 +2444,10 @@ def emit(fn, sites, prof=None):
 
 
 def main():
+    # a regex escape lost to a shell heredoc becomes a control character and silently matches nothing
+    bad = [n for n, line in enumerate(Path(__file__).read_bytes().split(b'\n'), 1) if re.search(rb'[\x00-\x08\x0b\x0c\x0e-\x1f]', line)]
+    if bad:
+        sys.exit(f'recomp.py has control characters on lines {bad}')
     dol_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DOL
     out = Path(sys.argv[2]) if len(sys.argv) > 2 else OUT
     p = Program(Dol(dol_path))
@@ -1998,7 +2468,7 @@ def main():
     fns = fold_base_regs(fns)
     fns = fold_so(fns)
     fns = drop_nv_saves(fns)
-    fns = promote_stack_slots(fns, not p.gqr0_written)
+    fns = promote_stack_slots(fns, not p.gqr0_written, p.stubs)
     n = sum(len(re.findall(r'/\* inlined f_', x)) for fn in fns for v in fn.body.values() for x in v)
     print(f'{n} calls to {len(p.inline)} leaf functions inlined')
     for fn in fns:

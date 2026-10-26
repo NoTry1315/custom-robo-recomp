@@ -1,0 +1,363 @@
+# Native SDK functions (runtime/*.c): what each argument register r3-r10 is, for recomp.py ptr_summaries.
+# value = a number (not reached through); ptr N = a guest address, bytes [p, p + N) touched during the call;
+# unknown = address with no fixed extent or kept for later (reached [p, INF)); ret = returns an argument-derived
+# value (the native keeps recomp.py's default rule). Classified 2026-10-25 against runtime/*.c (evidence column).
+native	reg	class	evidence
+sdk_mem_zero	r3	unknown	libc.c:48 memset/wr8 of length r4
+sdk_mem_zero	r4	value	libc.c:43 numeric/enum/handle/callback-code use only
+sdk_OSRestoreInterrupts	r3	value	os.c:155 numeric/enum/handle/callback-code use only
+sdk_GXSetVtxDesc	r3	value	gx.c:2984 numeric/enum/handle/callback-code use only
+sdk_GXSetVtxDesc	r4	value	gx.c:2984 numeric/enum/handle/callback-code use only
+sdk_GXSetVtxAttrFmt	r3	value	gx.c:2988 numeric/enum/handle/callback-code use only
+sdk_GXSetVtxAttrFmt	r4	value	gx.c:2988 numeric/enum/handle/callback-code use only
+sdk_GXSetVtxAttrFmt	r5	value	gx.c:2988 numeric/enum/handle/callback-code use only
+sdk_GXSetVtxAttrFmt	r6	value	gx.c:2988 numeric/enum/handle/callback-code use only
+sdk_GXSetVtxAttrFmt	r7	value	gx.c:2988 numeric/enum/handle/callback-code use only
+sdk_OSReport	r3	unknown	os.c:171 guest_format reads fmt string unbounded
+sdk_OSReport	r4	unknown	os.c:171/165 varargs, %s derefs guest_str
+sdk_OSReport	r5	unknown	os.c:171/165 varargs, %s derefs guest_str
+sdk_OSReport	r6	unknown	os.c:171/165 varargs, %s derefs guest_str
+sdk_OSReport	r7	unknown	os.c:171/165 varargs, %s derefs guest_str
+sdk_OSReport	r8	unknown	os.c:171/165 varargs, %s derefs guest_str
+sdk_OSReport	r9	unknown	os.c:171/165 varargs, %s derefs guest_str
+sdk_OSReport	r10	unknown	os.c:171/165 varargs, %s derefs guest_str
+sdk_memset	r3	unknown	libc.c:35 memset of length r5
+sdk_memset	r4	value	libc.c:30 numeric/enum/handle/callback-code use only
+sdk_memset	r5	value	libc.c:30 numeric/enum/handle/callback-code use only
+sdk_GXSetTevOrder	r3	value	gx.c:3251 numeric/enum/handle/callback-code use only
+sdk_GXSetTevOrder	r4	value	gx.c:3251 numeric/enum/handle/callback-code use only
+sdk_GXSetTevOrder	r5	value	gx.c:3251 numeric/enum/handle/callback-code use only
+sdk_GXSetTevOrder	r6	value	gx.c:3251 numeric/enum/handle/callback-code use only
+sdk_GXBegin	r3	value	gx.c:2972 numeric/enum/handle/callback-code use only
+sdk_GXBegin	r4	value	gx.c:2972 numeric/enum/handle/callback-code use only
+sdk_GXBegin	r5	value	gx.c:2972 numeric/enum/handle/callback-code use only
+sdk_memcpy	r3	unknown	libc.c:24 memmove dst, length r5
+sdk_memcpy	r4	unknown	libc.c:24 memmove src, length r5
+sdk_memcpy	r5	value	libc.c:20 numeric/enum/handle/callback-code use only
+sdk_GXSetNumTexGens	r3	value	gx.c:3088 numeric/enum/handle/callback-code use only
+sdk_GXSetNumTevStages	r3	value	gx.c:3249 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorIn	r3	value	gx.c:3253 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorIn	r4	value	gx.c:3253 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorIn	r5	value	gx.c:3253 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorIn	r6	value	gx.c:3253 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorIn	r7	value	gx.c:3253 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaIn	r3	value	gx.c:3255 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaIn	r4	value	gx.c:3255 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaIn	r5	value	gx.c:3255 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaIn	r6	value	gx.c:3255 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaIn	r7	value	gx.c:3255 numeric/enum/handle/callback-code use only
+sdk_GXSetNumChans	r3	value	gx.c:3092 numeric/enum/handle/callback-code use only
+sdk_GXSetChanCtrl	r3	value	gx.c:3099 numeric/enum/handle/callback-code use only
+sdk_GXSetChanCtrl	r4	value	gx.c:3099 numeric/enum/handle/callback-code use only
+sdk_GXSetChanCtrl	r5	value	gx.c:3099 numeric/enum/handle/callback-code use only
+sdk_GXSetChanCtrl	r6	value	gx.c:3099 numeric/enum/handle/callback-code use only
+sdk_GXSetChanCtrl	r7	value	gx.c:3099 numeric/enum/handle/callback-code use only
+sdk_GXSetChanCtrl	r8	value	gx.c:3099 numeric/enum/handle/callback-code use only
+sdk_GXSetChanCtrl	r9	value	gx.c:3099 numeric/enum/handle/callback-code use only
+sdk_OSPanic	r3	unknown	os.c:165 guest_str of file name (string, capped 63)
+sdk_OSPanic	r4	value	os.c:212 line number printed
+sdk_OSPanic	r5	unknown	os.c:171 guest_format reads fmt string
+sdk_OSPanic	r6	unknown	os.c:171 varargs, %s derefs guest_str
+sdk_OSPanic	r7	unknown	os.c:171 varargs, %s derefs guest_str
+sdk_OSPanic	r8	unknown	os.c:171 varargs, %s derefs guest_str
+sdk_OSPanic	r9	unknown	os.c:171 varargs, %s derefs guest_str
+sdk_OSPanic	r10	unknown	os.c:171 varargs, %s derefs guest_str
+sdk_GXSetCurrentMtx	r3	value	gx.c:3036 numeric/enum/handle/callback-code use only
+sdk_GXSetBlendMode	r3	value	gx.c:3300 numeric/enum/handle/callback-code use only
+sdk_GXSetBlendMode	r4	value	gx.c:3300 numeric/enum/handle/callback-code use only
+sdk_GXSetBlendMode	r5	value	gx.c:3300 numeric/enum/handle/callback-code use only
+sdk_GXSetBlendMode	r6	value	gx.c:3300 numeric/enum/handle/callback-code use only
+sdk_GXLoadPosMtxImm	r3	ptr 48	gx.c:3008 load_mtx reads 12 words
+sdk_GXLoadPosMtxImm	r4	value	gx.c:3014 numeric/enum/handle/callback-code use only
+sdk_GXSetTevOp	r3	value	gx.c:3272 numeric/enum/handle/callback-code use only
+sdk_GXSetTevOp	r4	value	gx.c:3272 numeric/enum/handle/callback-code use only
+sdk_GXSetTexCoordGen2	r3	value	gx.c:3090 numeric/enum/handle/callback-code use only
+sdk_GXSetTexCoordGen2	r4	value	gx.c:3090 numeric/enum/handle/callback-code use only
+sdk_GXSetTexCoordGen2	r5	value	gx.c:3090 numeric/enum/handle/callback-code use only
+sdk_GXSetTexCoordGen2	r6	value	gx.c:3090 numeric/enum/handle/callback-code use only
+sdk_GXSetTexCoordGen2	r7	value	gx.c:3090 numeric/enum/handle/callback-code use only
+sdk_VIWaitForRetrace	r3	value	vi.c:42 numeric/enum/handle/callback-code use only
+sdk_VIWaitForRetrace	r4	value	vi.c:42 numeric/enum/handle/callback-code use only
+sdk_VIWaitForRetrace	r5	value	vi.c:42 numeric/enum/handle/callback-code use only
+sdk_VIWaitForRetrace	r6	value	vi.c:42 numeric/enum/handle/callback-code use only
+sdk_VIWaitForRetrace	r7	value	vi.c:42 numeric/enum/handle/callback-code use only
+sdk_VIWaitForRetrace	r8	value	vi.c:42 numeric/enum/handle/callback-code use only
+sdk_VIWaitForRetrace	r9	value	vi.c:42 numeric/enum/handle/callback-code use only
+sdk_VIWaitForRetrace	r10	value	vi.c:42 numeric/enum/handle/callback-code use only
+sdk_GXSetScissor	r3	value	gx.c:3079 numeric/enum/handle/callback-code use only
+sdk_GXSetScissor	r4	value	gx.c:3079 numeric/enum/handle/callback-code use only
+sdk_GXSetScissor	r5	value	gx.c:3079 numeric/enum/handle/callback-code use only
+sdk_GXSetScissor	r6	value	gx.c:3079 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorOp	r3	value	gx.c:3257 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorOp	r4	value	gx.c:3257 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorOp	r5	value	gx.c:3257 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorOp	r6	value	gx.c:3257 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorOp	r7	value	gx.c:3257 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorOp	r8	value	gx.c:3257 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaOp	r3	value	gx.c:3259 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaOp	r4	value	gx.c:3259 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaOp	r5	value	gx.c:3259 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaOp	r6	value	gx.c:3259 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaOp	r7	value	gx.c:3259 numeric/enum/handle/callback-code use only
+sdk_GXSetTevAlphaOp	r8	value	gx.c:3259 numeric/enum/handle/callback-code use only
+sdk_GXSetZMode	r3	value	gx.c:3302 numeric/enum/handle/callback-code use only
+sdk_GXSetZMode	r4	value	gx.c:3302 numeric/enum/handle/callback-code use only
+sdk_GXSetZMode	r5	value	gx.c:3302 numeric/enum/handle/callback-code use only
+sdk_GXSetTevSwapMode	r3	value	gx.c:3294 numeric/enum/handle/callback-code use only
+sdk_GXSetTevSwapMode	r4	value	gx.c:3294 numeric/enum/handle/callback-code use only
+sdk_GXSetTevSwapMode	r5	value	gx.c:3294 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObjLOD	r3	ptr 8	gx.c:3178 texobj_lod rd32/wr32 at +0, wr32 +4
+sdk_GXInitTexObjLOD	r4	value	gx.c:3197 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObjLOD	r5	value	gx.c:3197 numeric/enum/handle/callback-code use only
+sdk_GXLoadTexMtxImm	r3	ptr 48	gx.c:3033 load_mtx 2x4 or 3x4 words, max 12 words (no read when r4>=64)
+sdk_GXLoadTexMtxImm	r4	value	gx.c:3030 numeric/enum/handle/callback-code use only
+sdk_GXLoadTexMtxImm	r5	value	gx.c:3030 numeric/enum/handle/callback-code use only
+sdk_GXSetProjection	r3	ptr 48	gx.c:3050-3055 rd32 at 0x00..0x2c, end 0x30
+sdk_GXSetProjection	r4	value	gx.c:3046 numeric/enum/handle/callback-code use only
+sdk_GXLoadTexObj	r3	ptr 32	gx.c:3183 texobj_read: +0,+4,+8,+0xc,+0x18,+0x1f, end 0x20 (early return if r4>=8)
+sdk_GXLoadTexObj	r4	value	gx.c:3199 numeric/enum/handle/callback-code use only
+sdk_DVDReadAsyncPrio	r3	unknown	dvd.c:283 issue keeps fi in queue; deliver (dvd.c:~323) writes fi+0xc and calls cb(fi) later
+sdk_DVDReadAsyncPrio	r4	unknown	dvd.c:283 read buffer written asynchronously, length r5
+sdk_DVDReadAsyncPrio	r5	value	dvd.c:383 numeric/enum/handle/callback-code use only
+sdk_DVDReadAsyncPrio	r6	value	dvd.c:383 numeric/enum/handle/callback-code use only
+sdk_DVDReadAsyncPrio	r7	value	dvd.c:388 guest callback code address stored/called later (code, not data)
+sdk_GXLoadLightObjImm	r3	ptr 64	gx.c:3150-3151 reads up to +0x34+12=0x40 (copied into queue record)
+sdk_GXLoadLightObjImm	r4	value	gx.c:3146 numeric/enum/handle/callback-code use only
+sdk_GXSetChanMatColor	r3	value	gx.c:3105 numeric/enum/handle/callback-code use only
+sdk_GXSetChanMatColor	r4	ptr 4	gx.c:3102 color_word reads 4 bytes (copied into record)
+sdk_GXSetTevColor	r3	value	gx.c:3274 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColor	r4	ptr 4	gx.c:3102 color_word reads 4 bytes (copied into record)
+sdk_LCStoreData	r3	unknown	os.c:236 copy_lines dst, length r5 rounded to 32
+sdk_LCStoreData	r4	unknown	os.c:236 copy_lines src, length r5
+sdk_LCStoreData	r5	value	os.c:233 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObj	r3	ptr 32	gx.c:3165 texobj_init writes +0..+0x1f
+sdk_GXInitTexObj	r4	unknown	gx.c:3171 image address kept in texobj (+0xc), decoded at draw time
+sdk_GXInitTexObj	r5	value	gx.c:3195 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObj	r6	value	gx.c:3195 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObj	r7	value	gx.c:3195 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObj	r8	value	gx.c:3195 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObj	r9	value	gx.c:3195 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObj	r10	value	gx.c:3195 numeric/enum/handle/callback-code use only
+sdk_GXInitLightPos	r3	ptr 52	gx.c:3114 lset at +0x28..+0x33
+sdk_GXInitLightColor	r3	ptr 16	gx.c:3116 wr32 at +0xc
+sdk_GXInitLightColor	r4	ptr 4	gx.c:3116 rd32(R[4])
+sdk_GXSetChanAmbColor	r3	value	gx.c:3108 numeric/enum/handle/callback-code use only
+sdk_GXSetChanAmbColor	r4	ptr 4	gx.c:3102 color_word reads 4 bytes (copied into record)
+sdk_CARDGetResultCode	r3	value	card.c:94 numeric/enum/handle/callback-code use only
+sdk_ARQPostRequest	r3	unknown	ar.c:51 req kept in pending[], fields read at completion
+sdk_ARQPostRequest	r4	unknown	ar.c:45 owner stored into guest req struct, opaque pointer escapes
+sdk_ARQPostRequest	r5	value	ar.c:42 numeric/enum/handle/callback-code use only
+sdk_ARQPostRequest	r6	value	ar.c:42 numeric/enum/handle/callback-code use only
+sdk_ARQPostRequest	r7	unknown	ar.c:47 dma MRAM src (type 0) / ARAM, length r9
+sdk_ARQPostRequest	r8	unknown	ar.c:47 dma MRAM dst (type 1) / ARAM, length r9
+sdk_ARQPostRequest	r9	value	ar.c:42 numeric/enum/handle/callback-code use only
+sdk_ARQPostRequest	r10	value	ar.c:46 callback code address stored in req
+sdk_GXInitLightAttn	r3	ptr 40	gx.c:3117 lset +0x10, 6 words, end 0x28
+sdk_GXSetAlphaCompare	r3	value	gx.c:3296 numeric/enum/handle/callback-code use only
+sdk_GXSetAlphaCompare	r4	value	gx.c:3296 numeric/enum/handle/callback-code use only
+sdk_GXSetAlphaCompare	r5	value	gx.c:3296 numeric/enum/handle/callback-code use only
+sdk_GXSetAlphaCompare	r6	value	gx.c:3296 numeric/enum/handle/callback-code use only
+sdk_GXSetAlphaCompare	r7	value	gx.c:3296 numeric/enum/handle/callback-code use only
+sdk_GXSetDispCopySrc	r3	value	gx.c:3310 numeric/enum/handle/callback-code use only
+sdk_GXSetDispCopySrc	r4	value	gx.c:3310 numeric/enum/handle/callback-code use only
+sdk_GXSetDispCopySrc	r5	value	gx.c:3310 numeric/enum/handle/callback-code use only
+sdk_GXSetDispCopySrc	r6	value	gx.c:3310 numeric/enum/handle/callback-code use only
+sdk_GXLoadNrmMtxImm	r3	ptr 44	gx.c:3026 rd32 offsets (r*4+c)*4, r,c<3: max end 44
+sdk_GXLoadNrmMtxImm	r4	value	gx.c:3022 numeric/enum/handle/callback-code use only
+sdk_DVDFastOpen	r3	value	dvd.c:113 numeric/enum/handle/callback-code use only
+sdk_DVDFastOpen	r4	ptr 60	dvd.c:105 fast_open wr32 fi+0x30,0x34,0x38,0x0c, end 0x3c
+sdk_GXSetCullMode	r3	value	gx.c:3084 numeric/enum/handle/callback-code use only
+sdk_GXInitTlutObj	r3	ptr 10	gx.c:3190 tlutobj_init wr32 +0,+4, wr16 +8
+sdk_GXInitTlutObj	r4	unknown	gx.c:3192 table address kept in tlut obj, read at GXLoadTlut/draw
+sdk_GXInitTlutObj	r5	value	gx.c:3207 numeric/enum/handle/callback-code use only
+sdk_GXInitTlutObj	r6	value	gx.c:3207 numeric/enum/handle/callback-code use only
+sdk_GXLoadTlut	r3	ptr 10	gx.c:3215 rd32 +4, rd32 +0, rd16 +8 (only if r4<20)
+sdk_GXLoadTlut	r4	value	gx.c:3212 numeric/enum/handle/callback-code use only
+sdk_TPLGet	r3	ptr 12	gx.c:3227 rd32(r3+8); returns a pointer loaded from there (not r3-derived)
+sdk_TPLGet	r4	value	gx.c:3227 numeric/enum/handle/callback-code use only
+sdk_AXSetVoiceVe	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceVe	r4	ptr 4	ax.c:144 copy16 4 bytes
+sdk_DVDReadPrio	r3	unknown	dvd.c:397 issue leaves fi in queue; deliver (dvd.c:~323) rd32/wr32 fi+0xc at a later wait point
+sdk_DVDReadPrio	r4	unknown	dvd.c:397 read buffer, length r5
+sdk_DVDReadPrio	r5	value	dvd.c:393 numeric/enum/handle/callback-code use only
+sdk_DVDReadPrio	r6	value	dvd.c:393 numeric/enum/handle/callback-code use only
+sdk_GXSetTevKColorSel	r3	value	gx.c:3290 numeric/enum/handle/callback-code use only
+sdk_GXSetTevKColorSel	r4	value	gx.c:3290 numeric/enum/handle/callback-code use only
+sdk_AXAcquireVoice	r3	value	ax.c:67 numeric/enum/handle/callback-code use only
+sdk_AXAcquireVoice	r4	value	ax.c:74 callback code address stored in VPB
+sdk_AXAcquireVoice	r5	unknown	ax.c:74 context stored into VPB (+0x14) for guest use, may be a pointer
+sdk_TPLGetGXTexObjFromPalette	r3	ptr 12	gx.c:3236 rd32(r3+8); further reads go through loaded pointers
+sdk_TPLGetGXTexObjFromPalette	r4	ptr 32	gx.c:3228 tpl_texobj -> texobj_init/texobj_lod write +0..+0x1f
+sdk_TPLGetGXTexObjFromPalette	r5	value	gx.c:3234 numeric/enum/handle/callback-code use only
+sdk_TPLGetGXTexObjFromPaletteCI	r3	ptr 12	gx.c:3241 rd32(r3+8); further reads go through loaded pointers
+sdk_TPLGetGXTexObjFromPaletteCI	r4	ptr 32	gx.c:3243 tpl_texobj writes +0..+0x1f
+sdk_TPLGetGXTexObjFromPaletteCI	r5	ptr 10	gx.c:3242 tlutobj_init writes +0..+9
+sdk_TPLGetGXTexObjFromPaletteCI	r6	value	gx.c:3239 numeric/enum/handle/callback-code use only
+sdk_TPLGetGXTexObjFromPaletteCI	r7	value	gx.c:3239 numeric/enum/handle/callback-code use only
+sdk_GXSetTevKAlphaSel	r3	value	gx.c:3292 numeric/enum/handle/callback-code use only
+sdk_GXSetTevKAlphaSel	r4	value	gx.c:3292 numeric/enum/handle/callback-code use only
+sdk_GXSetTevKColor	r3	value	gx.c:3288 numeric/enum/handle/callback-code use only
+sdk_GXSetTevKColor	r4	ptr 4	gx.c:3102 color_word reads 4 bytes (copied into record)
+sdk_GXInitTexObjCI	r3	ptr 32	gx.c:3165 texobj_init writes +0..+0x1f
+sdk_GXInitTexObjCI	r4	unknown	gx.c:3171 image address kept in texobj (+0xc), decoded at draw time
+sdk_GXInitTexObjCI	r5	value	gx.c:3196 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObjCI	r6	value	gx.c:3196 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObjCI	r7	value	gx.c:3196 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObjCI	r8	value	gx.c:3196 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObjCI	r9	value	gx.c:3196 numeric/enum/handle/callback-code use only
+sdk_GXInitTexObjCI	r10	value	gx.c:3196 numeric/enum/handle/callback-code use only
+sdk_OSAllocFromHeap	r3	value	os.c:111 numeric/enum/handle/callback-code use only
+sdk_OSAllocFromHeap	r4	value	os.c:111 numeric/enum/handle/callback-code use only
+sdk_OSSetArenaLo	r3	unknown	os.c:25 stored in arena_lo, later handed out as allocations
+sdk_ARAlloc	r3	value	ar.c:28 numeric/enum/handle/callback-code use only
+sdk_OSCreateHeap	r3	unknown	os.c:98 heap region start: header written, region managed later by OSAllocFromHeap/FreeToHeap
+sdk_OSCreateHeap	r4	unknown	os.c:95 heap region end retained as heap size
+sdk_OSSetCurrentHeap	r3	value	os.c:109 numeric/enum/handle/callback-code use only
+sdk_AXFreeVoice	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_GXInitLightDistAttn	r3	ptr 40	gx.c:3143 lset +0x10 words 3-5, end 0x28
+sdk_GXInitLightDistAttn	r4	value	gx.c:3134 numeric/enum/handle/callback-code use only
+sdk_GXCopyDisp	r3	value	gx.c:3322 numeric/enum/handle/callback-code use only
+sdk_GXCopyDisp	r4	value	gx.c:3322 numeric/enum/handle/callback-code use only
+sdk_AIRegisterDMACallback	r3	value	ai.c:19 numeric/enum/handle/callback-code use only
+sdk_AIInitDMA	r3	unknown	ai.c:21 DMA source address kept, read by audio at tick time
+sdk_AIInitDMA	r4	value	ai.c:21 numeric/enum/handle/callback-code use only
+sdk_DVDOpen	r3	unknown	dvd.c:35 guest_str path (string)
+sdk_DVDOpen	r4	ptr 60	dvd.c:105 fast_open wr32 fi+0x30..0x3b
+sdk_GXSetColorUpdate	r3	value	gx.c:3304 numeric/enum/handle/callback-code use only
+sdk_GXSetAlphaUpdate	r3	value	gx.c:3306 numeric/enum/handle/callback-code use only
+sdk_DVDConvertPathToEntrynum	r3	unknown	dvd.c:78 path_to_entry guest_str string
+sdk_CARDGetStatus	r3	value	card.c:205 numeric/enum/handle/callback-code use only
+sdk_CARDGetStatus	r5	ptr 108	card.c:214-218 wr8/wr32 within STAT_SIZE 0x6c
+sdk_CARDClose	r3	ptr 4	card.c:136 wr32(R[3])
+sdk_CARDWriteAsync	r3	ptr 4	card.c:175 rw rd32(fi) only (chan)
+sdk_CARDWriteAsync	r4	unknown	card.c:174 rw: rd8 buf, length r5
+sdk_CARDWriteAsync	r5	value	card.c:199 numeric/enum/handle/callback-code use only
+sdk_CARDWriteAsync	r6	value	card.c:199 numeric/enum/handle/callback-code use only
+sdk_AXSetVoicePriority	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoicePriority	r4	value	ax.c:97 numeric/enum/handle/callback-code use only
+sdk_AXSetVoiceAddr	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceAddr	r4	ptr 16	ax.c:150 copy16 16 bytes
+sdk_AXSetVoiceAdpcm	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceAdpcm	r4	ptr 40	ax.c:163 copy16 0x28 bytes
+sdk_AXSetVoiceState	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceState	r4	value	ax.c:114 numeric/enum/handle/callback-code use only
+sdk_AXSetVoiceLoopAddr	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceLoopAddr	r4	value	ax.c:160 numeric/enum/handle/callback-code use only
+sdk_GXSetArray	r3	value	gx.c:2995 numeric/enum/handle/callback-code use only
+sdk_GXSetArray	r4	unknown	gx.c:2994 array base stored in gx.array_base, read at draw time
+sdk_GXSetArray	r5	value	gx.c:2995 numeric/enum/handle/callback-code use only
+sdk_GXInitLightDir	r3	ptr 64	gx.c:3115 lset +0x34, 3 words, end 0x40
+sdk_GXSetTevColorS10	r3	value	gx.c:3279 numeric/enum/handle/callback-code use only
+sdk_GXSetTevColorS10	r4	ptr 8	gx.c:3284 rd16 x4
+sdk_DVDChangeDir	r3	unknown	dvd.c:78 path_to_entry guest_str string
+sdk_OSInitAlloc	r3	value	os.c:90 arithmetic only, returned (+12*max); no deref
+sdk_OSInitAlloc	r5	value	os.c:83 numeric/enum/handle/callback-code use only
+sdk_CARDUnmount	r3	value	card.c:87 numeric/enum/handle/callback-code use only
+sdk_CARDGetSerialNo	r3	value	card.c:237 numeric/enum/handle/callback-code use only
+sdk_CARDGetSerialNo	r4	ptr 8	card.c:240 wr64
+sdk_OSFreeToHeap	r3	value	os.c:134 numeric/enum/handle/callback-code use only
+sdk_OSFreeToHeap	r4	unknown	os.c:137-140 touches chunk header at r4-HDR and neighbouring chunks (negative offsets)
+sdk_AXSetVoiceSrcType	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceSrcType	r4	value	ax.c:105 numeric/enum/handle/callback-code use only
+sdk_AXSetVoiceSrc	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceSrc	r4	ptr 14	ax.c:164 copy16 14 bytes
+sdk_AXSetVoiceAdpcmLoop	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceAdpcmLoop	r4	ptr 6	ax.c:172 copy16 6 bytes
+sdk_AXSetVoiceItdOn	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceMix	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceMix	r4	ptr 36	ax.c:129 rd16 x18
+sdk_AXSetVoiceItdTarget	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceItdTarget	r4	value	ax.c:143 numeric/enum/handle/callback-code use only
+sdk_AXSetVoiceItdTarget	r5	value	ax.c:143 numeric/enum/handle/callback-code use only
+sdk_AXSetVoiceEndAddr	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceEndAddr	r4	value	ax.c:161 numeric/enum/handle/callback-code use only
+sdk_GXGetProjectionv	r3	ptr 28	gx.c:3067-3068 wr32 +0..+0x1b
+sdk_GXInitLightSpot	r3	ptr 28	gx.c:3132 lset +0x10 words 0-2, end 0x1c
+sdk_GXInitLightSpot	r4	value	gx.c:3118 numeric/enum/handle/callback-code use only
+sdk_OSAllocFromArenaLo	r3	value	os.c:28 numeric/enum/handle/callback-code use only
+sdk_OSAllocFromArenaLo	r4	value	os.c:28 numeric/enum/handle/callback-code use only
+sdk_GXGetViewportv	r3	ptr 24	gx.c:3077 wr32 6 words
+sdk_DVDCancel	r3	ptr 16	dvd.c:425 compared with queued fi, wr32 +0xc (completes reads within the call)
+sdk_GXSetScissorBoxOffset	r3	value	gx.c:3081 numeric/enum/handle/callback-code use only
+sdk_GXSetScissorBoxOffset	r4	value	gx.c:3081 numeric/enum/handle/callback-code use only
+sdk_PADRead	r3	ptr 48	pad.c:91-126 4 ports x 12 bytes
+sdk_DVDGetDriveStatus	r3	value	dvd.c:411 numeric/enum/handle/callback-code use only
+sdk_DVDGetDriveStatus	r4	value	dvd.c:411 numeric/enum/handle/callback-code use only
+sdk_DVDGetDriveStatus	r5	value	dvd.c:411 numeric/enum/handle/callback-code use only
+sdk_DVDGetDriveStatus	r6	value	dvd.c:411 numeric/enum/handle/callback-code use only
+sdk_DVDGetDriveStatus	r7	value	dvd.c:411 numeric/enum/handle/callback-code use only
+sdk_DVDGetDriveStatus	r8	value	dvd.c:411 numeric/enum/handle/callback-code use only
+sdk_DVDGetDriveStatus	r9	value	dvd.c:411 numeric/enum/handle/callback-code use only
+sdk_DVDGetDriveStatus	r10	value	dvd.c:411 numeric/enum/handle/callback-code use only
+sdk_DVDOpenDir	r3	unknown	dvd.c:78 path_to_entry guest_str string
+sdk_DVDOpenDir	r4	ptr 12	dvd.c:139 wr32 +0,+4,+8
+sdk_DVDReadDir	r3	ptr 12	dvd.c:145-148 rd32/wr32 +0,+4,+8
+sdk_DVDReadDir	r4	ptr 12	dvd.c:147 wr32 +0,+4,+8
+sdk_CARDDeleteAsync	r3	value	card.c:160 numeric/enum/handle/callback-code use only
+sdk_CARDDeleteAsync	r4	unknown	card.c:44 host_path reads name string (cap 32)
+sdk_CARDReadAsync	r3	ptr 4	card.c:175 rw rd32(fi) only (chan)
+sdk_CARDReadAsync	r4	unknown	card.c:174 rw: wr8 buf, length r5
+sdk_CARDReadAsync	r5	value	card.c:198 numeric/enum/handle/callback-code use only
+sdk_CARDReadAsync	r6	value	card.c:198 numeric/enum/handle/callback-code use only
+sdk_CARDFormatAsync	r3	value	card.c:97 numeric/enum/handle/callback-code use only
+sdk_CARDMountAsync	r3	value	card.c:86 numeric/enum/handle/callback-code use only
+sdk_CARDCheckExAsync	r3	value	card.c:89 numeric/enum/handle/callback-code use only
+sdk_CARDCheckExAsync	r4	ptr 4	card.c:91 wr32(R[4])
+sdk_CARDSetStatus	r3	value	card.c:233 numeric/enum/handle/callback-code use only
+sdk_CARDSetStatus	r5	ptr 108	card.c:222 set_status rd8 STAT_SIZE 0x6c
+sdk_CARDOpen	r3	value	card.c:120 numeric/enum/handle/callback-code use only
+sdk_CARDOpen	r4	unknown	card.c:129 name stored in open_name, re-read by later CARDGetStatus (string)
+sdk_CARDOpen	r5	ptr 18	card.c:70 fill_info wr32 +0..+12, wr16 +16
+sdk_CARDFreeBlocks	r3	value	card.c:108 numeric/enum/handle/callback-code use only
+sdk_CARDFreeBlocks	r4	ptr 4	card.c:114 wr32(R[4])
+sdk_CARDFreeBlocks	r5	ptr 4	card.c:115 wr32(R[5])
+sdk_CARDCreateAsync	r3	value	card.c:139 numeric/enum/handle/callback-code use only
+sdk_CARDCreateAsync	r4	unknown	card.c:153 name stored in open_name, re-read later (string)
+sdk_CARDCreateAsync	r5	value	card.c:139 numeric/enum/handle/callback-code use only
+sdk_CARDCreateAsync	r6	ptr 18	card.c:70 fill_info wr32 +0..+12, wr16 +16
+sdk_CARDProbeEx	r3	value	card.c:75 numeric/enum/handle/callback-code use only
+sdk_CARDProbeEx	r4	ptr 4	card.c:80 wr32(R[4])
+sdk_CARDProbeEx	r5	ptr 4	card.c:81 wr32(R[5])
+sdk_OSSetSoundMode	r3	value	os.c:260 numeric/enum/handle/callback-code use only
+sdk_AXSetVoiceSrcRatio	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceVeDelta	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceVeDelta	r4	value	ax.c:145 numeric/enum/handle/callback-code use only
+sdk_AXSetVoiceLoop	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceLoop	r4	value	ax.c:159 numeric/enum/handle/callback-code use only
+sdk_AXSetVoiceCurrentAddr	r3	ptr 512	ax.c:100 voice block in VPB region (VPB_SIZE 0x200, all offsets < 0x1f8)
+sdk_AXSetVoiceCurrentAddr	r4	value	ax.c:162 numeric/enum/handle/callback-code use only
+sdk_AISetDSPSampleRate	r3	value	ai.c:25 numeric/enum/handle/callback-code use only
+sdk_AXRegisterCallback	r3	value	ax.c:54 numeric/enum/handle/callback-code use only
+sdk_AISetStreamVolLeft	r3	value	ai.c:31 numeric/enum/handle/callback-code use only
+sdk_AISetStreamVolRight	r3	value	ai.c:32 numeric/enum/handle/callback-code use only
+sdk_GXCallDisplayList	r3	unknown	gx.c:2900 display list address handed to GX thread, read later
+sdk_GXCallDisplayList	r4	value	gx.c:2896 numeric/enum/handle/callback-code use only
+sdk_OSDestroyHeap	r3	value	os.c:108 numeric/enum/handle/callback-code use only
+sdk_GXSetCopyClear	r3	ptr 4	gx.c:3312 color_word reads 4 bytes
+sdk_GXSetCopyClear	r4	value	gx.c:3312 numeric/enum/handle/callback-code use only
+sdk_GXDrawDone	r3	value	gx.c:2968 numeric/enum/handle/callback-code use only
+sdk_GXDrawDone	r4	value	gx.c:2968 numeric/enum/handle/callback-code use only
+sdk_GXDrawDone	r5	value	gx.c:2968 numeric/enum/handle/callback-code use only
+sdk_GXDrawDone	r6	value	gx.c:2968 numeric/enum/handle/callback-code use only
+sdk_GXDrawDone	r7	value	gx.c:2968 numeric/enum/handle/callback-code use only
+sdk_GXDrawDone	r8	value	gx.c:2968 numeric/enum/handle/callback-code use only
+sdk_GXDrawDone	r9	value	gx.c:2968 numeric/enum/handle/callback-code use only
+sdk_GXDrawDone	r10	value	gx.c:2968 numeric/enum/handle/callback-code use only
+sdk_GXWaitDrawDone	r3	value	gx.c:2967 numeric/enum/handle/callback-code use only
+sdk_GXWaitDrawDone	r4	value	gx.c:2967 numeric/enum/handle/callback-code use only
+sdk_GXWaitDrawDone	r5	value	gx.c:2967 numeric/enum/handle/callback-code use only
+sdk_GXWaitDrawDone	r6	value	gx.c:2967 numeric/enum/handle/callback-code use only
+sdk_GXWaitDrawDone	r7	value	gx.c:2967 numeric/enum/handle/callback-code use only
+sdk_GXWaitDrawDone	r8	value	gx.c:2967 numeric/enum/handle/callback-code use only
+sdk_GXWaitDrawDone	r9	value	gx.c:2967 numeric/enum/handle/callback-code use only
+sdk_GXWaitDrawDone	r10	value	gx.c:2967 numeric/enum/handle/callback-code use only
+sdk_VISetPreRetraceCallback	r3	value	vi.c:34 numeric/enum/handle/callback-code use only
+sdk_VISetPostRetraceCallback	r3	value	vi.c:35 numeric/enum/handle/callback-code use only
+sdk_GXSetDrawDoneCallback	r3	value	gx.c:2966 numeric/enum/handle/callback-code use only
+sdk_GXCopyTex	r3	unknown	gx.c:3314 destination address stored in copy_dst[], compared to texture addresses at draw (never dereferenced)
+sdk_DCZeroRange	r3	value	os.c:247 numeric/enum/handle/callback-code use only
+sdk_DCZeroRange	r4	value	os.c:247 numeric/enum/handle/callback-code use only
+sdk_memcpy	ret	r3	libc.c:20 native leaves R[3]=dst unchanged, so the guest sees dst returned
+sdk_memset	ret	r3	libc.c:30 R[3]=dst left unchanged
+sdk_mem_zero	ret	r3	libc.c:43 R[3]=dst left unchanged (void in C)
+sdk_OSInitAlloc	ret	r3	os.c:90 returns ROUNDUP(r3+12*r5,32), derived from r3

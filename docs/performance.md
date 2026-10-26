@@ -93,6 +93,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
+| 10-26 | **Pointer-extent stack promotion** (translator: frame words outside every byte range reached through a frame pointer, with per-callee r3-r12 extents and `tools/recomp/native_ptr_ext.tsv` for natives; 3439 -> 4578 words) | Citra 2v2 game 36.0 -> 35.6 ms (-1.1%, 2 runs), battle 14.0 -> 13.9, campaign 8.0 -> 7.9; .text -0.7%; logs + fb identical (branch ptr-extent-promo) | below the 2% bar: the hot particle frames' remaining words are buffers really passed to PSMTX*/OSReport. Off by default; `RECOMP_PTR_EXTENT=1` at generation turns it on. Not on hardware |
 | 10-23 | Inline copies: `static inline` copies of translated functions of <= 32 instructions in each gen/ file that calls them (GCC inlines across files) | Citra 2v2 game 37.4 -> 37.2 ms (-0.5%), +5.5% ARM instructions | below the 2% bar; small callees are cheap to call already |
 | 10-23 | Per-native in-sets, LR save/restore removal | sized from site counts: < 0.1 ms and ~0.3 ms | not built (see unknowns "2v2 game CPU 2") |
 | 10-22 | -O3 on gen/ (`make GENOPT=-O3`) | Citra battle game 19.96 -> 19.94 ms, +9% code | no gain; more code for the 16 KB I-cache |
@@ -119,6 +120,9 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
   repeat an argument within the frame. The family's 16.4k remaining stack accesses per frame sit above
   address-taken locals. Ranked next: pointer-extent stack promotion, then a lazy vertex descriptor in gx.c and a
   sin/cos memo study; the in-family redundant math is game logic and too small for a session.
+- **Pointer-extent stack promotion tried** (2026-10-26, unknowns "Pointer-extent stack promotion"): +33% promoted
+  words, Citra 2v2 game -1.1%, identical replays; off by default (below 2%). Next in the 2v2 sequence: lazy vertex
+  descriptor (gx.c), then the sin/cos memo study.
 - Hardware run of main@dad2161 (vertex packing + 2v2 CPU work): campaign/battle GPU ms with the "Vertex pack"
   button on/off, 2v2 game ms vs run 28 (29.8), "Native sin/cos" on/off.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),

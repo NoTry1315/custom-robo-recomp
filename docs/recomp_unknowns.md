@@ -1972,6 +1972,89 @@ translator can deliver, and it applies game-wide. Replace session 3 (redundant m
 lazy vertex descriptor (2) and the sin/cos memo study (3): the family's own confirmed redundancies are small and
 are game logic.
 
+## Pointer-extent stack promotion (2026-10-26, off by default, not on hardware)
+
+Task: let `promote_stack_slots` ("2v2 game CPU 2", step 4) promote frame words that sit above an address-taken
+local, by knowing how many bytes each pointer can reach. Base: branch 2v2-family-probe @39c4989. Citra only, same
+replays as before (`replay.ps1 -Name 2v2|battle|campaign|boot`, `time_avg.py --from 4260 / 2460 / 1500`).
+
+**What it does** (recomp.py `ptr_flow`, `ptr_summaries`, `native_arg_reads`, `native_ptr_ext`; on with
+`RECOMP_PTR_EXTENT=1` at generation, default off). The old rule excluded every word at or above the lowest
+r1-derived address the function computes (a definition counted as a use). The new one is a forward may-analysis
+per function. A register's value is a set of offset intervals per origin: origin 0 is the frame (r1 after the
+stwu, or at the entry when frameless), and origins 3-12 are the entry values of r3-r12 (r11/r12 because MWCC
+helpers such as the context save at 0x801ae9b4 take them). Uses give byte ranges:
+- `rN + k` / ea accesses give their bytes.
+- An indexed access, a store of the pointer, a `call_indirect` or any other use gives [lo + min(k, 0), INF): the
+  old upward assumption.
+- A call gives the callee's per-register reach. A frame word is promoted when no range covers it (plus every
+  earlier rule).
+
+Callee summaries (bytes reached through each of r3-r12, and the argument-derived values left in r3/r4) come from a
+fixpoint over the call graph: Tarjan SCCs, callees first; summaries only grow and are widened after 8 rounds.
+Natives:
+- A native reaches only the registers its runtime/ code reads (`native_arg_reads` parses runtime/*.c; LOG/printing
+  excluded, `gq_regs(fn, n)` = r3..r3+n-1, computed index = INDEX_READS or all, calling guest code = all).
+- `tools/recomp/native_ptr_ext.tsv` classifies those registers: value / ptr N / unknown, with file:line evidence.
+  It covers 136 natives, 354 registers (228 value, 76 ptr N, 50 unknown). A Sonnet subagent wrote it and I
+  spot-checked it (GXLoadNrmMtxImm 44, GXSetProjection 48, the colour setters 4). Natives with a ret row (memcpy,
+  memset, mem_zero, OSInitAlloc) keep the default rule.
+- MTX/MSL natives use their translated body's summary.
+
+After a call registers keep their values (a callee may leave them), so a stale frame pointer in r4 still counts
+at a later native that reads r4. New assumption: a function never returns the address of its own frame (C:
+locals are dead after the return). 197 functions do leave a frame pointer in r3/r4 at a return, all stale
+arguments. For frameless functions it is an escape into the caller's frame. `RECOMP_PTR_REPORT=addr,..` prints
+per-frame detail, and `RECOMP_PTR_RANGE=lo-hi` applies the new rule only to functions in [lo, hi) (bisecting).
+
+**Measured.**
+
+| | old rule (= default) | RECOMP_PTR_EXTENT=1 |
+|---|---|---|
+| promoted words / functions / accesses (static) | 3439 / 483 / 11085 | 4578 / 584 / 14333 |
+| words free of every other rule but kept for frame pointers | 3806 | 3277 |
+| frames with words a callee reaches | 533 | 429 |
+| ps_interpret 0x8017b4a4 / ps_disp_particle_b 0x801835b0 / ps_disp 0x8018144c words | 0 / 0 / 0 | 0 / 4 / 2 |
+| .text | 6,534,856 | 6,486,888 (-0.7%) |
+| Citra 2v2 game ms (2 runs) | 36.0 | 35.6, 35.6 (-1.1%) |
+| Citra battle 4.2 / campaign 8.3 game ms | 14.0 / 8.0 | 13.9 / 7.9 |
+
+Frame ms did not change (2v2 46.0 -> 45.9; in Citra the GX thread decides it). **Identity**: `compare_logs.py`
+exit 0 for 2v2, battle, campaign and boot, with the SDK/scene/pad lines and all fb dumps identical to 39c4989.
+With the switch off (the default), gen/ is byte-identical to 39c4989's.
+
+**Why the gain is small.** In the particle family the words left in memory are the address-taken buffers
+themselves, not words beside them.
+- In ps_disp_particle_b the vec3/matrix buffers at r1+24..216 really are passed to PSMTXMultVec/Copy/Concat. Their
+  ranges touch and merge, and the 30 remaining words all lie inside them.
+- ps_disp reaches OSReport (varargs: every register it reads is unknown) and the texture/TLUT natives from r1+24.
+- ps_interpret has a `call_indirect` (unknown from r1+16) and callee reach into its frame.
+
+Game-wide, the largest remaining causes of an unbounded range are:
+- indexed accesses to local arrays (102 functions);
+- the assert handler 0x801aea4c (73 functions; it calls OSReport and the context save with every register);
+- stores of a frame pointer (37);
+- `call_indirect` (36);
+- sprintf 0x80163710 (28).
+
+Making those precise (a format-aware OSReport/sprintf extent, bounding a local array's index) would add static
+words. Static counts did not predict much time, though: +33% words gave -1.1%. Below the 2% bar (as with LTO and
+the inline copies), so it is off by default. `RECOMP_PTR_EXTENT=1` keeps it available; it also shrinks .text.
+
+**Bugs found on the way** (each caught by the boot replay or a differential check, all fixed before the numbers
+above):
+1. A `\b` in the callee regex was lost to a shell heredoc and became a backspace, so the call graph was empty.
+   Summaries were then computed in arbitrary order and were stale: 0x8019cc64 promoted a struct it passes to
+   0x8019def4, and boot hung loading files. A function-range bisection (`RECOMP_PTR_RANGE`, 8 steps) found it.
+   recomp.py now refuses to run if its own source contains a control character. The same trap was noted in
+   "2v2 game CPU 2", so the guard is overdue.
+2. Inlined leaves start with a `/* inlined */` comment, and their first assignment was not parsed. Unparsed
+   assignments now stop the translator.
+3. `rD = rS + rX` kept only rS's origins (found by checking that every register the old analysis tracks as a frame
+   pointer is tracked by the new one at the same address: 0 mismatches after the fix).
+4. Blanking an indexed access hid its index register.
+5. The fixpoint oscillated on the recursive 0x80160c48: a recomputed summary can be smaller than the widened one.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 

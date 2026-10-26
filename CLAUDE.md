@@ -349,6 +349,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   of the game thread (18.6%), 0.47 ms in the 1v1, scales with particles (186 drawn vs 10). Ranked next: pointer-extent
   stack promotion, lazy vertex descriptor (gx.c), sin/cos memo (63% of calls repeat in-frame). Details: unknowns
   "2v2 particle family".
+- Pointer-extent stack promotion (2026-10-26, branch claude/ptr-extent-promo-2485cd, not merged, off by default):
+  recomp.py `ptr_flow`/`ptr_summaries` give each frame pointer the byte ranges it reaches (per-callee r3-r12
+  extents over the call graph; natives from `tools/recomp/native_ptr_ext.tsv` + the registers runtime/ reads).
+  `RECOMP_PTR_EXTENT=1` at generation: 3439 -> 4578 promoted words, Citra 2v2 game 36.0 -> 35.6 ms (-1.1%), battle
+  14.0 -> 13.9, campaign 8.0 -> 7.9, .text -0.7%; 2v2/battle/campaign/boot logs + fb dumps identical. Below the 2%
+  bar, so off (default output byte-identical to 39c4989). Hot particle frames keep their buffers (really passed to
+  PSMTX*/OSReport). recomp.py now refuses to run with control characters in its source (a lost `\b` emptied the
+  call graph and hung boot). Not on hardware. Details: unknowns "Pointer-extent stack promotion".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
