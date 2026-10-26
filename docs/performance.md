@@ -111,6 +111,14 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
   game 29.7 -> 22.2 ms, GX thread 16.6 ms, so the game thread still decides the frame. Next: stack
   words between address-taken locals (needs per-callee pointer extents); call glue (22% of the FNPROF frame, mostly
   the C call itself); MTX native schedule (hardware only).
+- **2v2 particle family profiled** (2026-10-25, Citra, main@ad99a97, no change made; unknowns "2v2 particle
+  family"): 0x8017b000-0x80185000 is the HSD particle system. Inclusive it costs 7.0 ms of the 2v2 game thread
+  (18.6%; draw 5.56, generators 0.86, interpreter 0.58) against 0.47 ms in the 1v1. It scales with particles
+  (186 drawn per frame vs 10), not with robots. Confirmed repeats: 87% of particle GXBegins keep the previous
+  vertex descriptor, 194 PSMTXMultVec per frame repeat per attached object, and 63% of all sin/cos calls game-wide
+  repeat an argument within the frame. The family's 16.4k remaining stack accesses per frame sit above
+  address-taken locals. Ranked next: pointer-extent stack promotion, then a lazy vertex descriptor in gx.c and a
+  sin/cos memo study; the in-family redundant math is game logic and too small for a session.
 - Hardware run of main@dad2161 (vertex packing + 2v2 CPU work): campaign/battle GPU ms with the "Vertex pack"
   button on/off, 2v2 game ms vs run 28 (29.8), "Native sin/cos" on/off.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
