@@ -57,6 +57,7 @@ int main(void) {
         recomp_mtx_init();
         recomp_libm_init();
         codegen_init();
+        recomp_perfctr_init();
         printf("main.dol loaded, running __start\n");
         recomp_log("# build %s\n", RECOMP_BUILD);
         /* sdmc:/cr_runfast.txt: FZ+DN on the game thread (VFP11 traps to support code on
@@ -68,7 +69,7 @@ int main(void) {
         /* sdmc flag files present at boot, so a hardware run shows what it tested */
         static const char *const flags[] = { "cr_gxthread_off", "cr_gxthread_fliptest", "cr_batch_off", "cr_dlcache_off", "cr_dlclean_off", "cr_gpukick_off",
             "cr_mtx_off", "cr_libm_off", "cr_runfast", "cr_vsync_on", "cr_dvdasync_off", "cr_dvd_stalltest", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_audio_rt_off", "cr_audio_rt_on", "cr_pad_script", "cr_pad_replay",
-            "cr_vramtex_off", "cr_stereo_force", "cr_memdump", "cr_ax_stall", "cr_vtxpack_off", "cr_lazydesc_off", "cr_ptrext_off", "cr_inline_off" };
+            "cr_vramtex_off", "cr_stereo_force", "cr_memdump", "cr_ax_stall", "cr_vtxpack_off", "cr_lazydesc_off", "cr_ptrext_off", "cr_inline_off", "cr_perfctr" };
         char on[256] = "";
         for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; i++) {
             char p[48]; snprintf(p, sizeof p, "sdmc:/%s.txt", flags[i]);
@@ -87,6 +88,7 @@ int main(void) {
     }
     printf("guest run ended, see sdmc:/cr_autotest.log\n");
     recomp_gx_stop();   /* the GX thread is done with citro3d before gfxExit */
+    recomp_perfctr_exit();
     recomp_log_close();
     gfxExit();
     return 0;
