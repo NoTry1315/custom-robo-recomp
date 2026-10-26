@@ -317,7 +317,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   only feeds the restore (1886 functions; RECOMP_KEEP_NV_SAVES=1 keeps them). Citra 2v2 game 52.9 -> 43.2 ms
   (-18%), battle 20.0 -> 17.1, campaign 9.9 -> 8.9; 2v2/battle/campaign/boot logs and fb dumps identical to
   9dc614c. Not yet on hardware. Details: unknowns "2v2 game CPU".
-- 2v2 game CPU 2 (2026-10-23, branch claude/2v2-perf-2-5cf2f9, not merged): research notes (XenonRecomp/ReXGlue
+- 2v2 game CPU 2 (2026-10-23, branch claude/2v2-perf-2-5cf2f9, merged to main 2026-10-25 as 1a78d4d; that build is
+  on the SD as 3ds/custom-robo-recomp.3dsx, the branch build kept as ..._2026-10-23_branch-2v2-perf-2.3dsx.bak;
+  hardware run 29: 2v2 30.5 -> 39.6 fps, game 29.7 -> 22.2 ms; run 30: story hang after a Rosalina pause, audio
+  pacing, not this work, see performance.md run index): research notes (XenonRecomp/ReXGlue
   keep r3-r10 in the context struct; VFP11 latencies; PGO/ordering need hardware) and four kept steps. Translator:
   `rA + k` accesses check and mask the base register (`*_b`, guard space around ram[]/ram_wr[] in cpu.c;
   RECOMP_BASE_ACCESS=0 = old); guest stack words only the function uses become C locals (`promote_stack_slots`,
