@@ -338,6 +338,7 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   spacing). Cause not found, not reproduced in Citra; no runtime fix. Bottom-screen button "Dump RAM" (and
   sdmc:/cr_memdump.txt retraces for Citra) writes guest RAM, ARAM, DVD reads in flight and the next frame to
   sdmc:/cr_dump_r<n>_*: press it when a box breaks on hardware, then compare with Citra at the same point.
+  On the SD since 2026-10-25 (main@7ab93e7); previous build kept as ..._2026-10-25_pre-memdump-1a78d4d.3dsx.bak.
   Details: unknowns "Run 30 text hang".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
