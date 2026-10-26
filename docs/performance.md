@@ -93,6 +93,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
+| 10-26 | Particle quad merge (immediate draws differing only in TEV colour, via a palette texture) | measured only: TEV-only causes ~37 of ~113 immediate batch breaks per 2v2 frame; upper bound ~1.3 ms of the ~40 ms Citra GX thread | not built: not the main breaker, needs a third texture unit + texenv rewrite (unknowns "Particle quad merge") |
 | 10-23 | Inline copies: `static inline` copies of translated functions of <= 32 instructions in each gen/ file that calls them (GCC inlines across files) | Citra 2v2 game 37.4 -> 37.2 ms (-0.5%), +5.5% ARM instructions | below the 2% bar; small callees are cheap to call already |
 | 10-23 | Per-native in-sets, LR save/restore removal | sized from site counts: < 0.1 ms and ~0.3 ms | not built (see unknowns "2v2 game CPU 2") |
 | 10-22 | -O3 on gen/ (`make GENOPT=-O3`) | Citra battle game 19.96 -> 19.94 ms, +9% code | no gain; more code for the 16 KB I-cache |

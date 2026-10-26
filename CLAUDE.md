@@ -344,6 +344,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   sdmc:/cr_dump_r<n>_*: press it when a box breaks on hardware, then compare with Citra at the same point.
   On the SD since 2026-10-25 (main@7ab93e7); previous build kept as ..._2026-10-25_pre-memdump-1a78d4d.3dsx.bak.
   Details: unknowns "Run 30 text hang".
+- Particle quad merge (2026-10-26, investigation only, not built): in the Citra 2v2, ~242 immediate draws per frame
+  (~219 single particle quads) become ~113 DrawElements; TEV-only causes ~37 of the batch breaks, texture+TEV ~36,
+  texture+uniform ~28. A TEV-colour merge (palette texture on a third unit) is worth at most ~1.3 ms of the ~40 ms
+  GX thread, so not built. C3D_DrawElements is ~25 us per call in Citra. Details: unknowns "Particle quad merge".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
