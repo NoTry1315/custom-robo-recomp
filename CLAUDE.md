@@ -9,6 +9,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   VI) is written by hand, in `runtime/`. If a fix means rewriting game
   behaviour, stop and ask: it means the runtime is wrong.
 - **Oracle: Dolphin** running the same disc. A difference is a runtime bug.
+- **Every merge to main updates the docs in the same change:** README.md (Status table and date, Known
+  problems, bottom-screen buttons, Test flags table, Citra tests / tools), docs/performance.md (perf changes,
+  hardware run index), docs/recomp_unknowns.md and the Status list below. A new flag file or button is not
+  done until it is in the README. Check the README diff before pushing.
 - **Progress number:** boot stage reached (main loop -> logo -> title -> menu
   -> battle) and SDK functions replaced / total (`docs/sdk_functions.md`).
 

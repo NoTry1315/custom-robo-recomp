@@ -7,7 +7,7 @@ translator in `tools/recomp/`. The GameCube SDK layer (graphics, disc, pad, OS,
 audio, memory card, video) is rewritten by hand for the 3DS in `runtime/`, on
 libctru and citro3d. No game files are included: bring your own disc.
 
-## Status (2026-10-22)
+## Status (2026-10-25)
 
 Playable on a New 3DS from boot to the title, menus, campaign and Vs. battle,
 with sound, memory card saves, stereoscopic 3D, the attract movie and the HOME button.
@@ -15,36 +15,40 @@ with sound, memory card saves, stereoscopic 3D, the attract movie and the HOME b
 Frame rates on hardware (New 3DS, averages of the in-game `# time` windows from
 `tools/time_avg.py`). Each run was played by hand, so the scenes differ from run to run:
 
-| Scene | Run 24 (10-21) | Run 25 (10-22) | Run 27 (10-22) | Run 28 (10-22, current main) | Game speed now |
-|---|---|---|---|---|---|
-| Title, menus (2.x, 5.0) | 49-60 | ~60 | 58-60 | 58-60 | 97-100% |
-| Campaign (8.3) | 42.4 | 44.4 | 51.2 | **56.7** (39 windows) | 95% |
-| Battle 1v1 (4.2) | 47.9 | 54.2 | 45.3 (campaign battles) | **57.3** (19 windows) | 95% |
-| Battle 1v1, 3D slider up | - | - | - | 51.4 (20 windows) | 86% |
-| Battle 2v2 (4.2) | - | - | - | 30.5 (72 windows) | 51% |
-| Pause (c.0) | 40.1 | 55.8 | 59.1 | 57.5 (2 windows) | 96% |
-| Attract movie | ~9 | 13.9 | not played | not played | ~46% |
+| Scene | Run 24 (10-21) | Run 25 (10-22) | Run 27 (10-22) | Run 28 (10-22) | Run 29 (10-23, 2v2 CPU work, now in main) | Game speed now |
+|---|---|---|---|---|---|---|
+| Title, menus (2.x, 5.0) | 49-60 | ~60 | 58-60 | 58-60 | not recorded | 97-100% |
+| Campaign (8.3) | 42.4 | 44.4 | 51.2 | 56.7 (39 windows) | **58.5** | 97% |
+| Battle 1v1 (4.2) | 47.9 | 54.2 | 45.3 (campaign battles) | **57.3** (19 windows) | not played | 95% |
+| Battle 1v1, 3D slider up | - | - | - | 51.4 (20 windows) | not played | 86% |
+| Battle 2v2 (4.2) | - | - | - | 30.5 (72 windows) | **39.6** | 66% |
+| Pause (c.0) | 40.1 | 55.8 | 59.1 | 57.5 (2 windows) | not played | 96% |
+| Attract movie | ~9 | 13.9 | not played | not played | not played | ~46% |
 
 The game runs one logic step per frame, so game speed is fps / 60: at 48 fps a
 battle plays in slow motion at 80% of real time. 100% needs a steady 60 fps.
 The movie is measured against its own 30 fps.
 
-Where the time goes now (run 28, ms per frame):
+Where the time goes now (run 28; 2v2 from run 29; ms per frame):
 
 | Scene | frame | game CPU | GX thread busy | GPU | bound by |
 |---|---|---|---|---|---|
 | Campaign 8.3 | 17.6 | 9.9 | 16.1 | 3.7 | near 60 fps |
 | Battle 1v1 | 17.5 | 15.1 | 12.2 | 2.2 | near 60 fps |
 | Battle 1v1, 3D | 19.5 | 14.5 | 16.5 | 9.8 | GPU + CPU |
-| Battle 2v2 | 32.8 | 29.8 | 18.7 | 5.6 | **game CPU** |
+| Battle 2v2 (run 29) | 25.3 | 22.2 | 16.6 | 2.6 | **game CPU** |
 
 Textures in VRAM (2026-10-22) cut GPU time to under a third: campaign 12.2 -> 3.7 ms, battle
 9.3 -> 2.2 ms (runs 27 -> 28; the battles were different fights, so that one is rough). The 2v2 battle is now the heaviest scene, and it is bound by the
-game's own code (29.8 ms per frame). Every performance change and its measured effect, including
+game's own code: 29.8 ms per frame in run 28, 22.2 ms after the 2v2 CPU work (run 29: 30.5 -> 39.6 fps). Every performance change and its measured effect, including
 the ones that did not help, is listed in `docs/performance.md`.
 
 Known problems:
 
+- A story text box can break (letters missing, even spacing) and the event then stops
+  (seen once, hardware run 30 in event `snr_t_06`; not reproduced in Citra, cause unknown, see
+  `docs/recomp_unknowns.md` "Run 30 text hang"). If it happens, tap "Dump RAM" on the bottom
+  screen before quitting.
 - Music can repeat a 1-2 s segment when the SD card stalls for several seconds
   (under investigation).
 - The attract movie is slow: its JPEG frames are decoded on the CPU.
@@ -114,7 +118,9 @@ io  late 0 slow 3 stall 0 lin 17714K
 
 Touch buttons on the bottom screen switch test features live (the log records each switch,
 and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack"
-and "Native sin/cos" (all on by default).
+and "Native sin/cos" (all on by default). "Dump RAM" is an action, not a switch: it writes the
+game's RAM (24 MB), ARAM (16 MB), the disc reads still in flight and the next frame to the SD card
+root as `cr_dump_r<retrace>_*` and `cr_fb_<frame>.bmp` (the game stops for a few seconds).
 
 ## Controls
 
@@ -153,6 +159,9 @@ can be compared with a feature on and off:
 | `cr_bench.txt` | MTX benchmark lines in the log at startup |
 | `cr_fbdump.txt` | frame numbers, one per line: the framebuffer is saved as `cr_fb_<frame>.bmp` |
 | `cr_audio_dump.txt` | also write the audio mix to `cr_audio.wav` |
+| `cr_audio_rt_off.txt`, `cr_audio_rt_on.txt` | audio paced per retrace (autotest default) or by real time (interactive default) |
+| `cr_memdump.txt` | retraces, ascending, one per line: a "Dump RAM" snapshot at each (the Citra side of a comparison) |
+| `cr_ax_stall.txt` | "retrace ms [sleep]": inject a stall like a HOME/Rosalina pause (Citra tests) |
 | `cr_pad_script.txt`, `cr_pad_replay.txt` | scripted input or replay of a logged run (autotests; fixed run length) |
 
 Build variants (a second `.3dsx` for a hardware A/B; the bottom screen's build id names
@@ -163,7 +172,11 @@ Citra tests: `tools/citra/replay.ps1 -Name battle|campaign|2v2` plays recorded i
 deterministically (see `docs/performance.md`, "How performance is measured");
 `tools/citra/compare_logs.py` compares two runs. `2v2` boots the story save in
 `data/saves/2026-10-22_pre-2v2/` (copy it there from your own SD card) and plays into a 2v2
-battle, the heaviest scene so far.
+battle, the heaviest scene so far. `-Name boot -Save <dir> -RecLog <log>` replays a
+hardware log's pad lines from a save (how the run 30 story event was replayed).
+
+With the 3DS on Wi-Fi and Rosalina's debugger enabled, `tools/hw_dump.sh [ip]` attaches gdb
+to the running game and saves thread registers, backtraces and memory to `logs/hwdump/`.
 
 ## How it works
 
