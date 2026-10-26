@@ -7,7 +7,7 @@ translator in `tools/recomp/`. The GameCube SDK layer (graphics, disc, pad, OS,
 audio, memory card, video) is rewritten by hand for the 3DS in `runtime/`, on
 libctru and citro3d. No game files are included: bring your own disc.
 
-## Status (2026-10-25)
+## Status (2026-10-26)
 
 Playable on a New 3DS from boot to the title, menus, campaign and Vs. battle,
 with sound, memory card saves, stereoscopic 3D, the attract movie and the HOME button.
@@ -42,6 +42,19 @@ Textures in VRAM (2026-10-22) cut GPU time to under a third: campaign 12.2 -> 3.
 9.3 -> 2.2 ms (runs 27 -> 28; the battles were different fights, so that one is rough). The 2v2 battle is now the heaviest scene, and it is bound by the
 game's own code: 29.8 ms per frame in run 28, 22.2 ms after the 2v2 CPU work (run 29: 30.5 -> 39.6 fps). Every performance change and its measured effect, including
 the ones that did not help, is listed in `docs/performance.md`.
+
+2v2-perf-3 (merged to main 2026-10-26, from `task/2026-10-26-2v2-perf-3`): lazy vertex descriptor, pointer-extent
+stack promotion and inlined particle helpers, each with a bottom-screen button, all three on by default. This
+closes small-scale 2v2 CPU work: the gains have run out (see docs/performance.md "Open"). In Citra the 2v2 game thread
+takes 36.2 ms with all three on and 36.7 ms with them off (main: 36.7). Hardware run 31 (all on, hand-played):
+2v2 41.8 fps, game 20.6 ms, against 39.6 fps / 22.2 ms in run 29 (main's code), mostly play variance. Hardware
+runs 32a/32b replay the Citra 2v2 test on the 3DS (identical fight): all three on 40.3 fps, game 22.2 ms; all
+off 39.7 fps, 22.5 ms. A real but small gain (-1.5% game time, faster in 71 of 72 one-second windows).
+
+Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
+("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
+tools/citra/pad_2v2.log) and `cr_dvdasync_off.txt` on the SD root, launch, hands off. The route must match the
+Citra log's scene and pad lines before the timings count.
 
 Known problems:
 
@@ -117,8 +130,9 @@ io  late 0 slow 3 stall 0 lin 17714K
 ```
 
 Touch buttons on the bottom screen switch test features live (the log records each switch,
-and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack"
-and "Native sin/cos" (all on by default). "Dump RAM" is an action, not a switch: it writes the
+and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack",
+"Lazy vtx desc", "Native sin/cos", "Ptr extent" (pointer-extent stack promotion in the 16 hottest
+functions it changes) and "Inline sites" (the 5 inlined particle-helper calls), all on by default. "Dump RAM" is an action, not a switch: it writes the
 game's RAM (24 MB), ARAM (16 MB), the disc reads still in flight and the next frame to the SD card
 root as `cr_dump_r<retrace>_*` and `cr_fb_<frame>.bmp` (the game stops for a few seconds).
 
@@ -149,7 +163,10 @@ can be compared with a feature on and off:
 | `cr_mtx_off.txt` | translated MTX functions instead of the native ones |
 | `cr_vramtex_off.txt` | textures stay in linear memory (no VRAM textures) |
 | `cr_vtxpack_off.txt` | every vertex in the full 68-byte layout (no vertex packing) |
+| `cr_lazydesc_off.txt` | a GX-queue record for every GXSetVtxDesc/GXClearVtxDesc call (no lazy vertex descriptor) |
 | `cr_libm_off.txt` | translated sin/cos/sinf/cosf/sqrtf instead of the native ones |
+| `cr_ptrext_off.txt` | old stack-promotion bodies (no pointer-extent promotion; button "Ptr extent") |
+| `cr_inline_off.txt` | plain calls at the 5 particle-helper sites (no inline copies; button "Inline sites") |
 | `cr_runfast.txt` | set the VFP's flush-to-zero + default-NaN mode at boot (already on: the boot log's `# fpscr:` line shows the value) |
 | `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
 | `cr_vsync_on.txt` | old pacing: wait for a vblank every frame |
@@ -167,6 +184,9 @@ can be compared with a feature on and off:
 Build variants (a second `.3dsx` for a hardware A/B; the bottom screen's build id names
 the variant): `make LTO=1` (link-time optimisation), `make GENOPT=-O3` (extra flags for the
 translated code only), `make FLOATOPS=0` (exact Gekko float rounding).
+Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
+`RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `dual`, the default, builds both variants into the one
+`.3dsx` behind the "Ptr extent" / "Inline sites" buttons; `0` is the plain main code).
 
 Citra tests: `tools/citra/replay.ps1 -Name battle|campaign|2v2` plays recorded input
 deterministically (see `docs/performance.md`, "How performance is measured");

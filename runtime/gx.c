@@ -1445,7 +1445,11 @@ static int vtx_size(int fmt) { int n = 0; for (int a = 0; a <= 20; a++) n += att
 /* game thread: the same from its copy of the vertex format (FIFO assembly) */
 static u8 vsz_g_ok;      /* bit fmt: vsz_g[fmt] is current (cleared when gs.desc / gs.vat change) */
 static u16 vsz_g[8];
+static u8 desc_dirty;    /* lazy vertex descriptor: gs.desc changed since the last desc_sync (sdk_GXBegin's section) */
+static void desc_sync(void);
+static u32 st_desc_calls, st_desc_recs, st_gq_recs, st_gq_words;   /* game thread, per 300-frame "# gx queue" line */
 static int vtx_size_g(int fmt) {
+    if (desc_dirty) desc_sync();
     if (!(vsz_g_ok >> fmt & 1)) {
         int n = 0; for (int a = 0; a <= 20; a++) n += attr_size_in(gs.desc, gs.vat, fmt, a);
         vsz_g[fmt] = n; vsz_g_ok |= 1 << fmt;
@@ -2663,6 +2667,7 @@ static void gq_wait(u32 end) {
 /* a record of n payload words: returns the payload (inline mode: gq is scratch) */
 static u32 *gq_begin(GqFn fn, u32 n, u32 flags) {
     u32 need = n + 2;
+    st_gq_recs++; st_gq_words += need;
     if (!recomp_gx_thread) { gq[0] = need | flags; gq[1] = (u32)(uintptr_t)fn; return gq + 2; }
     u32 pos = gq_wl & (GQ_WORDS - 1), pad = pos + need > GQ_WORDS ? GQ_WORDS - pos : 0;
     if (gq_wl + pad + need - gq_rc > GQ_WORDS) {   /* full as last seen: look again, wait while it still is */
@@ -2786,6 +2791,9 @@ void recomp_gx_start(void) {
     }
     recomp_vtxpack_off = flag_file("cr_vtxpack_off");
     recomp_menu_bind("Vertex pack", &recomp_vtxpack_off, NULL);
+    recomp_lazydesc_off = flag_file("cr_lazydesc_off");
+    recomp_menu_bind("Lazy vtx desc", &recomp_lazydesc_off, NULL);
+    recomp_log("# gx: vertex descriptor %s\n", recomp_lazydesc_off ? "eager (cr_lazydesc_off.txt): a GX-queue record per GXSetVtxDesc/GXClearVtxDesc" : "lazy (one record before a draw, when it changed)");
     recomp_log("# gx: vertex packing %s\n", recomp_vtxpack_off ? "off (cr_vtxpack_off.txt): every vertex 68 bytes" : "on (display-list draws: per-draw layout)");
     FILE *sf = fopen("sdmc:/cr_stereo_force.txt", "rb");
     if (sf) {
@@ -2896,6 +2904,7 @@ static void x_call_dl(const u32 *p) { cur_r1 = p[2]; call_display_list(p[0], p[1
 void sdk_GXCallDisplayList(void) {
     LOG();
     if (!recomp_first_draw) recomp_first_draw = recomp_ticks();
+    if (desc_dirty) desc_sync();
     u32 *p = gq_begin(x_call_dl, 3, 0);
     p[0] = R[3]; p[1] = R[4]; p[2] = R[1];
     gq_end();
@@ -2922,6 +2931,7 @@ static void fifo_flush(void) {
     u32 pos = fifo_complete(&drw);
     if (pos) {
         if (drw && !recomp_first_draw) recomp_first_draw = recomp_ticks();
+        if (desc_dirty) desc_sync();
         u32 *p = gq_begin(x_fifo, 2 + (pos + 3) / 4, 0);
         p[0] = R[1]; p[1] = pos;
         memcpy(p + 2, fifo, pos);
@@ -2980,10 +2990,46 @@ void sdk_GXBegin(void) {
     else fifo_need = 3 + (R[5] & 0xffff) * vs;
     fifo_lim();
 }
+/* Lazy vertex descriptor (sdmc:/cr_lazydesc_off.txt = a record per call; bottom-screen button
+ * "Lazy vtx desc"). Only the draw records (x_fifo, x_call_dl) read gx.desc, so the setters only
+ * change gs.desc; before a draw record is queued (and when the game thread needs a vertex size),
+ * desc_sync sends the whole descriptor as one record if it differs from the last one sent. The
+ * particle code clears and sets the same descriptor before every quad (docs/recomp_unknowns.md
+ * "Lazy vertex descriptor"). desc_sent is what gx.desc holds once the queued records have run, in
+ * both modes, so the button can switch at any call. */
+int recomp_lazydesc_off;
+static u8 desc_sent[A_MAX];
+static void x_set_desc(const u32 *p) { memcpy(gx.desc, p, A_MAX); }
+static void desc_sync(void) {
+    desc_dirty = 0;
+    if (!memcmp(desc_sent, gs.desc, A_MAX)) return;
+    memcpy(desc_sent, gs.desc, A_MAX);
+    vsz_g_ok = 0;
+    st_desc_recs++;
+    u32 *p = gq_begin(x_set_desc, (A_MAX + 3) / 4, 0);
+    memcpy(p, gs.desc, A_MAX);
+    gq_end();
+}
 static void x_GXSetVtxDesc(const u32 *r) { if (r[3] < A_MAX) gx.desc[r[3]] = r[4] & 3; else ONCE("GXSetVtxDesc attr %lu\n", (unsigned long)r[3]); }
-void sdk_GXSetVtxDesc(void) { LOG(); if (R[3] < A_MAX) gs.desc[R[3]] = R[4] & 3; vsz_g_ok = 0; gq_regs(x_GXSetVtxDesc, 2); }
+void sdk_GXSetVtxDesc(void) {
+    LOG();
+    st_desc_calls++;
+    if (!recomp_lazydesc_off && R[3] < A_MAX) { gs.desc[R[3]] = R[4] & 3; desc_dirty = 1; return; }
+    if (desc_dirty) desc_sync();
+    if (R[3] < A_MAX) gs.desc[R[3]] = desc_sent[R[3]] = R[4] & 3;
+    vsz_g_ok = 0; st_desc_recs++;
+    gq_regs(x_GXSetVtxDesc, 2);
+}
 static void x_GXClearVtxDesc(const u32 *r) { (void)r; memset(gx.desc, 0, sizeof gx.desc); gx.desc[A_POS] = 1; }
-void sdk_GXClearVtxDesc(void) { LOG(); memset(gs.desc, 0, sizeof gs.desc); gs.desc[A_POS] = 1; vsz_g_ok = 0; gq_regs(x_GXClearVtxDesc, 0); }
+void sdk_GXClearVtxDesc(void) {
+    LOG();
+    st_desc_calls++;
+    memset(gs.desc, 0, sizeof gs.desc); gs.desc[A_POS] = 1;
+    if (!recomp_lazydesc_off) { desc_dirty = 1; return; }
+    desc_dirty = 0; memcpy(desc_sent, gs.desc, A_MAX);
+    vsz_g_ok = 0; st_desc_recs++;
+    gq_regs(x_GXClearVtxDesc, 0);
+}
 static void x_GXSetVtxAttrFmt(const u32 *r) { if ((r[3] & 7) == r[3] && r[4] < A_MAX) gx.vat[r[3]][r[4]] = (VtxFmt){(u8)r[5], (u8)r[6], (u8)r[7]}; }
 void sdk_GXSetVtxAttrFmt(void) {
     LOG();
@@ -3323,6 +3369,12 @@ void sdk_GXCopyDisp(void) {
     LOG();
     gq_regs(x_GXCopyDisp, 2);   /* r4: clear */
     game_frames++;
+    if (game_frames % 300 == 0) {
+        recomp_log("# gx queue frame %lu: per frame %lu records, %lu words; vertex descriptor %s: %lu setter calls, %lu records\n", (unsigned long)game_frames,
+                   (unsigned long)(st_gq_recs / 300), (unsigned long)(st_gq_words / 300), recomp_lazydesc_off ? "eager" : "lazy",
+                   (unsigned long)(st_desc_calls / 300), (unsigned long)(st_desc_recs / 300));
+        st_gq_recs = st_gq_words = st_desc_calls = st_desc_recs = 0;
+    }
     __dmb();   /* the frame's guest writes before the epoch that ends it (epoch_now) */
     recomp_wr_epoch = game_frames + 1;
     if (recomp_gx_thread) { gq_publish(); gq_wait(gq_copy_prev); gq_copy_prev = gq_wl; }   /* at most one frame queued */

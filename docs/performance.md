@@ -57,6 +57,8 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Measured effect | Status | Details (unknowns) |
 |---|---|---|---|---|
+| 10-26 | **Hardware test build 2v2-perf-3** (branch task/2026-10-26-2v2-perf-3: particle probe, pointer-extent promotion, lazy vertex descriptor, sin/cos memo + quad merge studies, inline sites). Pointer-extent promotion and the inline sites became run-time toggles: recomp.py `RECOMP_PTR_EXTENT=dual` gives the 16 hottest of the 142 changed functions (`PTR_EXTENT_DUAL`, >= 0.05% of FNPROF samples in the 2v2/battle replays) a second body `fp_X`, `f_X` dispatches on `recomp_ptr_extent` at entry (all 142 would be +15.7% .text); `RECOMP_INLINE_SITES=dual` = `if (recomp_inline_sites) fi_X(); else f_X();` at the 5 sites | Citra 2v2 4.2 game (r4500+): plain build 36.6, toggles on 36.2 (-1.1%), off 36.7 (main ad99a97: 36.7); battle 4.2 14.0 / 14.1 (main 14.0); campaign 8.3 8.0 / 8.0 (main 8.0); .text 6,535,672 (plain) -> 6,820,008 (+4.35%: fp_ bodies 210 KB, inline copies + dispatch 75 KB); 2v2/battle/campaign/boot SDK logs + fb dumps identical to main with all toggles on and all off | on; buttons "Ptr extent" / "Inline sites", `cr_ptrext_off.txt` / `cr_inline_off.txt`; not yet on hardware | Run-time translator toggles |
+| 10-26 | **Lazy vertex descriptor** (gx.c: GXSetVtxDesc/GXClearVtxDesc only change the game thread's copy; one whole-descriptor record before a draw record, only when it differs from the last one sent) | Citra 2v2 4.2: GX-queue records 7586 -> 6428 per frame (descriptor records ~1200 -> ~80), game 35.7 (base) / 36.1 (flag off) -> 35.6 ms, GX busy 38.3 -> 37.9, frame 45.7 -> 45.4; battle and campaign unchanged; logs + fb identical on and off | on (small, below 2%); button "Lazy vtx desc", `cr_lazydesc_off.txt`; not yet on hardware | Lazy vertex descriptor |
 | 10-23 | **Stack words in C locals** (translator `promote_stack_slots`: frame words only the function uses, below every r1-derived pointer and not reached by a callee; 3439 words in 483 functions) | Citra 2v2 game 37.4 -> 36.0 ms, battle 14.6 -> 14.1, campaign 8.2 -> 8.0; logs + fb identical (40381bd) | on; `RECOMP_STACK_SLOTS=0` at generation = memory; not yet on hardware | 2v2 game CPU 2 |
 | 10-23 | **SDK call path**: `LOG()` inline with a per-function count slot (no hash probe); GXBegin's vertex size cached per format | Citra 2v2 game 39.0 -> 37.4 ms, battle 15.5 -> 14.6, campaign 8.4 -> 8.2; logs + fb identical (136d224) | always on; not yet on hardware | 2v2 game CPU 2 |
 | 10-23 | **WGPIPE stores inline** (immediate-mode vertex bytes go straight into the FIFO while the primitive is incomplete) | Citra 2v2 game 40.9 -> 39.0 ms, battle 16.3 -> 15.5; logs + fb identical (0c8c024) | always on; not yet on hardware | 2v2 game CPU 2 |
@@ -93,6 +95,10 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
+| 10-26 | **Pointer-extent stack promotion** (translator: frame words outside every byte range reached through a frame pointer, with per-callee r3-r12 extents and `tools/recomp/native_ptr_ext.tsv` for natives; 3439 -> 4578 words) | Citra 2v2 game 36.0 -> 35.6 ms (-1.1%, 2 runs), battle 14.0 -> 13.9, campaign 8.0 -> 7.9; .text -0.7%; logs + fb identical (branch ptr-extent-promo) | below the 2% bar: the hot particle frames' remaining words are buffers really passed to PSMTX*/OSReport. Off by default; `RECOMP_PTR_EXTENT=1` at generation turns it on. Not on hardware. 2026-10-26: in the test build as a run-time toggle (hottest 16 functions; see "Hardware test build 2v2-perf-3") |
+| 10-26 | Memo for repeated sin/cos arguments in `runtime/libm.c` (last-value, direct-mapped table, sincos pair) | measured only (Citra 2v2 probe): 2350 calls/frame, 63% repeat in the frame, but half the calls are x ~ 0 (tiny path, ~ the cost of a lookup); best shape ~0.1-0.15 ms of 36.7 (~0.3%) | below the 2% bar; not built (unknowns "sin/cos memo study") |
+| 10-26 | Selective inlining of the per-particle helpers (`RECOMP_INLINE_SITES=1`: 5 listed bl sites to ps_disp_tev_setup / chan_color / tev_color / ps_disp_quad call an always_inline copy; logs + fb dumps identical) | Citra 2v2 game 36.72 -> 36.64 ms (-0.2%), +0.63% .text (ps_disp sites alone -0.02 ms) | below the 2% bar; the `cpu` stores stay (unknowns "Selective inlining of the per-particle helpers"). Not on hardware. 2026-10-26: in the test build as a run-time toggle |
+| 10-26 | Particle quad merge (immediate draws differing only in TEV colour, via a palette texture) | measured only: TEV-only causes ~37 of ~113 immediate batch breaks per 2v2 frame; upper bound ~1.3 ms of the ~40 ms Citra GX thread | not built: not the main breaker, needs a third texture unit + texenv rewrite (unknowns "Particle quad merge") |
 | 10-23 | Inline copies: `static inline` copies of translated functions of <= 32 instructions in each gen/ file that calls them (GCC inlines across files) | Citra 2v2 game 37.4 -> 37.2 ms (-0.5%), +5.5% ARM instructions | below the 2% bar; small callees are cheap to call already |
 | 10-23 | Per-native in-sets, LR save/restore removal | sized from site counts: < 0.1 ms and ~0.3 ms | not built (see unknowns "2v2 game CPU 2") |
 | 10-22 | -O3 on gen/ (`make GENOPT=-O3`) | Citra battle game 19.96 -> 19.94 ms, +9% code | no gain; more code for the 16 KB I-cache |
@@ -108,9 +114,24 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 - **2v2 battle is game-CPU bound** (29.8 ms of a 32.8 ms frame, run 28). Profiled 2026-10-22 (unknowns
   "2v2 game CPU"); after native sin/cos and dropped saves, Citra 2v2 game 52.9 -> 43.2 ms (-18%), and after the
   2026-10-23 work (unknowns "2v2 game CPU 2") 36.0 ms. Hardware run 29 (both together): 2v2 30.5 -> 39.6 fps,
-  game 29.7 -> 22.2 ms, GX thread 16.6 ms, so the game thread still decides the frame. Next: stack
-  words between address-taken locals (needs per-callee pointer extents); call glue (22% of the FNPROF frame, mostly
-  the C call itself); MTX native schedule (hardware only).
+  game 29.7 -> 22.2 ms, GX thread 16.6 ms, so the game thread still decides the frame.
+  **Closed for small fixes (2026-10-26, user decision):** the 2v2-perf-3 round (particle probe plus five
+  experiments: pointer extents, lazy vertex descriptor, sin/cos memo, particle inlining, particle quad merge) gave
+  -1.5% game time on hardware (runs 32a/32b: 22.5 -> 22.2 ms, 39.7 -> 40.3 fps), and each item was 0.2-1.1% in
+  Citra. Diminishing returns: no more micro-optimisation in this area (particle family, call glue, translator
+  peepholes for the 2v2). The game thread needs ~6 ms less for 60 fps, which only a structural change could
+  give. Do not reopen these items without a new idea of that size.
+- **2v2 particle family profiled** (2026-10-25, Citra, main@ad99a97, no change made; unknowns "2v2 particle
+  family"): 0x8017b000-0x80185000 is the HSD particle system. Inclusive it costs 7.0 ms of the 2v2 game thread
+  (18.6%; draw 5.56, generators 0.86, interpreter 0.58) against 0.47 ms in the 1v1. It scales with particles
+  (186 drawn per frame vs 10), not with robots. Confirmed repeats: 87% of particle GXBegins keep the previous
+  vertex descriptor, 194 PSMTXMultVec per frame repeat per attached object, and 63% of all sin/cos calls game-wide
+  repeat an argument within the frame. The family's 16.4k remaining stack accesses per frame sit above
+  address-taken locals. Ranked next: pointer-extent stack promotion, then a lazy vertex descriptor in gx.c and a
+  sin/cos memo study; the in-family redundant math is game logic and too small for a session.
+- **Pointer-extent stack promotion tried** (2026-10-26, unknowns "Pointer-extent stack promotion"): +33% promoted
+  words, Citra 2v2 game -1.1%, identical replays; off by default (below 2%). Next in the 2v2 sequence: lazy vertex
+  descriptor (gx.c), then the sin/cos memo study.
 - Hardware run of main@dad2161 (vertex packing + 2v2 CPU work): campaign/battle GPU ms with the "Vertex pack"
   button on/off, 2v2 game ms vs run 28 (29.8), "Native sin/cos" on/off.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
@@ -120,6 +141,9 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Run | Date | Build | Log (`logs/`) | Tested |
 |---|---|---|---|---|
+| 32b | 10-26 | branch 2v2-perf-3 @c4781f5 | cr_autotest_2026-10-26_hw-run32b-replay-2v2-all-off.log | hardware replay of the Citra 2v2 test (data/saves/2026-10-22_pre-2v2 + tools/citra/pad_2v2.txt / pad_2v2.log, run length 8600, cr_dvdasync_off), with cr_lazydesc_off + cr_ptrext_off + cr_inline_off: route identical to Citra and to 32a (0 scene / pad line differences, no late DVD read). 2v2 4.2 (from r4300, 72 windows): 39.7 fps (66%), game 22.5 ms, GX busy 15.8, worst 53.9 |
+| 32a | 10-26 | branch 2v2-perf-3 @c4781f5 | cr_autotest_2026-10-26_hw-run32a-replay-2v2-all-on.log | same replay, all three toggles on: 40.3 fps (67%), game 22.2 ms, GX busy 15.6, worst 53.1. Paired by window vs 32b: game -0.34 ms (sd 0.14, faster in 71 of 72 windows) = -1.5%, matching Citra's -1.1%. So run 31's -7% was mostly play variance. The first attempt (32a0, @e51105e, log cr_autotest_2026-10-26_hw-run32a0-replay-2v2-diverged-dvd-late.log) left Citra's route at r3720: the real circle pad rests at -5 -3, which counted as a moved live stick and overrode the replay's sticks; fixed in pad.c (c4781f5) |
+| 31 | 10-26 | branch 2v2-perf-3 @e51105e | cr_autotest_2026-10-26_hw-run31-2v2-perf-3.log | all three toggles on the whole run (lazyd, ptrx, inl; no on/off A/B). 2v2 battle 4.2: 41.8 fps (70%), game 20.6 ms, GX busy 16.3, worst 40.3 (run 29: 39.6 fps, game 22.2, GX 16.6, worst 50.1); hand-played, and Citra predicted only -1.1%, so most of the -7% is likely play variance. Title, menus, campaign 8.3 (58.8 fps) and 1v1 as run 29. No crash. Scene c average 31.9 fps comes from one 9.5 s stall (r11086 gx sync 5981 ms, r11087 game 3569 ms) right after a p2 button press, followed by a HOME exit (APT); without it 59.8 fps |
 | 30 | 10-25 | branch 2v2-perf-2 @40381bd | cr_autotest_2026-10-25_hw-run30-t06-text-hang.log (+ hw-run30-shots/) | story event snr_t_06 hangs ("Awex!" box without text, A/B do nothing). A Rosalina pause at r14951 made real-time audio pacing skip 807 AX frames, but that is not the cause: Citra replays with an injected 4.3 s stall (cr_ax_stall.txt, real-time pacing) play through, and the screenshot taken during the pause already shows the previous box broken (unknowns "Run 30 text hang"). Same build, save and event run fine in Citra. Not a 2v2-perf-2 change; cause open |
 | 29 | 10-23 | branch 2v2-perf-2 @40381bd | cr_autotest_2026-10-23_hw-run29-2v2-perf2.log | 2v2 battle 4.2: 39.6 fps (66%), game 22.2 ms, GX busy 16.6, gpu 2.6 (run 28: 30.5 fps, game 29.7, GX 18.6); campaign 8.3 58.5 fps, game 11.0 |
 | 28 | 10-22 | main@75ea35d LTO | cr_autotest_2026-10-22_hw-run28-merged-lto.log | VRAM textures, stereo 3D, FPSCR value, 2v2 battle |

@@ -17,6 +17,28 @@ u32 __stacksize__ = 1024 * 1024;  /* translated code nests one host frame per gu
 u32 recomp_fpscr(void) { u32 v; __asm__ volatile("vmrs %0, fpscr" : "=r"(v)); return v; }
 static void fpscr_set(u32 v) { __asm__ volatile("vmsr fpscr, %0" : : "r"(v)); }
 
+/* Translator variants chosen at run time (recomp.py RECOMP_PTR_EXTENT / RECOMP_INLINE_SITES = dual, the
+ * default): every function whose pointer-extent body differs tests recomp_ptr_extent at entry, the 5
+ * INLINE_SITES bl sites test recomp_inline_sites. Both on unless sdmc:/cr_ptrext_off.txt /
+ * cr_inline_off.txt; bottom-screen buttons "Ptr extent" / "Inline sites" flip them live (any moment is
+ * safe: each body is exact on its own, a call already running keeps its body). */
+int recomp_ptr_extent = 1, recomp_inline_sites = 1;
+u32 recomp_codegen_flips;
+static void codegen_changed(void) { recomp_codegen_flips++; }
+static int flag_present(const char *name) {
+    FILE *f = fopen(name, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+static void codegen_init(void) {
+    recomp_ptr_extent = !flag_present("sdmc:/cr_ptrext_off.txt");
+    recomp_inline_sites = !flag_present("sdmc:/cr_inline_off.txt");
+    recomp_menu_bind("Ptr extent", &recomp_ptr_extent, codegen_changed);
+    recomp_menu_bind("Inline sites", &recomp_inline_sites, codegen_changed);
+    recomp_log("# codegen: pointer-extent bodies %s (sdmc:/cr_ptrext_off.txt), inline sites %s (sdmc:/cr_inline_off.txt)\n",
+               recomp_ptr_extent ? "on" : "off", recomp_inline_sites ? "on" : "off");
+}
+
 int main(void) {
     gfxInitDefault();
     recomp_menu_init();   /* bottom screen (runtime/menu.c) */
@@ -34,6 +56,7 @@ int main(void) {
     if (recomp_load_dol() == 0) {
         recomp_mtx_init();
         recomp_libm_init();
+        codegen_init();
         printf("main.dol loaded, running __start\n");
         recomp_log("# build %s\n", RECOMP_BUILD);
         /* sdmc:/cr_runfast.txt: FZ+DN on the game thread (VFP11 traps to support code on
@@ -45,7 +68,7 @@ int main(void) {
         /* sdmc flag files present at boot, so a hardware run shows what it tested */
         static const char *const flags[] = { "cr_gxthread_off", "cr_gxthread_fliptest", "cr_batch_off", "cr_dlcache_off", "cr_dlclean_off", "cr_gpukick_off",
             "cr_mtx_off", "cr_libm_off", "cr_runfast", "cr_vsync_on", "cr_dvdasync_off", "cr_dvd_stalltest", "cr_card_off", "cr_bench", "cr_fbdump", "cr_audio_dump", "cr_audio_rt_off", "cr_audio_rt_on", "cr_pad_script", "cr_pad_replay",
-            "cr_vramtex_off", "cr_stereo_force", "cr_memdump", "cr_ax_stall" };
+            "cr_vramtex_off", "cr_stereo_force", "cr_memdump", "cr_ax_stall", "cr_vtxpack_off", "cr_lazydesc_off", "cr_ptrext_off", "cr_inline_off" };
         char on[256] = "";
         for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; i++) {
             char p[48]; snprintf(p, sizeof p, "sdmc:/%s.txt", flags[i]);

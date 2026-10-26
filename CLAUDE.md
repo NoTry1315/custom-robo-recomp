@@ -344,7 +344,59 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   sdmc:/cr_dump_r<n>_*: press it when a box breaks on hardware, then compare with Citra at the same point.
   On the SD since 2026-10-25 (main@7ab93e7); previous build kept as ..._2026-10-25_pre-memdump-1a78d4d.3dsx.bak.
   Details: unknowns "Run 30 text hang".
-- `make clean` deletes build/ including logs: keep measurement logs elsewhere.
+- 2v2 particle family (2026-10-25, branch claude/2v2-family-probe-830b70, investigation only): 0x8017b000-0x80185000
+  is the HSD particle system (psdisp/psinterpret/generator/pslist; names in decomp_names.tsv). Citra 2v2: 7.0 ms
+  of the game thread (18.6%), 0.47 ms in the 1v1, scales with particles (186 drawn vs 10). Ranked next: pointer-extent
+  stack promotion, lazy vertex descriptor (gx.c), sin/cos memo (63% of calls repeat in-frame). Details: unknowns
+  "2v2 particle family".
+- Pointer-extent stack promotion (2026-10-26, branch claude/ptr-extent-promo-2485cd, not merged, off by default):
+  recomp.py `ptr_flow`/`ptr_summaries` give each frame pointer the byte ranges it reaches (per-callee r3-r12
+  extents over the call graph; natives from `tools/recomp/native_ptr_ext.tsv` + the registers runtime/ reads).
+  `RECOMP_PTR_EXTENT=1` at generation: 3439 -> 4578 promoted words, Citra 2v2 game 36.0 -> 35.6 ms (-1.1%), battle
+  14.0 -> 13.9, campaign 8.0 -> 7.9, .text -0.7%; 2v2/battle/campaign/boot logs + fb dumps identical. Below the 2%
+  bar, so off (default output byte-identical to 39c4989). Hot particle frames keep their buffers (really passed to
+  PSMTX*/OSReport). recomp.py now refuses to run with control characters in its source (a lost `\b` emptied the
+  call graph and hung boot). Not on hardware. Details: unknowns "Pointer-extent stack promotion".
+- Lazy vertex descriptor (2026-10-26, branch claude/pensive-cannon-e4b2ed, not merged): GXSetVtxDesc/GXClearVtxDesc
+  only change gs.desc; desc_sync() queues one whole-descriptor record before a draw record (x_fifo, x_call_dl) or
+  a game-thread vertex size, only when it differs from the last one sent. Citra 2v2 4.2: GX-queue records 7586 ->
+  6428 per frame, game 35.7 (base) / 36.1 (flag off) -> 35.6 ms, GX busy 38.3 -> 37.9; battle/campaign unchanged;
+  2v2/battle/campaign/boot logs + fb dumps identical on and off. Default on (small); sdmc:/cr_lazydesc_off.txt and
+  button "Lazy vtx desc". New `# gx queue frame` line. Not yet on hardware. Details: unknowns "Lazy vertex descriptor".
+- sin/cos memo study (2026-10-26, not built): Citra 2v2 has ~2350 native sin/cos calls per frame, 63% repeat an
+  argument in the frame (mostly sin(a), cos(a) pairs in 0x8019fc14), but half are x ~ 0 (tiny path, costing about
+  what a lookup costs); a 256-entry memo would save ~0.1-0.15 ms of 36.7 (~0.3%). Below the 2% bar: no memo, no
+  flag. Details: unknowns "sin/cos memo study".
+- Selective inlining (2026-10-26, kept off): recomp.py `INLINE_SITES` (explicit bl list, RECOMP_INLINE_SITES=1)
+  calls an always_inline copy of ps_disp_tev_setup / chan_color / tev_color / ps_disp_quad at their 5 sites (746
+  calls per 2v2 frame). Citra 2v2 game 36.72 -> 36.64 ms (-0.2%) for +0.63% .text; logs and fb dumps identical.
+  Below the 2% bar, so off (gen/ unchanged). Not on hardware. Details: unknowns "Selective inlining of the
+  per-particle helpers".
+- Particle quad merge (2026-10-26, investigation only, not built): in the Citra 2v2, ~242 immediate draws per frame
+  (~219 single particle quads) become ~113 DrawElements; TEV-only causes ~37 of the batch breaks, texture+TEV ~36,
+  texture+uniform ~28. A TEV-colour merge (palette texture on a third unit) is worth at most ~1.3 ms of the ~40 ms
+  GX thread, so not built. C3D_DrawElements is ~25 us per call in Citra. Details: unknowns "Particle quad merge".
+- 2v2-perf-3 (2026-10-26, branch task/2026-10-26-2v2-perf-3, merged to main 2026-10-26; all three toggles on by
+  default; small-scale 2v2 CPU work closed by the user after this: diminishing gains, see performance.md "Open"): merges
+  particle-probe, ptr-extent-promo, lazy-vtx-desc and the sin/cos memo, particle-inline and quad-merge studies.
+  Pointer-extent promotion and the inline sites are run-time toggles in the one build (recomp.py
+  RECOMP_PTR_EXTENT / RECOMP_INLINE_SITES = dual, the default; 0 = plain main code): `PTR_EXTENT_DUAL` lists the 16
+  hottest changed functions (FNPROF), each gets a second body fp_X and f_X dispatches on recomp_ptr_extent at entry
+  (all 142 would be +15.7% .text); the 5 inline sites test recomp_inline_sites. Buttons "Ptr extent" / "Inline
+  sites", flags cr_ptrext_off / cr_inline_off, both on by default; `# codegen:` boot line, `# time .. split` ends with
+  "lazy desc / ptr extent / inline sites". Citra 2v2 game 36.2 ms on / 36.7 off (plain 36.6, main 36.7), battle 14.0
+  / 14.1, .text +4.35% vs plain; 2v2/battle/campaign/boot logs + fb dumps identical to main, all on and all off.
+  tools/buildinfo.sh takes BUILD_BRANCH / BUILD_REV from the environment (worktree builds: docker -e). Details:
+  unknowns "Run-time translator toggles". Hardware run 31 (2026-10-26, @e51105e, all toggles on, no A/B, logs/
+  cr_autotest_2026-10-26_hw-run31-2v2-perf-3.log): 2v2 41.8 fps, game 20.6 ms, GX busy 16.3 (run 29: 39.6 / 22.2 /
+  16.6); hand-played, Citra said -1.1%, so mostly play variance. No crash; one 9.5 s stall in scene c before a HOME
+  exit. Hardware runs 32a/32b (@c4781f5): the Citra 2v2 replay played on the 3DS (save + pad_2v2 files +
+  cr_dvdasync_off on the SD; route identical to Citra, 0 scene / pad differences). All toggles on 40.3 fps / game
+  22.2 ms, all off 39.7 / 22.5: -0.34 ms paired (sd 0.14, 71 of 72 windows) = -1.5%, as Citra said. Hardware
+  replays needed a pad.c fix: in autotest runs a resting stick (|v| < 16) counts as centred, since the real pad's
+  -5 -3 drift overrode the replay's sticks (run 32a0 left the route at r3720). Logs in logs/.
+- `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
+  FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
 ## Build / test
 

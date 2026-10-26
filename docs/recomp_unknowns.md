@@ -1567,7 +1567,7 @@ FNPROF frame, 64.6 ms in the 2v2, 23.9 in the 1v1; `RECOMP_SITEPROF=1` for calls
 |---|---|---|---|---|
 | call-boundary glue (00000000) | 11.6 | 4.0 | translator | 35.7k calls, 23.9k entries per frame; 139k register stores before calls, 92k reloads, 212k entry loads, 82k return stores |
 | MSL sin/cos (0x801689d0 cos 0.51, 0x80168f38 sin 0.48, __kernel_cos 0.73, __kernel_sin 0.64, __ieee754_rem_pio2 0.78) | 3.1 | ~0.9 | SDK (MSL) | ~2400 sin/cos calls per frame, each 2-3 more translated calls; native now |
-| 0x801829d0 | 3.1 | 0.26 | game | 186 calls per frame, cos/sin x4 per call, 16 FPR saves; with 0x8017b4a4 (1.0), 0x801835b0 (0.9), 0x801822d0 (0.5), 0x8018144c (0.45): a code family at 0x8017b000-0x80185000 that is almost idle in the 1v1 (effects or particles: a guess) |
+| 0x801829d0 | 3.1 | 0.26 | game | 186 calls per frame, cos/sin x4 per call, 16 FPR saves; with 0x8017b4a4 (1.0), 0x801835b0 (0.9), 0x801822d0 (0.5), 0x8018144c (0.45): a code family at 0x8017b000-0x80185000 that is almost idle in the 1v1 (effects or particles: a guess). Corrected 2026-10-25: it is the HSD particle system, and the sin/cos in 0x801829d0 are static call sites not taken at run time; see "2v2 particle family" |
 | 0x80060fa4 | 2.9 | 0.87 | game | 346 calls per frame, call-free float loop (physics/collision), 15 FPR + 9 GPR saves |
 | PSMTXConcat (native) | 1.8 | 0.6 | SDK | 991 calls per frame |
 | 0x8019fc14 (angles -> rotation) | 1.55 | 0.38 | game | 273 calls, 11 FPR saves |
@@ -1851,6 +1851,443 @@ offset, length, destination and whether they are late) and the next GX frame as 
 "# memdump r<n> (button|cr_memdump.txt): ... <ms>". Citra check (t06 route, r1900): files written, RAM at
 0x80003100 equals main.dol's text0. `tools/hw_dump.sh` (gdb through Rosalina's debugger at 192.168.1.129:4000)
 is the attached alternative: thread registers and backtraces, but needs a PC online at that moment (not yet run).
+
+## 2v2 particle family: HSD particle system profile (2026-10-25, investigation only)
+
+Task: identify the 0x8017b000-0x80185000 code family that the earlier 2v2 FNPROF passes flagged, measure it on the
+current code, and find which of its costs are repeated work and which are translation cost. No optimisation here.
+Base: main@ad99a97 (all of "2v2 game CPU" and "2v2 game CPU 2" in). Citra only: `replay.ps1 -Name 2v2` (window
+r4500-8400, scene 4.2) and `-Name battle` (1v1 with idle robots, r2700-3600). Logs (not committed) and the
+temporary probe sources are in the session notes folder `2v2-family-probe/` (probe-runtime-hooks.patch, probe.c,
+wrap.py, pcnt-ppc-hooks.patch, pcnt.c).
+
+**What it is.** The family is HAL's sysdolphin particle system. The DOL has its source file names: "particle.c",
+"psinterpret.c", "generator.c", "psdisp.c" and "pslist.c" (0x8024b068-0x8024b490), "Particle:setBlendMode:Unknown
+mode" (printed by 0x8018144c) and the pslist asserts "activeParticle[pp->linkNo] == pp" and "linkNo >= 0 && linkNo <
+PS_NUM_LINK". 16 links, active lists at 0x80449c58. Names are in `tools/decomp_names.tsv`:
+- update, once per frame from ps_update_frame (0x80075c14): ps_interpret_all (0x8017e79c, "psinterpret.c") runs
+  ps_interpret (0x8017b4a4, 3020 instructions, recursive) for every active particle, and ps_generators_update
+  (0x80180728) runs ps_generator_update (0x8017f4b8, "generator.c") for every generator.
+- draw: ps_draw_frame (0x80075c54) calls ps_disp (0x8018144c, psdisp.c) for passes 0-2. Pass 0 only ticks a
+  frame-counter byte; passes 1 and 2 walk the two lists that ps_list_get (0x80186158) returns for each link. For
+  each particle it calls ps_disp_tev_setup (0x80185310), ps_disp_tev_color (0x80184b44), ps_disp_chan_color
+  (0x80184f60), then ps_disp_particle_a (0x801822d0) or ps_disp_particle_b (0x801835b0, particles with an
+  attached object at pp+0x90). Both end in ps_disp_quad (0x801829d0), which draws the particle as its own
+  GX_QUADS primitive: GXClearVtxDesc, 2-3 GXSetVtxDesc, GXBegin and 4 vertices (f32 x3, rgba8, u8 texture index)
+  written to WGPIPE.
+- spawn: 0x8017ee20, reached through 0x800750f8 from pod_update, bomb_update, gun_bullets_update_hit,
+  gun_fire_volleys and robot_physics_update.
+
+**Why the 2v2 runs it more.** It scales with live particles, not with robots or cameras: 186 particles are drawn
+per frame in the 2v2 replay against 10 in the 1v1 replay, where the robots stand idle and nobody fires. The 2v2 is a
+real fight with four robots shooting. Per frame, the 2v2 interprets 188 particles at the top level (201 ps_interpret
+entries) and draws 186, so it processes no inactive particles. Any battle with as much shooting would cost the same.
+Correction to "2v2 game CPU": the "cos/sin x4 per call" there for 0x801829d0 came from its static call list. At
+run time its sin/cos/tan paths (pp+0x8c / pp+0x90 set) are not taken in either replay (RECOMP_SITEPROF shows no
+call), and the "effects or particles" guess is now confirmed as particles.
+
+**Measured** (2v2 vs 1v1). Self ms from `make FNPROF=1` (PROF_TOP raised to 300 for the run): FNPROF frame
+48.1 ms (game 39.9) in the 2v2, 18.7 ms (16.0) in the 1v1. Calls per frame from `RECOMP_SITEPROF=1`. In the
+brief, the stale figures were 3.1 / 1.0 / 0.9 / 0.5 / 0.45 ms (before the 2026-10-22/23 work).
+
+| function | 2v2 self ms | share | 1v1 ms | calls/frame 2v2 | 1v1 | stack / base accesses per call (2v2) |
+|---|---|---|---|---|---|---|
+| 0x801829d0 ps_disp_quad | 1.09 | 2.26% | 0.05 | 186 | 10 | 16 / 11 |
+| 0x801835b0 ps_disp_particle_b | 0.60 | 1.24% | 0.06 | 102 | 8.3 | 46 / 39 |
+| 0x8017b4a4 ps_interpret | 0.55 | 1.14% | 0.04 | 201 | 8.9 | 6 / 47 |
+| 0x8018144c ps_disp | 0.44 | 0.92% | 0.06 | 3 | 3.4 | 401 / 1656 (per pass) |
+| 0x80184b44 ps_disp_tev_color | 0.32 | 0.66% | 0.01 | 186 | 10 | 16 / 23 |
+| 0x801822d0 ps_disp_particle_a | 0.24 | 0.49% | 0.01 | 84 | 1.7 | 17 / 17 |
+| ps_generators_update, ps_list_get, ps_interpret_all, ps_disp_chan_color, 0x8017a248, ps_generator_update, ps_disp_tev_setup | 0.04-0.07 each, 0.38 together | | <0.02 | 1-186 | | |
+| family self total | ~3.6 | 7.5% | ~0.27 | | | |
+
+Inclusive (a timing-only build: svcGetSystemTick around the entry points and nothing else; Citra 2v2 game
+37.6 ms in the window, 1v1 15.0): **ps_draw_frame 5.56 ms (14.8% of the game thread), ps_generators_update 0.86,
+ps_interpret_all 0.58, spawn 0.01: the particle system is 7.0 ms of the 2v2 game thread (18.6%)**, against 0.47 ms
+in the 1v1. Where it goes (FNPROF ms, SDK and glue shares apportioned by call counts, so an estimate): self 3.6;
+SDK work on the family's behalf ~1.9 (GXBegin 0.31, PSMTXMultVec 0.32, sinf/cosf inside PSMTXRotAxisRad 0.32,
+GXSetVtxDesc 0.21, PSMTXCopy 0.15, GXClearVtxDesc 0.10, sin/cos 0.10, GXSetTevColor 0.09, texture init/load 0.14,
+atan2 + PSMTXRotAxisRad bodies 0.14); call glue ~1.0 (3755 of the 31.6k calls per frame and 1302 of the 17.4k
+entries come from the family). Assumption: the game thread does not block on a full GX queue inside ps_disp (1 MB
+queue). Hardware share not measured: if it is the same 18.6% of run 29's 22.2 ms, that is ~4 ms.
+
+**Repeated inputs** (temporary probe build: per frame, the calls from code at lr 0x8017a000-0x80187000 whose inputs
+had already been seen in the same frame; GX state was compared with the runtime's current state):
+
+| what | calls/frame | repeats | inputs / what would invalidate a cached result |
+|---|---|---|---|
+| GXBegin (ps_disp_quad) | 209 | 183 (87%) had the same vertex descriptor and format as the previous GXBegin | gs.desc + format; the GXClearVtxDesc (209) and GXSetVtxDesc (477) calls before them change nothing in net, but each one sets `vsz_g_ok = 0` and queues a GX-thread record |
+| PSMTXMultVec | 424 | 211 identical (matrix, vector) pairs, 21 distinct matrices | 194 of the repeats come from the two calls at 0x801838cc / 0x801838f8 in ps_disp_particle_b (97 of 100 each). Their inputs are the matrix at 0x80449bf4, the translation at 0x80449b78 + 0x0c/0x1c/0x2c and pp+0x90's +0x24/+0x28, so they are the same for every particle of one attached object. Invalidated by the camera matrix or that object changing |
+| PSMTXRotAxisRad | 158 | 22 (14%) | axis (12 bytes at r4) + angle |
+| atan2 | 90 | 17 | f1, f2 |
+| sin/cos (mostly ps_generator_update) | 132 | 64 | the argument |
+| GXSetTevColor | 121 | 0 (the colour differs from the register's previous value every time) | |
+| GXLoadTexObj / GXInitTexObj | 51 / 51 | 0 same object already on the map / 38 same arguments | |
+| PSMTXConcat | 12 | | no per-child concatenation of a parent matrix |
+
+Outside the family (found by the same probe, game-wide): 2384 sin/cos/sinf/cosf per frame, of which **1501 (63%)
+repeat an argument of the same function already computed in that frame**. ~1130 of the repeats are in 0x8019fc14
+(angles -> rotation: 6 sin/cos call sites, 273 calls each per frame; 263 of its 273 calls come from 0x80196630, not identified), 183 in PSMTXRotRad
+(0x80139800, 115 calls) and 66 in PSMTXRotAxisRad.
+
+**Translation cost** (FNPROF build with temporary counters in ppc.h `sp_at`/`b_at`/plain rd/wr, keyed on the
+running function): per 2v2 frame the family runs 16.4k stack accesses that stayed in guest memory, 30.6k
+base-register accesses and 1.5k others. The whole game runs 126.3k / 320.2k / 22.5k. With `RECOMP_STACK_SLOTS=0`
+the game runs 153.6k stack accesses, so stack-slot promotion removed 27.3k executed accesses per frame for its
+measured 1.4 ms (37.4 -> 36.0), ~0.05 us of Citra game time each (GCC's forwarding included). In the family
+promotion gains nothing: 15.5k accesses without it, 16.4k with it (entry loads of promoted words). Almost every
+accessed frame word lies above an address-taken local, which the current rule excludes: 57 of 61 offsets in
+ps_disp_particle_b sit at or above r1+0x18 (vec3 buffers passed to PSMTXMultVec), 32 of 38 in ps_disp_quad (r1+0x14
+passed to 0x8019fc14), 33 of 37 in ps_disp_particle_a, 34 of 37 in ps_disp, 73 of 78 in ps_generator_update.
+ps_disp_tev_color passes a GXColor in r1+0x24-0x2f by address and also accesses it by byte. ARM code is 4-8 times the
+PPC size (ps_interpret 3020 -> 24632 words, ps_disp_quad 760 -> 4230).
+
+**Opportunities, ranked** (estimated Citra 2v2 game-thread savings; none built):
+1. *Pointer-extent stack promotion* (translator; next session as planned): per callee, how many bytes it reaches
+   through r3-r10, plus a table for the natives (PSMTXMultVec reads 12 bytes at r4 and writes 12 at r5, PSMTXCopy
+   48, GXSetTevColor's colour 4). In the family, 16.4k accesses per frame; promoting 50-80% of them is ~0.4-0.65 ms
+   (1-2%). The same rule applies to the 126k accesses left game-wide, which is the larger prize (unmeasured: what
+   share qualifies).
+2. *Lazy vertex descriptor* (runtime gx.c, SDK layer): only invalidate the vertex size and queue a descriptor
+   record when the descriptor at GXBegin differs from the last one sent. 87% of particle GXBegins would skip it,
+   and so would part of the 775 GXSetVtxDesc calls game-wide. ~0.3-0.5 ms game thread plus ~690 fewer GX-queue
+   records per frame. Exact (same records reach the GX thread whenever the state differs). Not in the planned
+   sequence.
+3. *Memo for repeated sin/cos* (runtime natives, exact since sin/cos are pure; but a hit must also reproduce the
+   registers the native leaves, see "2v2 game CPU" 1): 1501 repeats per frame at ~0.75 us FNPROF each, minus the
+   lookup, ~0.5-0.9 ms. Mostly outside this family (0x8019fc14 via 0x80196630).
+4. *Selective inlining* (session 4): the per-particle helpers ps_disp_tev_setup / tev_color / chan_color (3 x 186
+   entries) and ps_disp_quad (186): ~750 calls per frame, ~0.25 ms of glue at the measured ~0.33 us FNPROF per call.
+5. *Redundant math inside the family* (planned session 3): the confirmed repeats are the 194 PSMTXMultVec at
+   0x801838cc/f8 (~0.15-0.2 ms with glue) and <0.1 ms of rotaxis/atan2/sin/cos. Removing them would mean changing
+   game code (hoisting per-object work out of the per-particle loop), which the rules forbid. A memo inside the
+   PSMTXMultVec native costs about what the multiply costs. Not worth a session.
+6. *GX thread, not the game thread*: in the 2v2 the GX thread's immediate-mode draws take 6.2-6.3 ms against 1.2 ms
+   in the 1v1, and draw calls are 403-449 against 180. Each particle quad has its own TEV colour, so it looks like
+   one C3D draw per particle (an inference, not split out). Once the game thread drops below the GX thread, merging
+   particle quads that differ only in TEV colour (colour as a vertex attribute) is the matching win there.
+
+**Recommendation:** do the pointer-extent stack promotion (session 2) first. It is the largest item that only the
+translator can deliver, and it applies game-wide. Replace session 3 (redundant math in this family) with the
+lazy vertex descriptor (2) and the sin/cos memo study (3): the family's own confirmed redundancies are small and
+are game logic.
+
+## Pointer-extent stack promotion (2026-10-26, off by default, not on hardware)
+
+Task: let `promote_stack_slots` ("2v2 game CPU 2", step 4) promote frame words that sit above an address-taken
+local, by knowing how many bytes each pointer can reach. Base: branch 2v2-family-probe @39c4989. Citra only, same
+replays as before (`replay.ps1 -Name 2v2|battle|campaign|boot`, `time_avg.py --from 4260 / 2460 / 1500`).
+
+**What it does** (recomp.py `ptr_flow`, `ptr_summaries`, `native_arg_reads`, `native_ptr_ext`; on with
+`RECOMP_PTR_EXTENT=1` at generation, default off). The old rule excluded every word at or above the lowest
+r1-derived address the function computes (a definition counted as a use). The new one is a forward may-analysis
+per function. A register's value is a set of offset intervals per origin: origin 0 is the frame (r1 after the
+stwu, or at the entry when frameless), and origins 3-12 are the entry values of r3-r12 (r11/r12 because MWCC
+helpers such as the context save at 0x801ae9b4 take them). Uses give byte ranges:
+- `rN + k` / ea accesses give their bytes.
+- An indexed access, a store of the pointer, a `call_indirect` or any other use gives [lo + min(k, 0), INF): the
+  old upward assumption.
+- A call gives the callee's per-register reach. A frame word is promoted when no range covers it (plus every
+  earlier rule).
+
+Callee summaries (bytes reached through each of r3-r12, and the argument-derived values left in r3/r4) come from a
+fixpoint over the call graph: Tarjan SCCs, callees first; summaries only grow and are widened after 8 rounds.
+Natives:
+- A native reaches only the registers its runtime/ code reads (`native_arg_reads` parses runtime/*.c; LOG/printing
+  excluded, `gq_regs(fn, n)` = r3..r3+n-1, computed index = INDEX_READS or all, calling guest code = all).
+- `tools/recomp/native_ptr_ext.tsv` classifies those registers: value / ptr N / unknown, with file:line evidence.
+  It covers 136 natives, 354 registers (228 value, 76 ptr N, 50 unknown). A Sonnet subagent wrote it and I
+  spot-checked it (GXLoadNrmMtxImm 44, GXSetProjection 48, the colour setters 4). Natives with a ret row (memcpy,
+  memset, mem_zero, OSInitAlloc) keep the default rule.
+- MTX/MSL natives use their translated body's summary.
+
+After a call registers keep their values (a callee may leave them), so a stale frame pointer in r4 still counts
+at a later native that reads r4. New assumption: a function never returns the address of its own frame (C:
+locals are dead after the return). 197 functions do leave a frame pointer in r3/r4 at a return, all stale
+arguments. For frameless functions it is an escape into the caller's frame. `RECOMP_PTR_REPORT=addr,..` prints
+per-frame detail, and `RECOMP_PTR_RANGE=lo-hi` applies the new rule only to functions in [lo, hi) (bisecting).
+
+**Measured.**
+
+| | old rule (= default) | RECOMP_PTR_EXTENT=1 |
+|---|---|---|
+| promoted words / functions / accesses (static) | 3439 / 483 / 11085 | 4578 / 584 / 14333 |
+| words free of every other rule but kept for frame pointers | 3806 | 3277 |
+| frames with words a callee reaches | 533 | 429 |
+| ps_interpret 0x8017b4a4 / ps_disp_particle_b 0x801835b0 / ps_disp 0x8018144c words | 0 / 0 / 0 | 0 / 4 / 2 |
+| .text | 6,534,856 | 6,486,888 (-0.7%) |
+| Citra 2v2 game ms (2 runs) | 36.0 | 35.6, 35.6 (-1.1%) |
+| Citra battle 4.2 / campaign 8.3 game ms | 14.0 / 8.0 | 13.9 / 7.9 |
+
+Frame ms did not change (2v2 46.0 -> 45.9; in Citra the GX thread decides it). **Identity**: `compare_logs.py`
+exit 0 for 2v2, battle, campaign and boot, with the SDK/scene/pad lines and all fb dumps identical to 39c4989.
+With the switch off (the default), gen/ is byte-identical to 39c4989's.
+
+**Why the gain is small.** In the particle family the words left in memory are the address-taken buffers
+themselves, not words beside them.
+- In ps_disp_particle_b the vec3/matrix buffers at r1+24..216 really are passed to PSMTXMultVec/Copy/Concat. Their
+  ranges touch and merge, and the 30 remaining words all lie inside them.
+- ps_disp reaches OSReport (varargs: every register it reads is unknown) and the texture/TLUT natives from r1+24.
+- ps_interpret has a `call_indirect` (unknown from r1+16) and callee reach into its frame.
+
+Game-wide, the largest remaining causes of an unbounded range are:
+- indexed accesses to local arrays (102 functions);
+- the assert handler 0x801aea4c (73 functions; it calls OSReport and the context save with every register);
+- stores of a frame pointer (37);
+- `call_indirect` (36);
+- sprintf 0x80163710 (28).
+
+Making those precise (a format-aware OSReport/sprintf extent, bounding a local array's index) would add static
+words. Static counts did not predict much time, though: +33% words gave -1.1%. Below the 2% bar (as with LTO and
+the inline copies), so it is off by default. `RECOMP_PTR_EXTENT=1` keeps it available; it also shrinks .text.
+
+**Bugs found on the way** (each caught by the boot replay or a differential check, all fixed before the numbers
+above):
+1. A `\b` in the callee regex was lost to a shell heredoc and became a backspace, so the call graph was empty.
+   Summaries were then computed in arbitrary order and were stale: 0x8019cc64 promoted a struct it passes to
+   0x8019def4, and boot hung loading files. A function-range bisection (`RECOMP_PTR_RANGE`, 8 steps) found it.
+   recomp.py now refuses to run if its own source contains a control character. The same trap was noted in
+   "2v2 game CPU 2", so the guard is overdue.
+2. Inlined leaves start with a `/* inlined */` comment, and their first assignment was not parsed. Unparsed
+   assignments now stop the translator.
+3. `rD = rS + rX` kept only rS's origins (found by checking that every register the old analysis tracks as a frame
+   pointer is tracked by the new one at the same address: 0 mismatches after the fix).
+4. Blanking an indexed access hid its index register.
+5. The fixpoint oscillated on the recursive 0x80160c48: a recomputed summary can be smaller than the widened one.
+
+## Lazy vertex descriptor (2026-10-26, not yet on hardware)
+
+Experiment 2 of the "2v2 particle family" ranking (runtime/gx.c, SDK layer only). The particle draw
+(ps_disp_quad 0x801829d0) calls GXClearVtxDesc and 2-3 GXSetVtxDesc before every quad, and 87% of those quads
+end up with the descriptor already in effect. Each call used to queue a GX-queue record and clear the game
+thread's vertex-size cache (`vsz_g_ok`).
+
+**Change.** On the GX thread only the draw records read `gx.desc`: `x_fifo` (FIFO primitives) and `x_call_dl`
+(GXCallDisplayList), through make_plan, plan_get, set_texgen and dl_draw. Every other `gx.desc` reference is in those
+paths. So the setters now only change `gs.desc` and set `desc_dirty`. `desc_sync()` runs before
+those two records are queued, and in `vtx_size_g` (GXBegin and FIFO assembly, the game thread's only reader). It
+compares `gs.desc` with `desc_sent` (what `gx.desc` holds once the queued records have run). Only if they differ
+does it queue one `x_set_desc` record with the whole 26-byte descriptor and clear `vsz_g_ok`. Every draw
+therefore sees the same `gx.desc` as with one record per call. GXSetVtxDesc with an attribute >= 26 still queues
+its own record, so its one-time log line is unchanged. The eager path (`sdmc:/cr_lazydesc_off.txt`, or the
+bottom-screen button "Lazy vtx desc") is the old code plus keeping `desc_sent` current, and it first sends a
+pending lazy descriptor. That means the button can switch at any call. New 300-frame game-thread log line:
+`# gx queue frame <n>: per frame <records>, <words>; vertex descriptor lazy|eager: <setter calls>, <records>`.
+
+**Measured (Citra replays, this branch's build; game frames 8100/8400 for 2v2, 3000/3300 for battle):**
+
+| replay | descriptor calls / frame | descriptor records lazy | GX-queue records / frame (eager -> lazy) |
+|---|---|---|---|
+| 2v2 4.2 | 1129-1243 | 75-85 | 7586 -> 6428 (-15%) |
+| battle 4.2 | 248-264 | 28-38 | 3895 -> 3668 |
+| campaign 8.3 | 88 | 18 | 1351 -> 1281 |
+
+| 2v2 scene 4.2 (74 windows) | game ms | GX thread busy | frame ms |
+|---|---|---|---|
+| base (ad99a97, pristine build) | 35.7 | 38.3 | 45.7 |
+| lazy on (2 runs, identical) | 35.6 | 37.9 | 45.4 |
+| flag off (2 runs, identical) | 36.1 | 38.4 | 45.8 |
+
+Battle 4.2 (14.0 -> 14.1 ms) and campaign 8.3 (8.0) are unchanged within 0.1 ms. The lazy path is 0.5 ms
+(-1.4%) faster than the flag-off path of the same build. Against the pristine base it is only -0.1 ms of game
+time and -0.4 ms of GX busy. The flag-off path is 0.4 ms slower than base, which is not explained: its extra work
+is a few counters and byte stores per call. That is a guess at Citra code-layout effects, not measured. Below the
+2% bar either way.
+
+**Validation:** the 2v2, battle, campaign and boot replays with the flag on and off give the same SDK/scene/pad
+lines (`tools/citra/compare_logs.py`) and framebuffer dumps (2v2 5000/6500/8000, battle 2100/2700/3300, campaign
+1500/1980/2300) as base ad99a97.
+
+**Default: on.** It is exact, it never adds records, and on the 2v2 every frame metric is equal or better. It is
+cheap to keep and the button A/Bs it on hardware. Not a clear game-CPU win, so if hardware shows no gain it can go
+(the user decides). Not yet on hardware.
+
+## sin/cos memo study (2026-10-26, measured, not built)
+
+Task: opportunity 3 of "2v2 particle family": a memo for repeated arguments in the native sin/cos (`runtime/libm.c`).
+sin/cos are pure, so a memo would be exact if a hit also restored what the native leaves (r3, r4, r6, f1-f4, XER[CA]:
+the `St` struct plus the result, ~60 bytes per entry). Measured first, with a temporary probe in `nat_sincos` (not
+committed; patch and log in the session notes folder `sincos-memo/`), Citra 2v2 replay, scene 4.2, per frame
+(averages of the 300-retrace windows r4800-8400):
+
+| what | per frame |
+|---|---|
+| calls (sin, cos, sinf, cosf through `nat_sincos`) | ~2350 (2150-2650) |
+| path: tiny (\|x\| < 2^-27, mostly x = 0: kernels return x or 1 at once) / \|x\| <= pi/4 / rem_pio2 / translated body | ~1170 / ~680 / ~530 / 0 |
+| same function and argument as the previous call | ~5 |
+| sin then cos of the same argument (0x8019fc14: sin(a), cos(a) for 3 angles) | ~1450 (tiny 870, small 390, rem 300) |
+| argument already seen by the same function earlier in the frame / only in the previous frame | ~1520 / ~480 |
+| hits of a direct-mapped (function, argument) table, 16 / 64 / 256 / 1024 entries | ~1130 / ~1300 / ~1450 / ~1750 |
+| 256-entry hits by path: tiny / small / rem_pio2 | ~980 / ~300 / ~260 |
+
+Cost (sdmc:/cr_bench.txt lines of the probe build, Citra ticks, the same clock as the `# time` game ms): `sdk_sin`
+at x = 0 (tiny path) 768 ns, x = 0.3 806 ns, x = 1 1123 ns, x = 10 1194 ns; a simulated hit (hash of the 64-bit
+argument, compare, `put()` of the stored registers, inline in the loop, no dispatch) 734 ns. So the fixed cost of a
+call (dispatch, writing back the registers) is most of a native call, and the arithmetic is only ~40 ns on the
+small path and ~400 ns with rem_pio2. Half the calls and two thirds of the repeats are the tiny path, where a hit
+saves ~30 ns.
+
+Estimate for the best shape (256-entry direct-mapped table): 980 x 0.03 + 300 x 0.07 + 260 x 0.43 = ~0.17 ms saved,
+minus the lookup and the store on ~900 misses per frame: **~0.1-0.15 ms of the 36.7 ms 2v2 game thread (~0.3-0.4%)**.
+A last-value memo catches ~5 calls. A sincos pair (compute cos with the sin, sharing rem_pio2) helps only the ~300
+rem-path pairs, ~0.06 ms. All below the 2% bar and below run-to-run noise, so no memo was built and no flag added.
+Hardware not measured; the share there is assumed similar (the rem-path arithmetic is the only part a memo removes).
+Correction to the probe's estimate (0.5-0.9 ms): it priced each repeat at the FNPROF per-call cost of ~0.75 us, but
+most repeats are x = 0 calls that already cost little more than a lookup.
+
+## Selective inlining of the per-particle helpers (2026-10-26, kept off)
+
+Experiment 4 of the 2v2 particle sequence (opportunity 4 of "2v2 particle family", which is on the unmerged
+branch claude/2v2-family-probe-830b70; the names below come from there and are not in main's decomp_names.tsv).
+Base: main@ad99a97, Citra only, not run on hardware.
+
+**Sites** (calls per 2v2 frame from that probe's `RECOMP_SITEPROF` run, scene 4.2 r4500-8400; callee size in PPC
+instructions; glue = register stores before the call + reloads after it + callee entry loads + return stores, in
+`cpu` words, from its sites.tsv masks). Each bl address was checked with `tools/dol.py dis`:
+
+| bl | caller -> callee | calls/frame | callee insns | glue words per call |
+|---|---|---|---|---|
+| 0x80181bc4 | ps_disp -> ps_disp_tev_setup (0x80185310) | 186 | 438 | 8 + 5 + 3 + 3 = 19 |
+| 0x80181d40 | ps_disp -> ps_disp_chan_color (0x80184f60) | 186 | 157 | 5 + 19 + 10 + 4 = 38 |
+| 0x80181d48 | ps_disp -> ps_disp_tev_color (0x80184b44) | 186 | 263 | 2 + 10 + 11 + 9 = 32 |
+| 0x8018292c | ps_disp_particle_a -> ps_disp_quad (0x801829d0) | 84 | 760 | 11 + 0 + 29 + 15 = 55 |
+| 0x80183f38 | ps_disp_particle_b -> ps_disp_quad | 102 | 760 | 12 + 0 + 29 + 15 = 56 |
+
+These are the only call sites of the four helpers that run in the 2v2, and all seven functions are in one gen/
+file (recomp_036.c), so GCC could already inline them but does not (extern, too large for -O2's heuristics).
+
+**Change** (`tools/recomp/recomp.py` `INLINE_SITES`, explicit list of (bl address, callee), no size rule): the
+listed call becomes `fi_<callee>()`, a `static inline __attribute__((always_inline))` copy of the callee's
+emitted C placed at the top of the caller's gen/ file; f_<callee> stays for other callers and call_indirect.
+The copy is the same C text, so behaviour is identical by construction. GCC then forwards the caller's `cpu`
+stores into the callee's entry loads and the callee's return stores into the caller's reloads, and drops the C
+call. It cannot drop the `cpu` stores themselves: `cpu` is a global that the SDK calls inside the helpers
+(GXSetTevColor, GXBegin ..) may read. `RECOMP_INLINE_SITES=1` turns it on; off (the default) gen/ is unchanged.
+
+**Measured** (Citra replays, game ms = mean of the 65 `# time` windows in r4500-8400; repeat runs agree within
+0.005 ms):
+
+| build | 2v2 game ms | GX busy | .text |
+|---|---|---|---|
+| base (main) | 36.720 | 39.554 | 6,666,232 |
+| all 5 sites (2 runs) | 36.645 / 36.643 (-0.075, -0.2%) | 39.55 | 6,708,128 (+41.9 KB, +0.63%) |
+| only the 3 ps_disp sites | 36.697 (-0.023) | | 6,676,168 (+9.9 KB) |
+
+So the 746 inlined calls per frame save ~0.1 us each, not the ~0.33 us the probe priced them at (its figure was
+the average FNPROF glue per call, which includes the `cpu` stores that inlining leaves in place). Battle 4.2 and
+campaign 8.3 game ms unchanged (14.0, 8.0).
+
+**Identity** (all 5 sites on, vs base): `compare_logs.py` exit 0 for 2v2 (5269 key lines), battle (2690),
+campaign (2939) and boot (1581); fb dumps 2v2 r5000/6500/8000, battle r2100/2700/3300, campaign r1500/1980/2300
+byte-identical.
+
+**Decision: off.** -0.2% is far below the 2% bar and costs 0.6% more code for the 16 KB I-cache; it matches the
+2026-10-23 "inline copies" result (-0.5% for +5.5%). The remaining glue of these sites is the `cpu` stores, which
+only a translator-level splice (callee code on the caller's register locals, no `cpu` round trip) would remove.
+That splice is not built: drop_nv_saves and promote_stack_slots give up on a function with a second stwu/addi r1
+pair (`bad = 'r1 write'`), so the three callers would lose them, and the per-call store count above (~10k words
+per frame for these sites) bounds the gain at a few tenths of a ms.
+
+## Particle quad merge: immediate-draw batch breaks (2026-10-26, investigation only, not built)
+
+Task (experiment 5 of the particle-family sequence): cut the GX-thread cost of particle drawing by merging
+consecutive immediate quads that differ only in their TEV (or channel) colour. The brief assumed TEV colour was
+the main batch breaker. That was an inference, so it was measured first. Base main@ad99a97, Citra
+`replay.ps1 -Name 2v2` only. The temporary probe (pend_flush tagged by cause, svcGetSystemTick timers) is in the
+session notes folder `particle-quad-merge/probe-imm-breaks.patch`, and its log lines are in `probe*-2v2-probe-lines.txt`.
+It is not committed. All figures are per GX frame, averaged over 300 frames in the battle window (r6000-8100).
+
+**Counting.** Draws through `dl_draw` (the whole-display-list cache) also run with `in_dl == 0`. A first count
+included them, so here "immediate" means `draw()` outside any display list (x_fifo). Per frame: **~242 immediate
+draws, ~219 of them single GX_QUADS** (4 vertices; vertex format 0 ~70%, 2 ~25%, 3 ~5%). Batching already merges
+them into **~113 C3D_DrawElements** (of 403-449 DrawElements in the whole frame). A batch break is counted against
+every cause that flushed state between two immediate draws:
+
+| causes of one break | per frame | share |
+|---|---|---|
+| TEV only | ~37 | 33% |
+| texture + TEV | ~36 | 32% |
+| texture + a non-matrix uniform (texm/amb/vscale) | ~28 | 25% |
+| texture only | 4-10 | 4-9% |
+| blend, other pixel state, combinations | ~5 | 4% |
+
+Where the TEV state changed, a colour register changed in ~95% of cases (`GXSetTevColor`; s10 mirrors it) and the
+stage setup in ~15%. Channel control changed in ~14%; material/ambient colour never broke a batch. The material
+colour from a register is already written into each vertex (tm->mat), so `GXSetChanMatColor` does not flush. Cull
+mode and position-matrix uploads break batches between *display-list* draws, not between particles.
+
+**Where the immediate-draw time goes** (probe build, so somewhat inflated): ~12.5-14.5 ms of the ~40 ms GX
+thread. setup_draw_state ~6.7 ms: the texture loop 2.5 (tex_get's per-frame fast path is cheap, so this is mostly
+the DrawElements flushed when a new texture is bound), setup_tev ~1.0 (~13 us per rebuild, ~75 rebuilds),
+setup_pixel 0.65, and DrawElements flushed by the TEV change. C3D_DrawElements costs **~22-25 us per call** in Citra,
+~2.5-3 ms in total for the ~113 immediate calls (citro3d's C3D_UpdateState emits the dirty texenv and uniforms there).
+The rest (~6 ms, the "immediate" figure of `# time .. gx vertex`) is uniforms, lighting/texgen setup, the vertex plan
+and decode per draw.
+
+**Decision: not built.** TEV colour is the largest single cause but not the main one: it alone breaks a third of
+the immediate batches. A merge of TEV-only breaks would save at most ~37 DrawElements and ~37 setup_tev rebuilds
+per frame. That is ~0.8 + 0.5 = **~1.3 ms of the ~40 ms GX thread in Citra (~3%), an upper bound before its own
+costs**. An exact merge needs a second per-vertex colour that the combiner can read. The vertex shader has one colour output, and
+PICA's combiner reads no other per-vertex colour, so it would take a per-frame palette texture on a third texture unit,
+a texcoord2 per vertex and a texenv rewrite that turns the register's CONSTANT source into TEXTURE2. A merged
+draw could then use at most 2 game textures, and stereo replay and the vertex cache would need checking. Breaks that also
+change the texture (~64 per frame) cannot be merged without a texture atlas.
+
+**Opportunities found instead** (none built; Citra estimates):
+1. *Per-DrawElements cost* (~25 us each, ~400 per 2v2 frame including display-list draws, so ~10 ms of the GX
+   thread): what C3D_UpdateState uploads per call (uniform ranges marked dirty by unif_set, all 6 texenv stages
+   after every setup_tev) is the largest per-draw item here. Measure it per kind before changing anything.
+2. *setup_tev colour-only fast path*: when only colour registers changed, write only the stages whose
+   constant/buffer colour differs (fewer dirty texenv stages, no recompute). It must replicate place_srcs' choice
+   between CONSTANT and PREVIOUS_BUFFER, which depends on value equality. ~0.5 ms upper bound.
+3. The palette-texture merge above, only if 1 and 2 leave TEV the dominant cost.
+Not yet on hardware (nothing to run). The GX thread on hardware (run 29: 16.6 ms in the 2v2) is shorter than the
+game thread (22.2 ms), so on the New 3DS a GX-thread gain would not shorten the 2v2 frame until the game thread
+drops below it.
+
+## Run-time translator toggles (2026-10-26, hardware test build 2v2-perf-3)
+
+Task: one hardware build that A/Bs pointer-extent promotion and the selective inline sites live, as the other
+test flags do. Both were generation-time switches (RECOMP_PTR_EXTENT=1, RECOMP_INLINE_SITES=1, off by default).
+
+**How.** recomp.py runs promote_stack_slots twice (old rule, extents), then Summaries / solve_out for each list,
+and exits if any function's register summary (in, clob, out) differs: a caller of either body must see the same
+register interface, because the bodies mix at run time. A function whose emitted C differs and that is in
+`PTR_EXTENT_DUAL` gets `fp_X` (extent body) next to `f_X` in the same gen/ file. `f_X` begins with
+`if (recomp_ptr_extent) { fp_X(); return; }`. The INLINE_SITES bl sites become
+`{ if (recomp_inline_sites) fi_X(); else f_X(); }`. That holds in both bodies of a dual caller (ps_disp and
+ps_disp_particle_b are dual). A dual callee (ps_disp_quad) gets an inline copy of its extent body too (`fpi_X`),
+so the inline copy keeps the extent body when both toggles are on. runtime/main.c: both variables are 1 unless
+sdmc:/cr_ptrext_off.txt / cr_inline_off.txt exist. The buttons "Ptr extent" and "Inline sites" flip them at a
+retrace. That is safe at any moment: each body is exact on its own (promotion only changes where this function
+keeps its own frame words), and a call already running keeps its body. Not exercised by a replay (no touch input
+in the replays). `RECOMP_PTR_EXTENT=0|1|dual` and `RECOMP_INLINE_SITES=0|1|dual` keep the single variants; 0/0
+is the plain main code.
+
+**Why only 16 functions.** 142 functions emit different C under extents. Dual bodies for all of them added
+1.03 MB (.text 6.54 -> 7.65 MB, +15.7%). An FNPROF build with the extent bodies, Citra 2v2 (r4500+) and battle
+(r2460+), found 16 of them with >= 0.05% of the samples. Leaders: ps_disp_quad 2.1%, ps_disp_particle_b 1.2%,
+0x8006eef8 1.0% (battle 2.8%), 0x80090710 0.9%, ps_disp 0.9%. The other 126 never reach a top-60 window. Those
+16 are `PTR_EXTENT_DUAL`; their fp_ bodies are 210 KB. Assumption: the 126 cold functions held a negligible share
+of the -1.1%. The measurement below agrees: on gives the full -1.1%. `RECOMP_PTR_EXTENT_ALL=1` gives every
+differing function both bodies.
+
+**Measured** (Citra, `time_avg.py --from 4500 / 2460 / 1500`; main = ad99a97's logs from the lazy-desc session):
+
+| | main ad99a97 | plain (0/0) | toggles on | toggles off |
+|---|---|---|---|---|
+| 2v2 4.2 game ms | 36.7 | 36.6 | 36.2 | 36.7 |
+| battle 4.2 game ms | 14.0 | - | 14.0 | 14.1 |
+| campaign 8.3 game ms | 8.0 | - | 8.0 | 8.0 |
+| .text | - | 6,535,672 | 6,820,008 (+4.35%) | same binary |
+
+Citra's game ms repeats exactly between runs of one binary (two 2v2 runs each, on and off, gave the same numbers),
+so 0.1 ms steps are real but small. Off costs +0.1 ms (0.3%) against the plain build, which is the dispatch tests
+and code layout. **Identity**: compare_logs.py gives 0 differing key lines and identical fb dumps for 2v2, battle,
+campaign and boot against main, with all toggles on and with all off. Not yet on hardware.
+
+Pitfall met: `make FNPROF=1` and then a plain `make` kept the FNPROF runtime objects (make does not track
+CFLAGS). The summary then listed native call counts and game ms rose by about 1 ms. `make clean` first.
 
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py

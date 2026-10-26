@@ -419,6 +419,10 @@ extern int recomp_libm_off;            /* libm.c: sin/cos/sinf/cosf run the tran
 extern u32 recomp_libm_flips;
 extern int recomp_vt_on;               /* gx.c: cached textures move to VRAM (sdmc:/cr_vramtex_off.txt = 0) */
 extern int recomp_vtxpack_off;          /* gx.c: display-list vertices packed per draw (sdmc:/cr_vtxpack_off.txt = 1) */
+extern int recomp_lazydesc_off;         /* gx.c: a GX-queue record per vertex descriptor call (sdmc:/cr_lazydesc_off.txt = 1) */
+extern int recomp_ptr_extent;           /* main.c: gen/ f_X with a second body runs fp_X (pointer-extent stack promotion; sdmc:/cr_ptrext_off.txt = 0) */
+extern int recomp_inline_sites;         /* main.c: the INLINE_SITES bl sites run their inline copy (sdmc:/cr_inline_off.txt = 0) */
+extern u32 recomp_codegen_flips;        /* main.c: toggles of the two above (# time split: "mixed") */
 void recomp_memdump_request(void);    /* bottom-screen button "Dump RAM": snapshot at the next retrace (memdump.c) */
 void recomp_memdump_retrace(void);     /* recomp_gx_retrace after the sync: button / sdmc:/cr_memdump.txt dumps */
 extern u32 recomp_memdump_n;           /* dumps written */

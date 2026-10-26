@@ -121,6 +121,8 @@
 0x80073cb8	part_load	Part loader: walks the two path lists (header word 4 per-root paths, word 8 effect-spawn joint paths; 02 = child, 01 = next).
 0x80074dcc	motion_load_bank	Motion loader: reads the ID list, fills pointer table 0x8032adc8 and gate table 0x8032a8c8 (bank ID bit 15).
 0x80075950	battle_load_assets	Battle loader: loads gun_effect.BIN entry = gun id (loadout at 0x801c5bd0) and other battle assets.
+0x80075c14	ps_update_frame	Per-frame particle update in battle: calls ps_interpret_all (0x8017e79c) and ps_generators_update (0x80180728) once each (1 call per frame in the 2v2 and 1v1 replays).
+0x80075c54	ps_draw_frame	Per-frame particle draw: for pass 0, 1, 2 calls 0x8018a4a8(1) then ps_disp(0xffff, pass).
 0x8007ab14	-	Draws the HP bar.
 0x8007dd14	hud_show_banner	Shows a battle banner: (1, 0xd2) KO, (8, 0x78) time up.
 0x8008688c	-	Clears S+0x1d8 & 0x10000000, rewrites S+0x8d from the setup table and moves the robot; looks like leaving a "not yet joined" state of a 4-player entry.
@@ -138,6 +140,21 @@
 0x80165f58	math_atan2_core	atan2(y = f1, x = f2) body; fdiv at 0x80166158.
 0x801690c8	math_atan2	atan2 wrapper (calls 0x80165f58); used for gun pitch homing.
 0x80169424	math_sqrt	Square root.
+0x8017b4a4	ps_interpret	HSD particle interpreter (psinterpret.c family): runs one particle's command stream per frame, recursive; 201 entries per 2v2 frame (9 in the idle 1v1).
+0x8017e79c	ps_interpret_all	References "psinterpret.c"; for each of the 16 particle links calls 0x801860ec and, per active particle, ps_interpret (188 per 2v2 frame).
+0x8017ee20	-	Particle effect spawn: reached through 0x800750f8 from pod_update, bomb_update, gun_bullets_update_hit, gun_fire_volleys and robot_physics_update; recursive (calls 0x8017e934 / 0x8017ea74). Whether it makes generators or particles is not traced.
+0x8017f4b8	ps_generator_update	References "generator.c": updates one particle generator (sin/cos, atan2, PSMTX calls); 11 calls per 2v2 frame from ps_generators_update.
+0x80180728	ps_generators_update	Walks the particle generators: calls ps_generator_update (0x8017f4b8) and 0x8017f1dc per generator; once per frame.
+0x8018144c	ps_disp	psdisp.c display (prints "Particle:setBlendMode:Unknown mode"): r3 = link mask (0xffff), r4 = pass (0: tick the frame counter byte at -0x5440(r13) and return; 1/2: draw the first/second list that 0x80186158 returns per link). Per particle: 0x80185310, 0x80184b44, 0x80184f60, then 0x801822d0 or 0x801835b0; GXInitTexObj/GXLoadTexObj per texture change.
+0x801822d0	ps_disp_particle_a	Particle draw variant without an attached object: PSMTXRotAxisRad (+ atan2 for some), then ps_disp_quad; 84 per 2v2 frame.
+0x801829d0	ps_disp_quad	Emits one particle: GXClearVtxDesc, GXSetVtxDesc POS/CLR0 direct (+ TEX0 index), GXBegin(GX_QUADS, fmt 2 or 3, 4), 4 vertices (f32 x3, rgba8, u8 tex index) to WGPIPE. Its sin/cos/tan paths (pp+0x8c/0x90 set) are not taken in the replays. 186 per 2v2 frame.
+0x801835b0	ps_disp_particle_b	Particle draw variant with an attached object at pp+0x90: recomputes the object's rotation (0x8019fc14) only when obj+0x31 != the ps_disp frame counter, then per particle PSMTXCopy, 4 PSMTXMultVec (two of them depend only on the object and the matrix at 0x80449bf4), PSMTXRotAxisRad, atan2, ps_disp_quad; 102 per 2v2 frame.
+0x80184b44	ps_disp_tev_color	Per-particle TEV colour: GXSetTevColor (121 of 186 calls per 2v2 frame; the colour differs from the previous one every time).
+0x80184f60	ps_disp_chan_color	Per-particle channel colour: GXSetChanAmbColor / GXSetChanMatColor (0x80155bd0 / 0x80155cc0).
+0x80185310	ps_disp_tev_setup	Per-particle TEV stage setup; skips unchanged state itself (13 GX calls per 2v2 frame for 186 calls).
+0x80186010	ps_list_remove	pslist.c: unlinks a particle from activeParticle[pp->linkNo] (asserts "activeParticle[pp->linkNo] == pp", "parent->next == pp"; lists at 0x80449c58).
+0x801860ec	-	pslist.c: per-link list operation (asserts "linkNo >= 0 && linkNo < PS_NUM_LINK"); 16 calls per frame from ps_interpret_all.
+0x80186158	ps_list_get	Returns the two display lists of link r3 (split by pp+4 & 0x8) into *r4 / *r5 for ps_disp; 32 calls per frame.
 0x8018cdec	-	HSD AObj interpretation (with 0x8018d20c); read for the order in which animation tracks apply. Assumption, not fully traced.
 0x8018d20c	-	HSD AObj interpretation (with 0x8018cdec).
 0x80196c50	-	Effect handle control; called as (0) to reset a gun slot's effect handle (slot+0x310) at bullet spawn, and as (f, handle) elsewhere.
