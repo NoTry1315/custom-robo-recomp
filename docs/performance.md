@@ -93,6 +93,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
+| 10-26 | Selective inlining of the per-particle helpers (`RECOMP_INLINE_SITES=1`: 5 listed bl sites to ps_disp_tev_setup / chan_color / tev_color / ps_disp_quad call an always_inline copy; logs + fb dumps identical) | Citra 2v2 game 36.72 -> 36.64 ms (-0.2%), +0.63% .text (ps_disp sites alone -0.02 ms) | below the 2% bar; the `cpu` stores stay (unknowns "Selective inlining of the per-particle helpers"). Not on hardware |
 | 10-23 | Inline copies: `static inline` copies of translated functions of <= 32 instructions in each gen/ file that calls them (GCC inlines across files) | Citra 2v2 game 37.4 -> 37.2 ms (-0.5%), +5.5% ARM instructions | below the 2% bar; small callees are cheap to call already |
 | 10-23 | Per-native in-sets, LR save/restore removal | sized from site counts: < 0.1 ms and ~0.3 ms | not built (see unknowns "2v2 game CPU 2") |
 | 10-22 | -O3 on gen/ (`make GENOPT=-O3`) | Citra battle game 19.96 -> 19.94 ms, +9% code | no gain; more code for the 16 KB I-cache |
