@@ -344,6 +344,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   sdmc:/cr_dump_r<n>_*: press it when a box breaks on hardware, then compare with Citra at the same point.
   On the SD since 2026-10-25 (main@7ab93e7); previous build kept as ..._2026-10-25_pre-memdump-1a78d4d.3dsx.bak.
   Details: unknowns "Run 30 text hang".
+- sin/cos memo study (2026-10-26, not built): Citra 2v2 has ~2350 native sin/cos calls per frame, 63% repeat an
+  argument in the frame (mostly sin(a), cos(a) pairs in 0x8019fc14), but half are x ~ 0 (tiny path, costing about
+  what a lookup costs); a 256-entry memo would save ~0.1-0.15 ms of 36.7 (~0.3%). Below the 2% bar: no memo, no
+  flag. Details: unknowns "sin/cos memo study".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

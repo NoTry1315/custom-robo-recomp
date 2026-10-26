@@ -93,6 +93,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
+| 10-26 | Memo for repeated sin/cos arguments in `runtime/libm.c` (last-value, direct-mapped table, sincos pair) | measured only (Citra 2v2 probe): 2350 calls/frame, 63% repeat in the frame, but half the calls are x ~ 0 (tiny path, ~ the cost of a lookup); best shape ~0.1-0.15 ms of 36.7 (~0.3%) | below the 2% bar; not built (unknowns "sin/cos memo study") |
 | 10-23 | Inline copies: `static inline` copies of translated functions of <= 32 instructions in each gen/ file that calls them (GCC inlines across files) | Citra 2v2 game 37.4 -> 37.2 ms (-0.5%), +5.5% ARM instructions | below the 2% bar; small callees are cheap to call already |
 | 10-23 | Per-native in-sets, LR save/restore removal | sized from site counts: < 0.1 ms and ~0.3 ms | not built (see unknowns "2v2 game CPU 2") |
 | 10-22 | -O3 on gen/ (`make GENOPT=-O3`) | Citra battle game 19.96 -> 19.94 ms, +9% code | no gain; more code for the 16 KB I-cache |
