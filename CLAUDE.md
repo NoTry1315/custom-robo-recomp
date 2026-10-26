@@ -344,6 +344,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   sdmc:/cr_dump_r<n>_*: press it when a box breaks on hardware, then compare with Citra at the same point.
   On the SD since 2026-10-25 (main@7ab93e7); previous build kept as ..._2026-10-25_pre-memdump-1a78d4d.3dsx.bak.
   Details: unknowns "Run 30 text hang".
+- 2v2 particle family (2026-10-25, branch claude/2v2-family-probe-830b70, investigation only): 0x8017b000-0x80185000
+  is the HSD particle system (psdisp/psinterpret/generator/pslist; names in decomp_names.tsv). Citra 2v2: 7.0 ms
+  of the game thread (18.6%), 0.47 ms in the 1v1, scales with particles (186 drawn vs 10). Ranked next: pointer-extent
+  stack promotion, lazy vertex descriptor (gx.c), sin/cos memo (63% of calls repeat in-frame). Details: unknowns
+  "2v2 particle family".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
