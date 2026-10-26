@@ -63,6 +63,8 @@ same route and timing as run 32a): per 2v2 frame the core is busy 19.1M cycles a
 27.6% of the cycles (~6.6 ms) wait for instructions (I-cache misses), 26.6% (~6.3 ms) wait on data dependencies.
 The instruction-fetch stalls alone are about the ~5.5 ms the 2v2 is over 60 fps. Run 34 added TLB counters: TLB
 misses cost under 1%, so where functions sit does not matter; the translated code has to get smaller on the hot paths.
+The first step (guest loads without the hardware-address check, runs 35a/35b, two builds on the same replay): the
+2v2 game thread went from 22.2 to 20.3 ms, 40.0 -> 43.4 fps (game speed 67 -> 72%), and the code from 6.8 to 5.3 MB.
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
