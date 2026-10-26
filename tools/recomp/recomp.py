@@ -29,8 +29,8 @@ FUNCS_PER_FILE = 60   # small files: make -j spreads them over the cores
 
 # Call sites emitted as a call to an always_inline copy of the callee's C (fi_<callee>, same text as
 # f_<callee>) in the caller's file, so GCC inlines it there: (bl address, callee). An explicit list from
-# per-site call counts, not a size rule ("Selective inlining" in recomp_unknowns.md). Off by default (Citra 2v2
-# game -0.2% for +0.6% .text): RECOMP_INLINE_SITES=1 turns it on.
+# per-site call counts, not a size rule ("Selective inlining" in recomp_unknowns.md). Citra 2v2 game -0.2% for
+# +0.6% .text; a run-time toggle in the test build (RECOMP_INLINE_SITES, main()).
 INLINE_SITES = [
     (0x80181bc4, 0x80185310),   # ps_disp -> ps_disp_tev_setup, 186 calls per 2v2 frame
     (0x80181d40, 0x80184f60),   # ps_disp -> ps_disp_chan_color, 186
@@ -38,6 +38,17 @@ INLINE_SITES = [
     (0x8018292c, 0x801829d0),   # ps_disp_particle_a -> ps_disp_quad, 84
     (0x80183f38, 0x801829d0),   # ps_disp_particle_b -> ps_disp_quad, 102
 ]
+
+# RECOMP_PTR_EXTENT=dual (default): the functions that get both bodies (old rule f_, pointer extents fp_,
+# chosen at entry by recomp_ptr_extent). Every one of the 142 functions whose C differs would add 1.03 MB
+# (+15.7% .text), so only these: each has >= 0.05% of the FNPROF samples of the Citra 2v2 (scene 4.2, r4500+)
+# or battle (r2460+) replay with the extent body (2026-10-26); together ~210 KB. The other 126 keep the old rule.
+# RECOMP_PTR_EXTENT_ALL=1 gives every differing function both bodies.
+PTR_EXTENT_DUAL = {
+    0x801829d0, 0x801835b0, 0x8018144c,   # ps_disp_quad, ps_disp_particle_b, ps_disp (2v2 2.1 / 1.2 / 0.9%)
+    0x8006eef8, 0x80090710, 0x8005e270, 0x8006207c, 0x8006b848, 0x80095e6c, 0x8006b46c, 0x800e7fc8,
+    0x8006c970, 0x80061620, 0x80054238, 0x80053da8, 0x80056c6c,
+}
 
 STUB_MODULES = {'base', 'OS', 'DB', 'DVD', 'VI', 'PAD', 'AI', 'AR', 'ARQ', 'AX', 'DSP', 'CARD', 'GX',
                 'EXI', 'SI', 'THP'}
@@ -1801,7 +1812,7 @@ def frame_prologue(fn):
     return (m, pro) if m else (None, set())
 
 
-def promote_stack_slots(fns, psq_ok=True, stubs=None):
+def promote_stack_slots(fns, psq_ok=True, stubs=None, ptr_extent=False):
     """Guest stack words a function alone uses become C locals (sp_s<k>, the word's bits in host
     order): no address mask, byte swap or RAM round trip for MWCC's spills (stfs/lfs, stfd/lfd, the
     stw/stw/lfd int->double idiom, psq). A word r1 + k of a frame (one stwu at the entry, r1 written
@@ -1817,9 +1828,9 @@ def promote_stack_slots(fns, psq_ok=True, stubs=None):
     memory keeps older contents in those words: only a reader of another function's dead stack, or
     of this frame through a pointer the rules above missed, sees a difference.
     psq_ok: psq accesses are GQR0 = 0 floats (no translated mtspr GQR0, as psq_ld0/psq_st0 assume).
-    RECOMP_STACK_SLOTS=0 keeps every stack access in memory. RECOMP_PTR_EXTENT=1 replaces "below every
-    address derived from r1" with the byte ranges reached through frame pointers (ptr_summaries: this
-    function's accesses, its callees' per-argument extents, native_ptr_ext.tsv); off by default."""
+    RECOMP_STACK_SLOTS=0 keeps every stack access in memory. ptr_extent (main(): RECOMP_PTR_EXTENT)
+    replaces "below every address derived from r1" with the byte ranges reached through frame pointers
+    (ptr_summaries: this function's accesses, its callees' per-argument extents, native_ptr_ext.tsv)."""
     if os.environ.get('RECOMP_STACK_SLOTS', '1') == '0':
         print('note: stack slots kept in memory (RECOMP_STACK_SLOTS=0)')
         return fns
@@ -1831,10 +1842,10 @@ def promote_stack_slots(fns, psq_ok=True, stubs=None):
     info = {}
     prologues = {fn.entry: frame_prologue(fn) for fn in fns}
     pf = None
-    if os.environ.get('RECOMP_PTR_EXTENT', '0') == '1':   # off by default: Citra 2v2 -1.1%, below the 2% bar
+    if ptr_extent:
         pf = ptr_summaries(fns, {e: max(p) if m else None for e, (m, p) in prologues.items()}, stubs or {})[1]
     else:
-        print('note: frame pointers reach from their address upward (RECOMP_PTR_EXTENT=1: per-callee pointer extents)')
+        print('note: frame pointers reach from their address upward (old rule)')
     # per function: words of the frame that transferred control to it (bl or tail b, same r1) it may
     # touch, and the lowest such offset a pointer it derives may reach
     g_ext, g_from, calls, framed, ind = {}, {}, {}, set(), set()
@@ -2480,16 +2491,33 @@ def main():
     fns = fold_base_regs(fns)
     fns = fold_so(fns)
     fns = drop_nv_saves(fns)
-    fns = promote_stack_slots(fns, not p.gqr0_written, p.stubs)
+    # pointer-extent promotion (RECOMP_PTR_EXTENT): 'dual' (default) emits both bodies of every function
+    # whose C differs, f_X dispatching to fp_X at entry while recomp_ptr_extent is set (runtime/main.c:
+    # sdmc:/cr_ptrext_off.txt, button "Ptr extent"); '1' = extent bodies only, '0' = the old rule only
+    pe_mode = os.environ.get('RECOMP_PTR_EXTENT', 'dual')
+    if pe_mode not in ('0', '1', 'dual'):
+        sys.exit('RECOMP_PTR_EXTENT must be 0, 1 or dual')
+    fns_pe = promote_stack_slots(list(fns), not p.gqr0_written, p.stubs, True) if pe_mode == 'dual' else None
+    fns = promote_stack_slots(fns, not p.gqr0_written, p.stubs, pe_mode == '1')
     n = sum(len(re.findall(r'/\* inlined f_', x)) for fn in fns for v in fn.body.values() for x in v)
     print(f'{n} calls to {len(p.inline)} leaf functions inlined')
     for fn in fns:
         if fn.order[0] != fn.entry: print(f"note: f_{fn.entry:08x} starts at {fn.order[0]:08x}")
     check_native_writes()
     check_gqr_writes()
+    funcs_pe = None
+    if fns_pe is not None:   # first: Func objects both lists share keep the default pass's analysis
+        sm_pe = Summaries(p, fns_pe)
+        sm_pe.native_in = native_reads()
+        solve_out(p, fns_pe, sm_pe)
+        funcs_pe = [emit(fn, analyze(fn, sm_pe.get, sm_pe.out[fn.entry])[2]) for fn in fns_pe]
     sm = Summaries(p, fns)
     sm.native_in = native_reads()
     solve_out(p, fns, sm)
+    if fns_pe is not None:   # a caller of either body sees the same register interface (bodies mix at run time)
+        bad = [f'{e:08x}' for e in sm.s if sm.s[e] != sm_pe.s[e] or sm.out[e] != sm_pe.out[e]]
+        if bad:
+            sys.exit('RECOMP_PTR_EXTENT=dual: register summaries differ between the bodies of ' + ', '.join(bad[:20]))
     check_call_reads(fns)
     funcs, n = [], [0] * 5
     prof = [] if os.environ.get('RECOMP_SITEPROF') == '1' else None
@@ -2500,6 +2528,23 @@ def main():
             if fn.events[i][0] == 'call':
                 n = [x + y for x, y in zip(n, (1, popc(sp), popc(rl), popc(fn.W & CALLU), popc(RELU & fn.used)))]
     print(f'{n[0]} call sites: {n[1]} register stores (fixed sets: {n[3]}), {n[2]} reloads ({n[4]})')
+    pe_body = {}   # fns index -> fp_<entry> C (pointer-extent body), for functions whose C differs
+    if funcs_pe is not None:
+        every = os.environ.get('RECOMP_PTR_EXTENT_ALL') == '1'
+        differ = [i for i, fn in enumerate(fns) if funcs_pe[i] != funcs[i]]
+        for i in differ:
+            fn = fns[i]
+            if every or fn.entry in PTR_EXTENT_DUAL:
+                h0 = f'void f_{fn.entry:08x}(void) {{'
+                pe_body[i] = funcs_pe[i].replace(h0, f'void fp_{fn.entry:08x}(void) {{', 1)
+                funcs[i] = funcs[i].replace(h0, h0 + f'\n    if (recomp_ptr_extent) {{ fp_{fn.entry:08x}(); return; }}', 1)
+        miss = PTR_EXTENT_DUAL - {fns[i].entry for i in differ}
+        if miss:
+            print('note: PTR_EXTENT_DUAL functions whose bodies no longer differ: ' + ', '.join(f'{a:08x}' for a in sorted(miss)))
+        print(f'pointer-extent promotion: {len(pe_body)} of {len(differ)} differing functions get a second body fp_ '
+              f'(RECOMP_PTR_EXTENT=dual{", _ALL=1" if every else ""}, run-time recomp_ptr_extent)')
+    else:
+        print(f'pointer-extent promotion: {"extent bodies only" if pe_mode == "1" else "off"} (RECOMP_PTR_EXTENT={pe_mode})')
     hdr = ['/* generated by tools/recomp/recomp.py -- do not edit */', '#pragma once']
     if p.gqr0_written:   # psq_ld0/psq_st0 (ppc.h) fall back to the general GQR path
         print('note: mtspr GQR0 at ' + ', '.join(f'{a:08x}' for a in p.gqr0_written) + ': RECOMP_GQR0_WRITTEN')
@@ -2511,28 +2556,44 @@ def main():
         rows += [f'{k}\t{r[0]}\t{r[1]:08x}\t{r[2]}\t{r[3]:x}\t{r[4]:x}\t{r[5]}' for k, r in enumerate(prof)]
         write_if_changed(out / 'sites.tsv', '\n'.join(rows) + '\n')
     hdr += [f'void f_{a:08x}(void);' for a in tr]
+    hdr += [f'void fp_{fns[i].entry:08x}(void);' for i in sorted(pe_body)]
     hdr += [f'void {n}(void);' for n in sorted(set(p.stubs.values()))]
     write_if_changed(out / 'funcs.h', '\n'.join(hdr) + '\n')
-    # selective inlining: each listed bl calls fi_<callee>, a copy defined at the top of the caller's file
-    copies = defaultdict(dict)   # file index -> {callee: C}
-    if os.environ.get('RECOMP_INLINE_SITES') == '1':
+    # selective inlining: each listed bl calls fi_<callee>, a copy defined at the top of the caller's file.
+    # RECOMP_INLINE_SITES: 'dual' (default) = `if (recomp_inline_sites) fi_..(); else f_..();` (runtime/main.c:
+    # sdmc:/cr_inline_off.txt, button "Inline sites"); '1' = always the copy; '0' = plain calls
+    in_mode = os.environ.get('RECOMP_INLINE_SITES', 'dual')
+    if in_mode not in ('0', '1', 'dual'):
+        sys.exit('RECOMP_INLINE_SITES must be 0, 1 or dual')
+    copies = defaultdict(dict)   # file index -> {sort key: C}
+    if in_mode != '0':
         idx = {fn.entry: i for i, fn in enumerate(fns)}
+        inl = 'static inline __attribute__((always_inline)) void'
         for a, t in INLINE_SITES:
             rx = re.compile(rf'(cpu\.lr = 0x{a + 4:08x}u; [^\n]*?)\bf_{t:08x}\(\);')
+            call = (f'{{ if (recomp_inline_sites) fi_{t:08x}(); else f_{t:08x}(); }}' if in_mode == 'dual'
+                    else f'fi_{t:08x}();')
             for i in [i for i, fn in enumerate(fns) if a in fn.body]:   # every body that holds the bl
-                assert len(rx.findall(funcs[i])) == 1, f'inline site {a:08x} -> {t:08x} not found once'
-                funcs[i] = rx.sub(rf'\1fi_{t:08x}();', funcs[i])
-                copies[i // FUNCS_PER_FILE][t] = funcs[idx[t]].replace(
-                    f'void f_{t:08x}(void) {{', f'static inline __attribute__((always_inline)) void fi_{t:08x}(void) {{', 1)
-        print(f'{len(INLINE_SITES)} call sites to {len({t for _, t in INLINE_SITES})} functions inlined (INLINE_SITES)')
+                for d in (funcs, pe_body):   # a caller with two bodies holds the site in both
+                    if d is funcs or i in pe_body:
+                        assert len(rx.findall(d[i])) == 1, f'inline site {a:08x} -> {t:08x} not found once'
+                        d[i] = rx.sub(lambda m: m.group(1) + call, d[i])
+                j, cp = idx[t], copies[i // FUNCS_PER_FILE]
+                cp[f'{t:08x}b'] = funcs[j].replace(f'void f_{t:08x}(void) {{', f'{inl} fi_{t:08x}(void) {{', 1)
+                if j in pe_body:   # a callee with two bodies: its extent body is inlined there too
+                    cp[f'{t:08x}b'] = cp[f'{t:08x}b'].replace(f'{{ fp_{t:08x}(); return; }}', f'{{ fpi_{t:08x}(); return; }}', 1)
+                    cp[f'{t:08x}a'] = pe_body[j].replace(f'void fp_{t:08x}(void) {{', f'{inl} fpi_{t:08x}(void) {{', 1)
+        print(f'{len(INLINE_SITES)} call sites to {len({t for _, t in INLINE_SITES})} functions inlined (INLINE_SITES, '
+              f'RECOMP_INLINE_SITES={in_mode}{", run-time recomp_inline_sites" if in_mode == "dual" else ""})')
     else:
-        print('note: INLINE_SITES off (RECOMP_INLINE_SITES=1 turns it on)')
+        print('note: INLINE_SITES off (RECOMP_INLINE_SITES=0)')
     names = set()
     for k in range(0, len(funcs), FUNCS_PER_FILE):
         src = '/* generated by tools/recomp/recomp.py -- do not edit */\n#include "funcs.h"\n\n'
         src += ''.join(c + '\n\n' for _, c in sorted(copies[k // FUNCS_PER_FILE].items()))
         names.add(f'recomp_{k // FUNCS_PER_FILE:03d}.c')
-        write_if_changed(out / f'recomp_{k // FUNCS_PER_FILE:03d}.c', src + '\n\n'.join(funcs[k:k + FUNCS_PER_FILE]) + '\n')
+        body = [funcs[i] + (f'\n\n{pe_body[i]}' if i in pe_body else '') for i in range(k, min(k + FUNCS_PER_FILE, len(funcs)))]
+        write_if_changed(out / f'recomp_{k // FUNCS_PER_FILE:03d}.c', src + '\n\n'.join(body) + '\n')
     for f in out.glob('recomp_*.c'):   # left over from a larger split
         if f.name not in names: f.unlink()
     # SDK stubs: weak, they only report the call; runtime/ provides the real ones

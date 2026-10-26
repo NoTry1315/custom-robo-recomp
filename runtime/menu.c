@@ -42,6 +42,8 @@ static struct btn {
     { "Vertex pack",   "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_vtxpack_off, bound by gx.c (plans/cache entries are keyed by the mode) */
     { "Lazy vtx desc", "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_lazydesc_off, bound by gx.c */
     { "Native sin/cos", "",  0,        0,                1, 0, 0, 0, -2 },   /* cr_libm_off (libm.c binds it) */
+    { "Ptr extent",    "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_ptr_extent, cr_ptrext_off (main.c binds it) */
+    { "Inline sites",  "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_inline_sites, cr_inline_off (main.c binds it) */
     { "Dump RAM",      "",   0,  recomp_memdump_request, 0, 0, 0, 0, -2, &recomp_memdump_n },   /* memdump.c: guest RAM + ARAM to SD */
 };
 #define NBTN (int)(sizeof btn / sizeof btn[0])
