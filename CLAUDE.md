@@ -367,6 +367,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   argument in the frame (mostly sin(a), cos(a) pairs in 0x8019fc14), but half are x ~ 0 (tiny path, costing about
   what a lookup costs); a 256-entry memo would save ~0.1-0.15 ms of 36.7 (~0.3%). Below the 2% bar: no memo, no
   flag. Details: unknowns "sin/cos memo study".
+- Selective inlining (2026-10-26, kept off): recomp.py `INLINE_SITES` (explicit bl list, RECOMP_INLINE_SITES=1)
+  calls an always_inline copy of ps_disp_tev_setup / chan_color / tev_color / ps_disp_quad at their 5 sites (746
+  calls per 2v2 frame). Citra 2v2 game 36.72 -> 36.64 ms (-0.2%) for +0.63% .text; logs and fb dumps identical.
+  Below the 2% bar, so off (gen/ unchanged). Not on hardware. Details: unknowns "Selective inlining of the
+  per-particle helpers".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
