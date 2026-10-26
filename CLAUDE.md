@@ -372,6 +372,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   calls per 2v2 frame). Citra 2v2 game 36.72 -> 36.64 ms (-0.2%) for +0.63% .text; logs and fb dumps identical.
   Below the 2% bar, so off (gen/ unchanged). Not on hardware. Details: unknowns "Selective inlining of the
   per-particle helpers".
+- Particle quad merge (2026-10-26, investigation only, not built): in the Citra 2v2, ~242 immediate draws per frame
+  (~219 single particle quads) become ~113 DrawElements; TEV-only causes ~37 of the batch breaks, texture+TEV ~36,
+  texture+uniform ~28. A TEV-colour merge (palette texture on a third unit) is worth at most ~1.3 ms of the ~40 ms
+  GX thread, so not built. C3D_DrawElements is ~25 us per call in Citra. Details: unknowns "Particle quad merge".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test
