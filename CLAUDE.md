@@ -430,7 +430,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   calls recomp_wr_sweep (cpu.c) to stamp marked pages with the ending epoch and clear the marks; gx.c range_clean reads
   marks, then ram_wr[]. `make WRMAP=0` = old. .text 5.31 -> 5.14 MB, 2v2 hot set -2.5% instructions; Citra 2v2 game
   32.9 -> 32.6 ms (sweep 0.21 ms in Citra), battle/campaign unchanged; boot/battle/campaign/2v2 logs + fb identical to
-  D1. Not yet on hardware. Details: unknowns "Write tracking through a byte map".
+  D1. Hardware A/B (runs 36a = WRMAP=0, 36b = default, back to back on the 2v2 replay): 2v2 game 20.25 (35b) -> 20.07 ms
+  (-0.9%, 65/73 windows faster), busy cycles 17.79 -> 17.62M (73/73 fewer); sweep ~0.12 ms per 2v2 frame on hardware.
+  Run 36a had 0.6-0.8 s SD stalls (voice stream reads while the log writer was busy): same cycles as 35b, +0.7 ms mean, so
+  pair windows by median / busy cycles, not mean game ms alone. Details: unknowns "Write tracking through a byte map".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

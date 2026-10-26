@@ -66,7 +66,7 @@ misses cost under 1%, so where functions sit does not matter; the translated cod
 The first step (guest loads without the hardware-address check, runs 35a/35b, two builds on the same replay): the
 2v2 game thread went from 22.2 to 20.3 ms, 40.0 -> 43.4 fps (game speed 67 -> 72%), and the code from 6.8 to 5.3 MB.
 The second (guest stores mark a byte map instead of loading and storing the write epoch, branch
-`task/2026-10-26-wr-tracking`) cuts the hot code by another 2.5% (code 5.3 -> 5.1 MB); its hardware A/B is next.
+`task/2026-10-26-wr-tracking`) cuts the hot code by another 2.5% (code 5.3 -> 5.1 MB): runs 36a/36b, 2v2 game 20.25 -> 20.07 ms (-0.9%).
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
