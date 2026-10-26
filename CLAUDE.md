@@ -418,6 +418,13 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   within ~2%; main TLB 0.22 misses per 1000 instructions (< 1% of cycles): function order is not a lever, the
   I-cache misses are capacity misses. Next: translator density (per-access instructions), float-locals on hardware.
   Details: unknowns "Cold-path partitioning", "Hardware performance counters".
+- Loads without the hardware check (2026-10-26, branch task/2026-10-26-load-hwcheck, density step D1): guest loads
+  read RAM through the mask without the 0xCC/0xCD test (ppc.h LOAD_HW; stores keep it for the GX pipe); `make
+  HWCHECK=1` = old, `HWCHECK=verify` = checked + "# hwcheck load" lines. .text 6.82 -> 5.31 MB (-22%); verify
+  replays (boot/battle/campaign/2v2) 0 hardware loads; logs + fb identical; Citra game 2v2 36.2 -> 33.8 ms, battle
+  14.0 -> 13.1, campaign 8.0 -> 7.6. Hardware A/B (runs 35a = HWCHECK=1, 35b = default, back to back on the 2v2
+  replay): 2v2 game 22.24 -> 20.25 ms (-9%, faster in 74/74 windows), 40.0 -> 43.4 fps; instructions -7%, I-cache
+  misses -12%; campaign game 7.3 -> 6.6. Details: unknowns "Loads without the hardware check".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

@@ -40,6 +40,15 @@ u32 hw_read(u32 a, int size) {
     if (hw_seen(a)) recomp_log("hw_read %08lx/%d lr=%08lx\n", (unsigned long)a, size, (unsigned long)cpu.lr);
     return 0;
 }
+/* make HWCHECK=verify: a load that reached a hardware address (ppc.h LOAD_HW). Every one is counted and the
+ * first 64 are logged with the guest lr, so a replay without "# hwcheck load" lines made none */
+u32 recomp_hwcheck_loads;
+u32 hw_read_verify(u32 a, int size) {
+    if (recomp_hwcheck_loads++ < 64)
+        recomp_log("# hwcheck load %08lx/%d lr=%08lx (load %lu)\n", (unsigned long)a, size, (unsigned long)cpu.lr,
+                   (unsigned long)recomp_hwcheck_loads);
+    return hw_read(a, size);
+}
 void hw_write(u32 a, u32 v, int size) {
     if ((a & ~7u) == 0xCC008000u) { recomp_gx_fifo_write(v, size); return; }   /* GX write-gather pipe */
     if (hw_seen(a)) recomp_log("hw_write %08lx/%d = %08lx lr=%08lx\n", (unsigned long)a, size, (unsigned long)v, (unsigned long)cpu.lr);
