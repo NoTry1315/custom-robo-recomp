@@ -78,4 +78,6 @@ void recomp_poll_events(void) {
     if (cpu.msr & 0x8000u) service(1);
 }
 
+const u8 *recomp_aram(void) { return aram; }
+
 u8 recomp_aram_read8(u32 a) { return aram ? aram[a & (ARAM_SIZE - 1)] : 0; }

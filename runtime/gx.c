@@ -2582,11 +2582,14 @@ static int dl_draw(const u8 *list, u32 len) {
  * frame the render target is written to sdmc:/cr_fb_<frame>.bmp (240x400
  * as stored, i.e. rotated), for deterministic before/after image compares. */
 static u32 want[64], nwant;   /* read in recomp_gx_start */
+static volatile int fb_next;  /* recomp_gx_fb_dump_next (memory dump): the next frame too */
+void recomp_gx_fb_dump_next(void) { fb_next = 1; }
 static void fb_dump_one(C3D_RenderTarget *t, const char *suffix);
 static void fb_dump(void) {
     u32 i;
     for (i = 0; i < nwant && want[i] != frames; i++) ;
-    if (i == nwant) return;
+    if (i == nwant && !fb_next) return;
+    fb_next = 0;
     fb_dump_one(target, "");
     if (st_r_done) fb_dump_one(target_r, "_r");   /* right eye of a stereo frame */
 }
@@ -2738,6 +2741,7 @@ void recomp_gx_retrace(void) {
         }
     }
     recomp_menu_retrace();
+    recomp_memdump_retrace();
 }
 
 void recomp_gx_stop(void) {

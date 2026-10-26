@@ -360,6 +360,19 @@ static void dvd_deliver(int force) {
 
 void recomp_dvd_service(void) { if (q_tail != q_head) dvd_deliver(0); }
 
+/* memory dump (memdump.c): the reads issued and not yet delivered; a late one may still be writing */
+void recomp_dvd_describe(void *file) {
+    FILE *f = file;
+    fprintf(f, "dvd reads in flight %lu (slow so far %lu, late %lu)\n", (unsigned long)(q_head - q_tail),
+            (unsigned long)recomp_dvd_slow_n, (unsigned long)recomp_dvd_late_n);
+    for (u32 i = q_tail; i != q_head; i++) {
+        struct req *r = &q[i % MAXPENDING];
+        fprintf(f, "  %s off %lx len %lx -> %08lx, issued r%lu, %s%s\n", r->e < nentries && paths[r->e] ? paths[r->e] + sizeof DISC_DIR + 5 : "?",
+                (unsigned long)r->off, (unsigned long)r->len, (unsigned long)r->addr, (unsigned long)r->r_issue,
+                r->done ? "read done" : r->started ? "reading" : "queued", r->late ? ", late" : "");
+    }
+}
+
 static int queue_full(void) {
     if (q_head - q_tail == MAXPENDING) dvd_deliver(1);
     if (q_head - q_tail < MAXPENDING) return 0;

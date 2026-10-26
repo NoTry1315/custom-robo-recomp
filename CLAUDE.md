@@ -332,7 +332,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   skipping 807 AX frames during a Rosalina pause. Citra replays of the same save/route with an injected 4.3 s stall
   (sdmc:/cr_ax_stall.txt "<retrace> <ms> [sleep]", pacing clock or real sleep, also with hw pad timing) all play
   through, and the screenshot taken during the pause already shows the previous box broken (glyphs missing, even
-  spacing). Cause not found, not reproduced in Citra; no runtime fix. Details: unknowns "Run 30 text hang".
+  spacing). Cause not found, not reproduced in Citra; no runtime fix. Bottom-screen button "Dump RAM" (and
+  sdmc:/cr_memdump.txt retraces for Citra) writes guest RAM, ARAM, DVD reads in flight and the next frame to
+  sdmc:/cr_dump_r<n>_*: press it when a box breaks on hardware, then compare with Citra at the same point.
+  Details: unknowns "Run 30 text hang".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere.
 
 ## Build / test

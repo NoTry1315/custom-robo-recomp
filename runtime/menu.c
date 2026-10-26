@@ -14,7 +14,8 @@
  * start with recomp_menu_bind(name, &var): the menu then flips *var itself in
  * recomp_menu_retrace (called from recomp_gx_retrace after the GX thread synced, so no GX
  * record is in flight) and logs "# menu r<n>: <name> on|off" (tools/time_avg.py drops the
- * windows with one). inv = 1 for "_off" flags: the button shows ON while *var is 0. */
+ * windows with one). inv = 1 for "_off" flags: the button shows ON while *var is 0. An action
+ * button (count set) has no state: it shows TAP and how often it ran. */
 #include <3ds.h>
 #include <stdio.h>
 #include <string.h>
@@ -35,14 +36,17 @@ static struct btn {
     int *var;                     /* recomp_menu_bind */
     void (*changed)(void);        /* recomp_menu_bind: called after *var flipped (game thread) */
     int req, shown;
+    u32 *count;                   /* action button (no on/off): shows TAP and how often it ran */
 } btn[] = {
     { "VRAM textures", "",   vt_get,   recomp_vt_toggle, 0, 0, 0, 0, -2 },   /* cr_vramtex_off */
     { "Vertex pack",   "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_vtxpack_off, bound by gx.c (plans/cache entries are keyed by the mode) */
     { "Native sin/cos", "",  0,        0,                1, 0, 0, 0, -2 },   /* cr_libm_off (libm.c binds it) */
+    { "Dump RAM",      "",   0,  recomp_memdump_request, 0, 0, 0, 0, -2, &recomp_memdump_n },   /* memdump.c: guest RAM + ARAM to SD */
 };
 #define NBTN (int)(sizeof btn / sizeof btn[0])
 
 static int btn_state(const struct btn *b) {
+    if (b->count) return (int)*b->count;
     if (b->var) return (*b->var != 0) ^ b->inv;
     return b->get ? b->get() : -1;
 }
@@ -61,12 +65,14 @@ static void btn_draw(int i) {
     if (s == b->shown) return;
     b->shown = s;
     int row = BTN_ROW0 + (i / 2) * 3, col = (i % 2) * 20;
-    /* ON: black on green; OFF: white on red; unavailable: plain, "--" */
-    const char *c = s > 0 ? "\x1b[30;42m" : s == 0 ? "\x1b[37;41m" : "\x1b[0m";
-    char l1[BTN_W + 1], l2[BTN_W + 1], st[8];
-    snprintf(st, sizeof st, "%s", s > 0 ? "ON" : s == 0 ? "OFF" : "--");
+    /* ON: black on green; OFF: white on red; unavailable: plain, "--"; action: black on white, TAP */
+    const char *c = b->count ? "\x1b[30;47m" : s > 0 ? "\x1b[30;42m" : s == 0 ? "\x1b[37;41m" : "\x1b[0m";
+    char l1[BTN_W + 1], l2[BTN_W + 1], st[8], hint[BTN_W];
+    snprintf(st, sizeof st, "%s", b->count ? "TAP" : s > 0 ? "ON" : s == 0 ? "OFF" : "--");
+    if (b->count) snprintf(hint, sizeof hint, "%d done", s);
+    else snprintf(hint, sizeof hint, "%s", b->hint);
     snprintf(l1, sizeof l1, " %-*.*s", BTN_W - 1, BTN_W - 1, b->name);
-    snprintf(l2, sizeof l2, " %-4.4s %*.*s", st, BTN_W - 6, BTN_W - 6, b->hint);
+    snprintf(l2, sizeof l2, " %-4.4s %*.*s", st, BTN_W - 6, BTN_W - 6, hint);
     consoleSelect(&con_ui);
     at(row, col); printf("%s%s", c, l1);
     at(row + 1, col); printf("%s\x1b[0m", l2);
@@ -83,7 +89,7 @@ void recomp_menu_touch(int px, int py) {
     if (i >= NBTN) return;
     struct btn *b = &btn[i];
     if (b->var) b->req ^= 1;
-    else if (b->toggle && btn_state(b) >= 0) b->toggle();
+    else if (b->toggle && (b->count || btn_state(b) >= 0)) b->toggle();
 }
 
 /* every retrace, after the GX thread synced (recomp_gx_retrace) */

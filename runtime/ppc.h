@@ -419,6 +419,12 @@ extern int recomp_libm_off;            /* libm.c: sin/cos/sinf/cosf run the tran
 extern u32 recomp_libm_flips;
 extern int recomp_vt_on;               /* gx.c: cached textures move to VRAM (sdmc:/cr_vramtex_off.txt = 0) */
 extern int recomp_vtxpack_off;          /* gx.c: display-list vertices packed per draw (sdmc:/cr_vtxpack_off.txt = 1) */
+void recomp_memdump_request(void);    /* bottom-screen button "Dump RAM": snapshot at the next retrace (memdump.c) */
+void recomp_memdump_retrace(void);     /* recomp_gx_retrace after the sync: button / sdmc:/cr_memdump.txt dumps */
+extern u32 recomp_memdump_n;           /* dumps written */
+const u8 *recomp_aram(void);           /* ar.c: ARAM (16 MB), NULL before ARInit */
+void recomp_dvd_describe(void *file);  /* dvd.c: reads in flight to a FILE *, for a memory dump */
+void recomp_gx_fb_dump_next(void);     /* gx.c: write the next GX frame to sdmc:/cr_fb_<frame>.bmp */
 void recomp_vt_toggle(void);           /* bottom-screen button: flip it at the next frame start (texture cache invalidated) */
 extern u32 recomp_vt_flips;            /* VRAM texture toggles so far */
 extern volatile u32 recomp_vt_stat[6]; /* textures in VRAM, KB; in linear, KB (every 30 GX frames); moves, fallbacks (running totals) */
