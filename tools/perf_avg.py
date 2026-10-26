@@ -8,13 +8,15 @@ import re, sys, collections
 PERF = re.compile(r'^# perf r(\d+): core 0 per frame \((\d+) frames, (\d+) dropped\): cycles ([\d.]+) \(ccnt MHz ([\d.]+), '
                   r'wall ([\d.]+) ms\), inst ([\d.]+) \(ipc ([\d.]+)\), icache miss ([\d.]+) \(([\d.]+)/k inst\), dcache reads ([\d.]+), '
                   r'read miss ([\d.]+) \(([\d.]+)/k inst\), write miss ([\d.]+) \(([\d.]+)/k inst\), stall inst ([\d.]+) \(([\d.]+)%\), '
-                  r'stall data ([\d.]+) \(([\d.]+)%\), branch mispredict ([\d.]+) \(([\d.]+)/k inst\); svc ([\d.]+) us')
+                  r'stall data ([\d.]+) \(([\d.]+)%\), branch mispredict ([\d.]+) \(([\d.]+)/k inst\)'
+                  r'(?:, inst micro-TLB miss ([\d.]+) \(([\d.]+)/k inst\), main TLB miss ([\d.]+) \(([\d.]+)/k inst\))?; svc ([\d.]+) us')
 TIME = re.compile(r'^# time r(\d+): [\d.]+ fps, frame ([\d.]+) ms \(worst [\d.]+\): game ([\d.]+)')
 MENU = re.compile(r'^# menu r(\d+): ')
 SCENE = re.compile(r'^# retrace (\d+) scene (\w+) sub (\w+)')
 COLS = [('game', None, 'game ms'), ('wall', 5, 'wall ms'), ('cyc', 3, 'Mcycles'), ('mhz', 4, 'ccntMHz'), ('inst', 6, 'Minst'),
         ('ipc', 7, 'ipc'), ('imk', 9, 'imiss/k'), ('rmk', 12, 'rmiss/k'), ('wmk', 14, 'wmiss/k'), ('si', 16, 'stInst%'),
-        ('sd', 18, 'stData%'), ('bmk', 20, 'brmis/k'), ('svc', 21, 'svc us')]   # index into PERF's groups()
+        ('sd', 18, 'stData%'), ('bmk', 20, 'brmis/k'), ('itlb', 22, 'iuTLB/k'), ('mtlb', 24, 'mTLB/k'),
+        ('svc', 25, 'svc us')]   # index into PERF's groups(); the TLB pair is absent before 2026-10-26 run 34 (0)
 
 
 def main():
@@ -31,7 +33,7 @@ def main():
             elif m := TIME.match(line):
                 game[int(m[1])] = float(m[3])
             elif m := PERF.match(line):
-                rows[int(m[1])] = [float(x) for x in m.groups()]
+                rows[int(m[1])] = [float(x) if x is not None else 0.0 for x in m.groups()]
         agg = collections.defaultdict(list)
         for r, g in rows.items():
             if r < frm or any(r - 60 < t <= r for t in menu):
