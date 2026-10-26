@@ -40,18 +40,18 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
   After the 2026-10-23 2v2 work (branch claude/2v2-perf-2-5cf2f9 @ 40381bd): 2v2 game 36.0 ms (GX thread busy 38.6,
   now longer than the game thread in Citra), battle 14.1, campaign 8.0.
 
-## Where it stands (hardware run 28, 2026-10-22, main@75ea35d LTO build)
+## Where it stands (latest hardware run per scene, 2026-10-26, main@b9642be)
 
-| Scene | fps | game speed | game CPU ms | GPU ms | bound by |
-|---|---|---|---|---|---|
-| Campaign 8.3 | 56.7 | 95% | 9.9 | 3.7 | near 60 |
-| Battle 1v1, mono | 57.3 | 95% | 15.1 | 2.2 | near 60 |
-| Battle 1v1, stereo 3D | 51.4 | 86% | 14.5 | 9.8 | GPU + CPU |
-| Battle 2v2 | 30.5 | 51% | 29.8 | 5.6 | **game CPU** |
-| Title, menus | ~60 | 97-100% | | | |
+| Scene | fps | game speed | game CPU ms | GPU ms | bound by | run |
+|---|---|---|---|---|---|---|
+| Campaign 8.3 | 58.8 | 98% | 8.2 | 3.7 | near 60 | 31 (hand-played) |
+| Battle 1v1, mono | 57.3 | 95% | 15.1 | 2.2 | near 60 | 28 |
+| Battle 1v1, stereo 3D | 51.4 | 86% | 14.5 | 9.8 | GPU + CPU | 28 |
+| Battle 2v2 | 40.3 | 67% | 22.2 | 2.1 | **game CPU** (GX thread 15.6) | 32a (Citra 2v2 replay) |
+| Title, menus | ~60 | 97-100% | | | | 31 |
 
 Game speed is fps / 60: the game runs one logic step per frame. From the first battle on
-hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
+hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (run 28) -> 40.3 fps (run 32a).
 
 ## Changes that helped (newest first)
 
@@ -111,29 +111,15 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps.
 
 ## Open (next)
 
-- **2v2 battle is game-CPU bound** (29.8 ms of a 32.8 ms frame, run 28). Profiled 2026-10-22 (unknowns
-  "2v2 game CPU"); after native sin/cos and dropped saves, Citra 2v2 game 52.9 -> 43.2 ms (-18%), and after the
-  2026-10-23 work (unknowns "2v2 game CPU 2") 36.0 ms. Hardware run 29 (both together): 2v2 30.5 -> 39.6 fps,
-  game 29.7 -> 22.2 ms, GX thread 16.6 ms, so the game thread still decides the frame.
+- **2v2 battle is game-CPU bound** (game 22.2 ms of a 24.8 ms frame, GX thread 15.6 ms, run 32a). Path so far:
+  run 28 29.8 ms (30.5 fps) -> run 29 22.2 ms (39.6 fps; unknowns "2v2 game CPU", "2v2 game CPU 2") -> run 32a
+  22.2 ms (40.3 fps; 2v2-perf-3, -1.5% vs its toggles off in run 32b). The particle system is 7.0 ms of the
+  Citra 2v2 game thread and scales with particle count (unknowns "2v2 particle family").
   **Closed for small fixes (2026-10-26, user decision):** the 2v2-perf-3 round (particle probe plus five
-  experiments: pointer extents, lazy vertex descriptor, sin/cos memo, particle inlining, particle quad merge) gave
-  -1.5% game time on hardware (runs 32a/32b: 22.5 -> 22.2 ms, 39.7 -> 40.3 fps), and each item was 0.2-1.1% in
-  Citra. Diminishing returns: no more micro-optimisation in this area (particle family, call glue, translator
-  peepholes for the 2v2). The game thread needs ~6 ms less for 60 fps, which only a structural change could
-  give. Do not reopen these items without a new idea of that size.
-- **2v2 particle family profiled** (2026-10-25, Citra, main@ad99a97, no change made; unknowns "2v2 particle
-  family"): 0x8017b000-0x80185000 is the HSD particle system. Inclusive it costs 7.0 ms of the 2v2 game thread
-  (18.6%; draw 5.56, generators 0.86, interpreter 0.58) against 0.47 ms in the 1v1. It scales with particles
-  (186 drawn per frame vs 10), not with robots. Confirmed repeats: 87% of particle GXBegins keep the previous
-  vertex descriptor, 194 PSMTXMultVec per frame repeat per attached object, and 63% of all sin/cos calls game-wide
-  repeat an argument within the frame. The family's 16.4k remaining stack accesses per frame sit above
-  address-taken locals. Ranked next: pointer-extent stack promotion, then a lazy vertex descriptor in gx.c and a
-  sin/cos memo study; the in-family redundant math is game logic and too small for a session.
-- **Pointer-extent stack promotion tried** (2026-10-26, unknowns "Pointer-extent stack promotion"): +33% promoted
-  words, Citra 2v2 game -1.1%, identical replays; off by default (below 2%). Next in the 2v2 sequence: lazy vertex
-  descriptor (gx.c), then the sin/cos memo study.
-- Hardware run of main@dad2161 (vertex packing + 2v2 CPU work): campaign/battle GPU ms with the "Vertex pack"
-  button on/off, 2v2 game ms vs run 28 (29.8), "Native sin/cos" on/off.
+  experiments: pointer extents, lazy vertex descriptor, sin/cos memo, particle inlining, particle quad merge)
+  gave -1.5% game time on hardware, and each item was 0.2-1.1% in Citra. No more micro-optimisation in this
+  area (particle family, call glue, translator peepholes for the 2v2). The game thread needs ~6 ms less for
+  60 fps, which only a structural change could give. Do not reopen these items without a new idea of that size.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
 
