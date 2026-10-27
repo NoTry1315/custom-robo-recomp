@@ -453,6 +453,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   (3f77d16) cherry-picked onto main (fl_call_args rename). Static vcvt -26%, Citra 2v2 32.3 -> 32.1 ms, logs + fb
   identical to D3. Hardware runs 39a/39b (cr_agent loop): 2v2 game 19.81 -> 19.68 ms, busy cycles -1.2%; stall-data share
   unchanged. Run 39a vs 37b (same code, old netloader loop): +0.01 ms, sd 0.13: the agent loop measures the same.
+- gen/ at -Os (2026-10-26, D6, not kept): .text -7%, hot set -8% static, but hardware runs 40a/40b: 2v2 game +0.72 ms,
+  busy cycles +0.50M, I-cache misses per instruction unchanged. -O2 stays.
 - Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
   through cr_agent (`tools/hw/agent`, TCP 5001: PUT/GET/MV/LS/RUN/QUIT, no delete, /custom-robo/save refused): put
   flags + build, RUN through Luma's hb:ldr with "--return /3ds/cr_agent.3dsx", the build points hb:ldr back at the
