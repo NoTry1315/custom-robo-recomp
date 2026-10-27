@@ -431,5 +431,5 @@ void recomp_mtx_init(void) {
     const char *fp = "double + fsgl/f25";
 #endif
     recomp_log("# mtx: %s (sdmc:/cr_mtx_off.txt), single ops: %s\n", mtx_off ? "translated" : "native", fp);
-    if (exists("sdmc:/cr_bench.txt")) { bench(); void recomp_be8_probe(void); recomp_be8_probe(); }   /* be8probe.c */
+    if (exists("sdmc:/cr_bench.txt")) bench();
 }
