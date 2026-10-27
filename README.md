@@ -260,8 +260,13 @@ was on then is not recorded). Both Rosalina features poll the network from the s
 core every 10-50 ms (Luma3DS issues #2248, #2250, #2071 report InputRedirection freezes and lost IPs). The agent
 loop needs neither: 4 full cycles back to back on 2026-10-26 (20:34-20:55, ~5.3 min each: 4.5 MB build put, 2v2 replay, return,
 log fetched; logs `cr_autotest_2026-10-26_hwagent-soak-01..04.log`) had no stall over 0.6 s and no network
-trouble, and gave the same 2v2 game ms as run 37b (19.6-19.7). Stopped after 4 (user's call); longer sequences
-are the next A/Bs.
+trouble, and gave the same 2v2 game ms as run 37b (19.6-19.7); runs 39a-41b followed through it the same evening.
+**Correction (2026-10-27): Rosalina's features are not the whole cause.** At 01:57, with only cr_agent running
+(no game, no Rosalina features, 3.4 h idle after 10 good runs since boot), a 122 KB GET stopped at 64 KB and the
+3DS dropped off the network (no ARP reply). Run 39a's first log GET had also stalled for 60 s. The loop is still
+far steadier than the old one (10 runs and 5 h of uptime against 4 crashes in an hour), but the 3DS's Wi-Fi can
+still fail during a 3DS-to-PC transfer; the cause is open (recomp_unknowns.md "Wi-Fi crashes during unattended
+hardware runs").
 
 ## How it works
 

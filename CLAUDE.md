@@ -474,7 +474,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   idle in the Homebrew Launcher with only a ping every 30 s survived 27 min, so traffic or app switches seem to be
   needed too (not isolated further: one feature on at a time was not tried). Soak (20:34-20:55, user stopped it after 4
   runs): 4 full cycles back to back, ~5.3 min each, no stall > 0.6 s, no network trouble, 2v2 game 19.6-19.7 ms
-  (= run 37b, pad lines identical). Not yet an hour: the next A/Bs extend it. Agent changes: rebuild with
+  (= run 37b, pad lines identical); runs 39a-41b followed. CORRECTION 2026-10-27: 01:57, only cr_agent running
+  (3.4 h idle after 10 good runs since boot, no Rosalina features), a 122 KB GET stopped at 64 KB and the 3DS left
+  the network (no ARP): Rosalina's features are not the whole cause; 3DS-to-PC transfers can still kill Wi-Fi
+  (open, unknowns "Wi-Fi crashes during unattended hardware runs"). Agent changes: rebuild with
   `docker ... -w /proj/tools/hw/agent ... make`, `hw_loop.py agent-install`.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
