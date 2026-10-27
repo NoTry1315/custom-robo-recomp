@@ -271,15 +271,39 @@ zero:
     for (; i < n; i++) out[i] = 0;
 }
 
-#define MAX_FETCH 2048                     /* source samples per frame in the fast path (ratio up to 12.8) */
+/* ---- mix jobs. The game thread decodes each voice's samples for the frame and writes back the PB state
+ * the DSP would (what the sound driver's tick reads); the resampling, volumes, sum and output then run from
+ * a job: on a worker thread on core 2 (New 3DS) while the game goes on, else at once. The samples are the
+ * same either way: every input of a voice's mix is in its job. ---- */
+#define POOL 8192                  /* decoded samples per frame (4 history + the frame's fetches per voice) */
+typedef struct { u32 ratio, frac, off; s32 ve, vl, vr; s16 ved, dl, dr; } VJob;
+typedef struct {
+    u32 nv, used, fb;              /* voices, pool samples used, fbL/fbR hold slow-path voices */
+    VJob v[VPB_COUNT];
+    s16 pool[POOL];
+    s32 fbL[FRAME], fbR[FRAME];    /* voices mixed by mix_voice (AXFAST=0, no ARAM, too many samples) */
+    u32 report;                    /* the 1000-frame line after this frame, with the game thread's counts */
+    u32 frames, started, active_max, ended, looped, underruns, skipped, trimmed, rt;
+} FJob;
 
-/* the same arithmetic as mix_voice's loop, with the source samples decoded first */
-static int mix_voice_fast(u32 v) {
+static void mix_voice(u32 v, s32 *outL, s32 *outR);
+
+static void slow_voice(u32 v, FJob *j) {
+    if (!j->fb) { memset(j->fbL, 0, sizeof j->fbL); memset(j->fbR, 0, sizeof j->fbR); j->fb = 1; }
+    mix_voice(v, j->fbL, j->fbR);
+}
+
+/* the game thread's part of a voice's frame: its source samples into the job, its PB state as after the
+ * frame (as mix_voice leaves it) */
+static void voice_frame(u32 v, FJob *j) {
+#ifdef RECOMP_AX_REF
+    slow_voice(v, j);
+#else
     const u8 *A = recomp_aram();
     u32 ratio = rd32(v + P_SRC);
     u32 frac = rd16(v + P_SRC + 4);
     u64 total = ((u64)frac + (u64)ratio * FRAME) >> 16;
-    if (!A || total > MAX_FETCH) return 0;
+    if (!A || total + 4 > POOL - j->used) { slow_voice(v, j); return; }
     Src s;
     s.v = v;
     s.looping = rd16(v + P_ADDR);
@@ -294,19 +318,52 @@ static int mix_voice_fast(u32 v) {
     s.is_stream = rd16(v + P_TYPE) != 0;
     s.stopped = 0;
 
-    s16 h[4 + MAX_FETCH];                     /* last[0..3], then the samples fetched this frame */
+    VJob *vj = &j->v[j->nv++];
+    s16 *h = j->pool + j->used;               /* last[0..3], then the samples fetched this frame */
+    vj->off = j->used; j->used += (u32)total + 4;
     for (int k = 0; k < 4; k++) h[k] = rd16(v + P_SRC + 6 + k * 2);
     decode(&s, A, h + 4, (u32)total);
-    s32 ve = rd16(v + P_VE);
-    s16 ved = rd16(v + P_VE + 2);
-    s32 vl = rd16(v + P_MIX), vr = rd16(v + P_MIX + 4);
-    s16 dl = rd16(v + P_MIX + 2), dr = rd16(v + P_MIX + 6);
+    vj->ratio = ratio; vj->frac = frac;
+    vj->ve = rd16(v + P_VE); vj->ved = rd16(v + P_VE + 2);
+    vj->vl = rd16(v + P_MIX); vj->vr = rd16(v + P_MIX + 4);
+    vj->dl = rd16(v + P_MIX + 2); vj->dr = rd16(v + P_MIX + 6);
+    /* after FRAME steps of "v += d, clamped to 0..0xffff" from 0 <= v <= 0xffff: one clamp of the sum
+     * (the sequence is monotone, so it stays at a bound once it reaches it) */
+    s32 ve = vj->ve + FRAME * vj->ved, vl = vj->vl + FRAME * vj->dl, vr = vj->vr + FRAME * vj->dr;
+    ve = ve < 0 ? 0 : ve > 0xffff ? 0xffff : ve;
+    vl = vl < 0 ? 0 : vl > 0xffff ? 0xffff : vl;
+    vr = vr < 0 ? 0 : vr > 0xffff ? 0xffff : vr;
 
-    u32 f = frac, k = 0;
-    if (ved == 0 && dl == 0 && dr == 0) {     /* constant volumes: the clamps leave them as they are */
-        if ((vl == 0 && vr == 0) || ve == 0) {   /* adds 0 to every sample */
-            u64 t = (u64)f + (u64)ratio * FRAME;
-            k = (u32)(t >> 16); f = (u32)t & 0xffff;
+    if (s.stopped) wr16(v + P_STATE, 0);
+    wr16(v + P_ADDR + 12, s.cur >> 16); wr16(v + P_ADDR + 14, s.cur);
+    wr16(v + P_ADPCM + 0x22, s.ps); wr16(v + P_ADPCM + 0x24, s.yn1); wr16(v + P_ADPCM + 0x26, s.yn2);
+    wr16(v + P_SRC + 4, (u32)(frac + (u64)ratio * FRAME));
+    for (int k = 0; k < 4; k++) wr16(v + P_SRC + 6 + k * 2, h[total + k]);
+    wr16(v + P_VE, ve);
+    wr16(v + P_MIX, vl); wr16(v + P_MIX + 4, vr);
+#endif
+}
+
+/* the job's part: mix_voice's sum, from the decoded samples */
+static void job_mix(const FJob *j) {
+    if (j->fb) { memcpy(mixL, j->fbL, sizeof mixL); memcpy(mixR, j->fbR, sizeof mixR); }
+    else { memset(mixL, 0, sizeof mixL); memset(mixR, 0, sizeof mixR); }
+    for (u32 n = 0; n < j->nv; n++) {
+        const VJob *vj = &j->v[n];
+        const s16 *h = j->pool + vj->off;
+        u32 ratio = vj->ratio, f = vj->frac, k = 0;
+        s32 ve = vj->ve, vl = vj->vl, vr = vj->vr;
+        s32 ved = vj->ved, dl = vj->dl, dr = vj->dr;
+        if (ved == 0 && dl == 0 && dr == 0) {     /* constant volumes: the clamps leave them as they are */
+            if ((vl == 0 && vr == 0) || ve == 0) continue;   /* adds 0 to every sample */
+            for (int i = 0; i < FRAME; i++) {
+                f += ratio; k += f >> 16; f &= 0xffff;
+                s32 a = h[k + 2], b = h[k + 3];
+                s32 x = a + (((s32)(b - a) * (s32)(f >> 1)) >> 15);
+                x = (x * ve) >> 15;
+                mixL[i] += (x * vl) >> 15;
+                mixR[i] += (x * vr) >> 15;
+            }
         } else for (int i = 0; i < FRAME; i++) {
             f += ratio; k += f >> 16; f &= 0xffff;
             s32 a = h[k + 2], b = h[k + 3];
@@ -314,34 +371,15 @@ static int mix_voice_fast(u32 v) {
             x = (x * ve) >> 15;
             mixL[i] += (x * vl) >> 15;
             mixR[i] += (x * vr) >> 15;
+            ve += ved; ve = ve < 0 ? 0 : ve > 0xffff ? 0xffff : ve;
+            vl += dl; vr += dr;
+            vl = vl < 0 ? 0 : vl > 0xffff ? 0xffff : vl;
+            vr = vr < 0 ? 0 : vr > 0xffff ? 0xffff : vr;
         }
-    } else for (int i = 0; i < FRAME; i++) {
-        f += ratio; k += f >> 16; f &= 0xffff;
-        s32 a = h[k + 2], b = h[k + 3];
-        s32 x = a + (((s32)(b - a) * (s32)(f >> 1)) >> 15);
-        x = (x * ve) >> 15;
-        mixL[i] += (x * vl) >> 15;
-        mixR[i] += (x * vr) >> 15;
-        ve += ved; ve = ve < 0 ? 0 : ve > 0xffff ? 0xffff : ve;
-        vl += dl; vr += dr;
-        vl = vl < 0 ? 0 : vl > 0xffff ? 0xffff : vl;
-        vr = vr < 0 ? 0 : vr > 0xffff ? 0xffff : vr;
     }
-
-    if (s.stopped) wr16(v + P_STATE, 0);
-    wr16(v + P_ADDR + 12, s.cur >> 16); wr16(v + P_ADDR + 14, s.cur);
-    wr16(v + P_ADPCM + 0x22, s.ps); wr16(v + P_ADPCM + 0x24, s.yn1); wr16(v + P_ADPCM + 0x26, s.yn2);
-    wr16(v + P_SRC + 4, f);
-    for (int j = 0; j < 4; j++) wr16(v + P_SRC + 6 + j * 2, h[k + j]);
-    wr16(v + P_VE, ve);
-    wr16(v + P_MIX, vl); wr16(v + P_MIX + 4, vr);
-    return 1;
 }
 
-static void mix_voice(u32 v) {
-#ifndef RECOMP_AX_REF
-    if (mix_voice_fast(v)) return;
-#endif
+static void mix_voice(u32 v, s32 *outL, s32 *outR) {
     Src s;
     s.v = v;
     s.looping = rd16(v + P_ADDR);
@@ -374,8 +412,8 @@ static void mix_voice(u32 v) {
         }
         s32 x = last[2] + (((s32)(last[3] - last[2]) * (s32)(frac >> 1)) >> 15);
         x = (x * ve) >> 15;
-        mixL[i] += (x * vl) >> 15;
-        mixR[i] += (x * vr) >> 15;
+        outL[i] += (x * vl) >> 15;
+        outR[i] += (x * vr) >> 15;
         ve += ved; ve = ve < 0 ? 0 : ve > 0xffff ? 0xffff : ve;
         vl += dl; vr += dr;
         vl = vl < 0 ? 0 : vl > 0xffff ? 0xffff : vl;
@@ -467,8 +505,79 @@ static void out_frame(void) {
     }
 }
 
-static void ax_frame(void) {
-    memset(mixL, 0, sizeof mixL); memset(mixR, 0, sizeof mixR);
+/* ---- the job ring: the game thread fills jobs[job_w % NJOB], the worker (core 2) mixes and outputs
+ * them in order; job_r = jobs done ---- */
+#define NJOB 16
+static FJob jobs[NJOB];
+static volatile u32 job_w, job_r;
+static volatile int job_sleeping, job_waiting;
+static LightEvent job_ev, job_done_ev;
+static int job_worker = -1;        /* -1 not started yet, 0 none (jobs run at once), 1 worker thread */
+
+/* the job's output: ndsp and the WAV, and the 5 s line */
+static void job_out(const FJob *j) {
+    out_frame();
+    if (!j->report) return;
+    recomp_log("# AX: frame %lu voices started %lu max active %lu ended %lu loops %lu peak %lu ndsp bufs %lu dropped frames %lu rms %lu, hash %08lx; pacing %s, underruns %lu, skipped %lu, trimmed %lu\n",
+               (unsigned long)j->frames, (unsigned long)j->started, (unsigned long)j->active_max,
+               (unsigned long)j->ended, (unsigned long)j->looped, (unsigned long)st.peak, (unsigned long)st.queued, (unsigned long)st.dropped,
+               (unsigned long)__builtin_sqrt((double)st.sumsq / (FRAME * 1000)), (unsigned long)st.hash, j->rt ? "rt" : "retrace",
+               (unsigned long)j->underruns, (unsigned long)j->skipped, (unsigned long)j->trimmed);
+    st.peak = st.queued = st.dropped = 0; st.sumsq = 0;
+}
+
+static void job_worker_fn(void *arg) {
+    (void)arg;
+    for (;;) {
+        u32 r = job_r;
+        while (job_w == r) {
+            job_sleeping = 1;
+            __dmb();
+            if (job_w == r) LightEvent_WaitTimeout(&job_ev, 2000000);
+            job_sleeping = 0;
+        }
+        __dmb();   /* the job's contents before using them */
+        const FJob *j = &jobs[r % NJOB];
+        job_mix(j);
+        job_out(j);
+        __dmb();   /* done with the job before the game thread may refill it */
+        job_r = r + 1;
+        __dmb();
+        if (job_waiting) LightEvent_Signal(&job_done_ev);
+    }
+}
+
+/* wait until the worker has done every job before job number n */
+static void job_drain(u32 n) {
+    while ((s32)(job_r - n) < 0) {
+        job_waiting = 1;
+        __dmb();
+        if ((s32)(job_r - n) < 0) LightEvent_WaitTimeout(&job_done_ev, 1000000);
+        job_waiting = 0;
+    }
+    __dmb();
+}
+
+static void job_start(void) {
+#ifndef RECOMP_AX_NO_WORKER
+    if (recomp_aux_core() == 2) {
+        LightEvent_Init(&job_ev, RESET_ONESHOT);
+        LightEvent_Init(&job_done_ev, RESET_ONESHOT);
+        s32 prio = 0x30;
+        svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
+        job_worker = recomp_aux_thread(job_worker_fn, 0x4000, prio + 3) != NULL;
+    } else
+#endif
+        job_worker = 0;
+    recomp_log("# AX: mix jobs %s\n", job_worker ? "on a worker thread (core 2)" : "run at once (no worker: AXWORKER=0 or no core 2)");
+}
+
+/* the game thread's part of one AX frame: consume the sync flags, decode and update every playing voice
+ * into the next job (waiting for a free one) */
+static FJob *ax_frame(void) {
+    if (job_worker == 1 && job_w - job_r >= NJOB) job_drain(job_w - NJOB + 1);
+    FJob *j = &jobs[job_w % NJOB];
+    j->nv = j->used = j->fb = 0;
     u32 active = 0;
     for (u32 i = 0; i < VPB_COUNT; i++) {
         u32 v = VPB_BASE + i * VPB_SIZE;
@@ -476,17 +585,17 @@ static void ax_frame(void) {
         wr32(v + V_SYNC, 0);                /* user changes consumed (__AXSyncPBs) */
         if (rd16(v + P_STATE) != 1) continue;
         active++;
-        mix_voice(v);
+        voice_frame(v, j);
     }
     if (active > st.active_max) st.active_max = active;
-    if (++st.frames % 1000 == 0) {          /* every 5 s of audio */
-        recomp_log("# AX: frame %lu voices started %lu max active %lu ended %lu loops %lu peak %lu ndsp bufs %lu dropped frames %lu rms %lu, hash %08lx; pacing %s, underruns %lu, skipped %lu, trimmed %lu\n",
-                   (unsigned long)st.frames, (unsigned long)voices_started, (unsigned long)st.active_max,
-                   (unsigned long)st.ended, (unsigned long)st.looped, (unsigned long)st.peak, (unsigned long)st.queued, (unsigned long)st.dropped,
-                   (unsigned long)__builtin_sqrt((double)st.sumsq / (FRAME * 1000)), (unsigned long)st.hash, recomp_ax_rt ? "rt" : "retrace",
-                   (unsigned long)st.underruns, (unsigned long)st.skipped, (unsigned long)st.trimmed);
-        st.active_max = st.peak = st.ended = st.looped = st.queued = st.dropped = st.underruns = st.skipped = st.trimmed = 0; st.sumsq = 0;
+    j->report = ++st.frames % 1000 == 0;   /* every 5 s of audio */
+    if (j->report) {
+        j->frames = st.frames; j->started = voices_started; j->active_max = st.active_max; j->ended = st.ended;
+        j->looped = st.looped; j->underruns = st.underruns; j->skipped = st.skipped; j->trimmed = st.trimmed;
+        j->rt = recomp_ax_rt;
+        st.active_max = st.ended = st.looped = st.underruns = st.skipped = st.trimmed = 0;
     }
+    return j;
 }
 
 /* ---- AI DMA chain (runtime/ai.c): while the game has its own AI callback in front of
@@ -550,7 +659,7 @@ void recomp_ax_pacing_toggle(void) { rt_req = 1; }
 
 /* AX frames queued in ndsp or mixed into the unqueued buffer (the playing one counts whole) */
 static u32 ndsp_lead(void) {
-    u32 n = wfill;
+    u32 n = wfill + (job_w - job_r);
     for (int i = 0; i < NBUF; i++) if (wbuf[i].status == NDSP_WBUF_QUEUED || wbuf[i].status == NDSP_WBUF_PLAYING) n += BUF_FRAMES;
     return n;
 }
@@ -618,16 +727,27 @@ void recomp_ax_service(void) {
         rt_acc3 -= due * 3;
         rt_last = 0;
     }
+    if (job_worker < 0) job_start();
     for (u32 k = 0; k < due; k++) {
-        ax_frame();
-        if (recomp_ai_dma_cb && recomp_ai_dma_cb != AX_AI_CALLBACK) { u64 c0 = recomp_ticks(); ai_frame(); recomp_prof[PROF_AUDIO_CB] += recomp_ticks() - c0; }
-        out_frame();
+        FJob *j = ax_frame();
+        if (recomp_ai_dma_cb && recomp_ai_dma_cb != AX_AI_CALLBACK) {   /* the movie's AI chain reads this frame's mix now */
+            job_drain(job_w);
+            job_mix(j);
+            u64 c0 = recomp_ticks(); ai_frame(); recomp_prof[PROF_AUDIO_CB] += recomp_ticks() - c0;
+            job_out(j);
+        } else if (job_worker == 1) {
+            __dmb();   /* the job's contents before its index */
+            job_w++;
+            __dmb();
+            if (job_sleeping) LightEvent_Signal(&job_ev);
+        } else { job_mix(j); job_out(j); }
         if (ax_cb) { u64 c0 = recomp_ticks(); recomp_call_guest(ax_cb, 0); recomp_prof[PROF_AUDIO_CB] += recomp_ticks() - c0; }
     }
     recomp_prof[PROF_AUDIO] += recomp_ticks() - t0;
 }
 
 void recomp_ax_close(void) {
+    if (job_worker == 1) job_drain(job_w);
     wav_close();
     if (ndsp_ok == 1) { ndspExit(); ndsp_ok = 0; }
 }
