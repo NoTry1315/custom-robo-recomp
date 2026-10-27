@@ -434,6 +434,13 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   (-0.9%, 65/73 windows faster), busy cycles 17.79 -> 17.62M (73/73 fewer); sweep ~0.12 ms per 2v2 frame on hardware.
   Run 36a had 0.6-0.8 s SD stalls (voice stream reads while the log writer was busy): same cycles as 35b, +0.7 ms mean, so
   pair windows by median / busy cycles, not mean game ms alone. Details: unknowns "Write tracking through a byte map".
+- Stores without the hardware check (2026-10-26, branch task/2026-10-26-store-hwcheck, density step D3): HWCHECK=verify
+  counts stores reaching hw_write per host site: 0 in boot/battle/campaign/2v2 replays (and no hw_write line in any hw
+  log). recomp.py puts the functions whose C sets a 0xCC/0xCD hardware literal (+ callers holding an inline copy; 33)
+  in gen/recomp_hw_*.c, which keep checked stores; the other gen/ files define RECOMP_STORE_FAST (ppc.h STORE_HW: only
+  a compile-time hardware address takes the hardware path). `make STORECHECK=1` = all checked. .text 5.12 -> 4.27 MB,
+  2v2 hot set -14.5% instructions; Citra 2v2 game 32.6 -> 32.3 ms, battle/campaign unchanged; logs + fb identical to
+  D2. Not yet on hardware. Details: unknowns "Stores without the hardware check".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

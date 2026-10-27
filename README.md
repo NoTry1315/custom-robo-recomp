@@ -67,6 +67,8 @@ The first step (guest loads without the hardware-address check, runs 35a/35b, tw
 2v2 game thread went from 22.2 to 20.3 ms, 40.0 -> 43.4 fps (game speed 67 -> 72%), and the code from 6.8 to 5.3 MB.
 The second (guest stores mark a byte map instead of loading and storing the write epoch, branch
 `task/2026-10-26-wr-tracking`) cuts the hot code by another 2.5% (code 5.3 -> 5.1 MB): runs 36a/36b, 2v2 game 20.25 -> 20.07 ms (-0.9%).
+The third (stores without the hardware check outside the 33 functions that set a hardware address, branch
+`task/2026-10-26-store-hwcheck`) cuts the hot code by 14.5% (code 5.1 -> 4.3 MB); its hardware A/B is next.
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
@@ -208,7 +210,9 @@ translated code only), `make FLOATOPS=0` (exact Gekko float rounding), `make HWC
 for hardware-register addresses again; by default they read RAM directly) and `make HWCHECK=verify` (checked, and
 every load that reaches a hardware address is logged as `# hwcheck load`; the boot line `# hwcheck:` names the
 mode), and `make WRMAP=0` (guest stores write the write-tracking epoch themselves instead of marking a byte map
-that is swept once per frame; boot line `# wrmap:`). Switching any of these needs `make clean` first.
+that is swept once per frame; boot line `# wrmap:`) and `make STORECHECK=1` (every translated store tests for
+hardware addresses again; by default only the functions in gen/recomp_hw_*.c do, and `HWCHECK=verify` also lists
+every store that reaches a hardware address as `# hwcheck store` lines). Switching any of these needs `make clean` first.
 Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
 `RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `dual`, the default, builds both variants into the one
 `.3dsx` behind the "Ptr extent" / "Inline sites" buttons; `0` is the plain main code).
