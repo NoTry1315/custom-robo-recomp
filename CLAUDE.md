@@ -493,6 +493,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   90 sites; RECOMP_INLINE_TSV=0 = without): runs 46a/46b game -0.12 ms, ~22 cycles per removed call (so the 27% "0"
   bucket is not call glue), 2v2 47.0 fps. Run 45a hung at boot before the first log line (screen frozen, log empty):
   probe joins now time out after 2 s and the bottom screen shows boot stages. The AX worker now ends at close.
+- AX predictions + address ranges (2026-10-27, not kept): AX decode predicted on the core 2 mix worker (branch
+  task/2026-10-27-ax-spec @499acb1; Citra identical, 98-99% taken): hw runs 49a/49b audio 0.9 -> 0.7 ms but game +0.27,
+  frame 21.32 -> 21.46 ms (L2 pressure likely). `make RANGEVERIFY=1` (kept): guest accesses outside 0x80000000-0x81ffffff
+  are only 0xcc hardware ones, but fixed-address RAM would save < 0.1 ms; not built. Details: unknowns "AX decode
+  predictions on the mix worker", "Guest address ranges".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

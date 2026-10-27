@@ -83,7 +83,9 @@ output in the `# AX: frame` lines matches in Citra and on hardware). Profile-gui
 `tools/recomp/inline_sites.tsv` by `tools/recomp/inline_sites.py`, get an inline copy; covered by the "Inline sites"
 button): runs 46a/46b, game thread -0.12 ms, 47.0 fps. A hardware profile (run 44, `make FNPROF=1`) and a count of
 misaligned guest accesses (`make ALIGNVERIFY=1`: ~2M per 2v2 replay, many in the particle code) ruled out keeping
-guest RAM as native-endian words.
+guest RAM as native-endian words. Tried and not kept on 2026-10-27: AX decode predictions on the mix worker (runs
+49a/49b: 0.2 ms of audio off the game thread, but the game thread got 0.27 ms slower, likely L2 cache pressure from
+core 2), and guest RAM at a fixed host address (`make RANGEVERIFY=1` shows it would work, but it would save under ~0.1 ms).
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
@@ -229,8 +231,9 @@ that is swept once per frame; boot line `# wrmap:`) and `make STORECHECK=1` (eve
 hardware addresses again; by default only the functions in gen/recomp_hw_*.c do, and `HWCHECK=verify` also lists
 every store that reaches a hardware address as `# hwcheck store` lines), `make AXFAST=0` (the old AX mixer, one ARAM
 read call per source sample) and `make AXWORKER=0` (the mix jobs run on the game thread instead of a worker thread on
-core 2; boot line `# AX: mix jobs`) and `make ALIGNVERIFY=1` (every misaligned 16/32-bit guest access logged per
-host site as `# align` lines). Switching any of these needs `make clean` first.
+core 2; boot line `# AX: mix jobs`), `make ALIGNVERIFY=1` (every misaligned 16/32-bit guest access logged per
+host site as `# align` lines) and `make RANGEVERIFY=1` (the same lines for every guest access outside
+0x80000000-0x81ffffff). Switching any of these needs `make clean` first.
 Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
 `RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `RECOMP_INLINE_TSV=0` leaves out the profile sites of
 `tools/recomp/inline_sites.tsv`; `dual`, the default, builds both variants into the one
