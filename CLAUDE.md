@@ -498,6 +498,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   frame 21.32 -> 21.46 ms (L2 pressure likely). `make RANGEVERIFY=1` (kept): guest accesses outside 0x80000000-0x81ffffff
   are only 0xcc hardware ones, but fixed-address RAM would save < 0.1 ms; not built. Details: unknowns "AX decode
   predictions on the mix worker", "Guest address ranges".
+- MTX asm (2026-10-27, branch task/2026-10-27-mtx-wordptr): PSMTXConcat / PSMTXMultVec as hand-scheduled ARM
+  (runtime/mtx.c wa_concat / wa_multvec: ldm/stm, paired vmov, interleaved rows; fp_ when not 4-aligned). Citra logs,
+  fb, audio identical, bench 0 ulp (Citra + hw). HW bench concat 495 -> 412 ns, multvec 367 -> 302; runs 50a/50b 2v2
+  game -0.27 ms (cycles fewer 73/73), 47.2 fps. Details: unknowns "Native MTX in ARM assembly".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
