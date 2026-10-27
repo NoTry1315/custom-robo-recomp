@@ -48,6 +48,12 @@ endif
 ifeq ($(HWCHECK),verify)
 CFLAGS	+=	-DRECOMP_HWCHECK_VERIFY
 endif
+# STORECHECK=1: every translated store tests for a hardware address again (by default only the functions that set
+# one, gen/recomp_hw_*.c, do: runtime/ppc.h STORE_HW); needs `make clean` too
+STORECHECK ?= 0
+ifeq ($(STORECHECK),1)
+CFLAGS	+=	-DRECOMP_STORECHECK
+endif
 # WRMAP=0: guest stores write the write-tracking epoch per page directly instead of marking the byte map
 # that sdk_GXCopyDisp sweeps (runtime/ppc.h WR_SET); needs `make clean` too
 WRMAP ?= 1
@@ -85,7 +91,7 @@ export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 
 .PHONY: all clean
 all: $(BUILD)
-	@sh tools/buildinfo.sh $(BUILD)/buildinfo.h "$(strip $(if $(filter 1,$(LTO)),lto) $(if $(filter 1,$(HWCHECK)),hwcheck) $(if $(filter verify,$(HWCHECK)),hwverify) $(if $(filter 0,$(WRMAP)),wrepoch) $(GENOPT))"
+	@sh tools/buildinfo.sh $(BUILD)/buildinfo.h "$(strip $(if $(filter 1,$(LTO)),lto) $(if $(filter 1,$(HWCHECK)),hwcheck) $(if $(filter verify,$(HWCHECK)),hwverify) $(if $(filter 0,$(WRMAP)),wrepoch) $(if $(filter 1,$(STORECHECK)),storecheck) $(GENOPT))"
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 	@python3 tools/check_3dsx.py $(TARGET).3dsx
 $(BUILD):

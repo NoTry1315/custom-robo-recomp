@@ -85,7 +85,33 @@ u32 hw_read_verify(u32 a, int size) {
                    (unsigned long)recomp_hwcheck_loads);
     return hw_read(a, size);
 }
+#ifdef RECOMP_HWCHECK_VERIFY
+/* make HWCHECK=verify: every store that reaches hw_write, per calling host site (the inlined wr* in a gen/ f_X;
+ * map with nm), with its first address and guest lr. recomp_hwcheck_report lists them every 600 retraces. */
+static struct { const void *pc; u32 a, lr, n; } st_site[256];
+static u32 st_sites, st_total, st_lost;
+static void store_site(const void *pc, u32 a) {
+    st_total++;
+    for (u32 i = 0; i < st_sites; i++) if (st_site[i].pc == pc) { st_site[i].n++; return; }
+    if (st_sites == 256) { st_lost++; return; }
+    st_site[st_sites].pc = pc; st_site[st_sites].a = a; st_site[st_sites].lr = cpu.lr; st_site[st_sites++].n = 1;
+    recomp_log("# hwcheck store site %lu: host %p addr %08lx lr=%08lx\n", (unsigned long)st_sites, pc, (unsigned long)a, (unsigned long)cpu.lr);
+}
+void recomp_hwcheck_report(u32 retrace) {
+    if (retrace % 600) return;
+    recomp_log("# hwcheck stores r%lu: %lu total, %lu sites (%lu stores at sites over the table)\n", (unsigned long)retrace,
+               (unsigned long)st_total, (unsigned long)st_sites, (unsigned long)st_lost);
+    for (u32 i = 0; i < st_sites; i++)
+        recomp_log("# hwcheck store count %p %lu addr %08lx lr=%08lx\n", st_site[i].pc, (unsigned long)st_site[i].n,
+                   (unsigned long)st_site[i].a, (unsigned long)st_site[i].lr);
+}
+#else
+void recomp_hwcheck_report(u32 retrace) { (void)retrace; }
+#endif
 void hw_write(u32 a, u32 v, int size) {
+#ifdef RECOMP_HWCHECK_VERIFY
+    store_site(__builtin_return_address(0), a);
+#endif
     if ((a & ~7u) == 0xCC008000u) { recomp_gx_fifo_write(v, size); return; }   /* GX write-gather pipe */
     if (hw_seen(a)) recomp_log("hw_write %08lx/%d = %08lx lr=%08lx\n", (unsigned long)a, size, (unsigned long)v, (unsigned long)cpu.lr);
 }
