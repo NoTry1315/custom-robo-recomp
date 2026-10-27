@@ -358,7 +358,7 @@ list in the same change whenever something new is borrowed.
 
 ### Ideas from other projects
 
-- mw3ds: stereo 3D by replaying the left eye's GPU command words for the right eye
+- [mw3ds](https://github.com/3ds-conspiracy/mw3ds): stereo 3D by replaying the left eye's GPU command words for the right eye
   (`runtime/gx.c`, "Stereo 3D"), and small integer vertex formats (vertex packing).
 - The Simpsons: Hit & Run Old 3DS port and REGTA: dropping and packing normals (vertex
   packing); the Simpsons port and MKW-3DS: cached textures in VRAM.
@@ -392,5 +392,3 @@ list in the same change whenever something new is borrowed.
   [Pillow](https://python-pillow.org/) (asset decoders and contact sheets).
 - [Git](https://git-scm.com/) and Git for Windows (Git Bash), and Windows PowerShell for
   the Citra scripts.
-- [Claude Code](https://claude.com/claude-code) (Anthropic): most of the translator,
-  runtime, tools and docs were written with it.
