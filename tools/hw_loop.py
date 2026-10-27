@@ -7,6 +7,10 @@ Wi-Fi). Leave the Rosalina debugger off: twice the 3DS lost its network while th
 process list (qXfer:osdata on TCP 4000, 2026-10-26).
 Nothing may connect to TCP 17491 except 3dslink: the netloader takes any connection as an upload and shows an
 error screen (B closes it). Its UDP ping answer does not reach this PC (firewall), so it is not used either.
+No 3dslink within SETTLE (30) s of ftpd exiting: two runs back to back (3dslink ~6 s after START in ftpd) gave
+"Failed sending", then the 3DS lost Wi-Fi and the Homebrew Launcher froze (2026-10-26 19:45); with ~1 min between
+runs it worked. The time of the last START is kept in a temp file, so this holds across invocations. A failed
+3dslink gets one retry after 30 s, then the script stops: ask the user to look at the console.
 
     PYTHONUTF8=1 python tools/hw_loop.py state
     PYTHONUTF8=1 python tools/hw_loop.py press START [--hold 150]     (A B X Y L R ZL ZR START SELECT UP DOWN
@@ -15,17 +19,17 @@ error screen (B closes it). Its UDP ping answer does not reach this PC (firewall
     PYTHONUTF8=1 python tools/hw_loop.py launch <file.3dsx>           (Homebrew Launcher -> Y -> 3dslink)
     PYTHONUTF8=1 python tools/hw_loop.py ftp ls|get|put|mv ...        (ftpd on the SD; no delete)
     PYTHONUTF8=1 python tools/hw_loop.py run --build custom-robo-recomp.3dsx --name 2026-10-26_hw-run37-x \\
-        --wait 120 [--put local=remote ...] [--mv a=b ...] [--timeout 1800]
+        --wait 120 [--put local=remote ...] [--mv a=b ...]
 (Git Bash: MSYS_NO_PATHCONV=1, else SD paths like /3ds/.. are rewritten to Windows paths.)
 
 `run`: in ftpd, uploads --put files and applies --mv renames (flag files on/off), START (ftpd exits to the
 Homebrew Launcher), Y + 3dslink the build (the netloader writes sdmc:/3ds/<basename> and starts it). The run
 length ends the game (runtime/vi.c) and it exits to the Homebrew Launcher. After --wait seconds (longer than the
-run takes), Y + 3dslink ftpd.3dsx every 20 s until it connects; Y reaches the game if it is still running, so
-make --wait generous. Then downloads /cr_autotest.log to logs/cr_autotest_<name>.log, renames it on the SD
+run takes), Y + 3dslink ftpd.3dsx (one retry); Y reaches the game if it is still running, so make --wait
+generous. Then downloads /cr_autotest.log to logs/cr_autotest_<name>.log, renames it on the SD
 to /cr_autotest_<name>.log and presses START: the 3DS is left in the Homebrew Launcher, as a run starts from
 there or from ftpd. After any manual `ftp`/`launch` use, leave it there too (`press START` in ftpd)."""
-import argparse, ftplib, os, socket, struct, subprocess, time
+import argparse, ftplib, os, socket, struct, subprocess, tempfile, time
 
 IP = os.environ.get('CR_3DS_IP', '192.168.1.129')
 FTP_PORT, FTP_USER, FTP_PASS = 5000, 'a', 'a'
@@ -33,6 +37,9 @@ IR_PORT = 4950
 IMAGE = 'mkw3ds-build:2026-10-09'
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FTPD_3DSX = os.path.join(REPO, 'tools', 'hw', 'ftpd.3dsx')   # mtheall/ftpd v3.2.1 release asset (not committed)
+SETTLE = float(os.environ.get('CR_HW_SETTLE', 30))   # s from ftpd exiting to the next 3dslink
+RETRY_WAIT = 30
+EXIT_STAMP = os.path.join(tempfile.gettempdir(), 'cr_hw_loop_ftpd_exit')   # mtime = last START in ftpd
 
 # InputRedirection packet (Luma3DS rosalina/source/input_redirection.c, TuxSH/InputRedirectionClient-Qt):
 # 5 little-endian words: HID buttons (12 bits, pressed = 0), touch, circle pad, C-stick/ZL/ZR, HOME/POWER.
@@ -86,20 +93,41 @@ def wait_for(what, cond, timeout, every=1.0):
     raise SystemExit(f'timed out after {timeout:.0f} s waiting for {what}')
 
 
-def try_launch(path):
-    """One attempt: Y (netloader; nothing if it is already open) + 3dslink. False if 3dslink could not connect."""
+def mark_ftpd_exit():
+    with open(EXIT_STAMP, 'w'): pass
+
+
+def settle():
+    """Waits until SETTLE s have passed since ftpd last exited (its network shutdown races the next upload)."""
+    try:
+        left = SETTLE - (time.time() - os.path.getmtime(EXIT_STAMP))
+    except OSError:
+        return
+    if left > 0:
+        print(time.strftime('%H:%M:%S'), f'waiting {left:.0f} s after ftpd exited', flush=True)
+        time.sleep(left)
+
+
+def try_launch(path, close_error=False):
+    """One attempt: Y (netloader; nothing if it is already open) + 3dslink. False if 3dslink failed.
+    close_error: B first, which closes the error screen a failed transfer leaves (nothing in the menu)."""
     d, f = os.path.split(os.path.abspath(path))
+    if close_error:
+        press(['B']); time.sleep(1)
     press(['Y']); time.sleep(2)
     print(time.strftime('%H:%M:%S'), '3dslink', f, flush=True)
     cmd = ['docker', 'run', '--rm', '-v', f'{d}:/w', IMAGE, '/opt/devkitpro/tools/bin/3dslink', '-a', IP, f'/w/{f}']
     return subprocess.run(cmd, env=dict(os.environ, MSYS_NO_PATHCONV='1')).returncode == 0
 
 
-def launch(path, timeout=60, every=10):
-    end = time.time() + timeout
-    while not try_launch(path):
-        if time.time() > end: raise SystemExit(f'3dslink {path} did not connect for {timeout} s')
-        time.sleep(every)
+def launch(path):
+    settle()
+    if not try_launch(path):
+        print(time.strftime('%H:%M:%S'), f'3dslink failed, one retry in {RETRY_WAIT} s', flush=True)
+        time.sleep(RETRY_WAIT)
+        if not try_launch(path, close_error=True):
+            raise SystemExit(f'3dslink {os.path.basename(path)} failed twice: stopped. Ask the user to look at the '
+                             'console (Homebrew Launcher frozen? Wi-Fi? InputRedirection on?) before trying again.')
     time.sleep(3)
 
 
@@ -110,18 +138,18 @@ def ftp():
     return f
 
 
-def to_ftpd(timeout=60, every=10):
+def to_ftpd():
     if port_open(FTP_PORT): return
     if not os.path.exists(FTPD_3DSX):
         raise SystemExit(f'{FTPD_3DSX} missing (ftpd.3dsx from github.com/mtheall/ftpd releases)')
-    launch(FTPD_3DSX, timeout, every)
+    launch(FTPD_3DSX)
     wait_for('ftpd', lambda: port_open(FTP_PORT), 30)
 
 
 def leave_ftpd():
     press(['START'])
+    mark_ftpd_exit()
     wait_for('ftpd to exit (START)', lambda: not port_open(FTP_PORT), 20)
-    time.sleep(4)   # Homebrew Launcher reloads its menu (3dslink at 2 s was refused once)
 
 
 def state():
@@ -146,7 +174,7 @@ def run(a):
     t0 = time.time()
     print(time.strftime('%H:%M:%S'), f'game started, waiting {a.wait:.0f} s', flush=True)
     time.sleep(a.wait)
-    to_ftpd(a.timeout, 20)
+    to_ftpd()
     print(time.strftime('%H:%M:%S'), f'ftpd up {time.time() - t0:.0f} s after the game started', flush=True)
     f = ftp()
     os.makedirs(os.path.dirname(log_local), exist_ok=True)
@@ -172,10 +200,11 @@ def main():
     p = sub.add_parser('run'); p.add_argument('--build', required=True); p.add_argument('--name', required=True)
     p.add_argument('--wait', type=float, required=True, help='seconds from game start to the first ftpd attempt')
     p.add_argument('--put', action='append', default=[]); p.add_argument('--mv', action='append', default=[])
-    p.add_argument('--timeout', type=float, default=1800)
     a = ap.parse_args()
     if a.cmd == 'state': print(state())
-    elif a.cmd == 'press': press([b.upper() for b in a.buttons], hold_ms=a.hold)
+    elif a.cmd == 'press':
+        press([b.upper() for b in a.buttons], hold_ms=a.hold)
+        if 'START' in (b.upper() for b in a.buttons): mark_ftpd_exit()   # may have closed ftpd: settle before 3dslink
     elif a.cmd == 'touch': press(touch=(a.x, a.y), hold_ms=a.hold)
     elif a.cmd == 'launch': launch(a.file)
     elif a.cmd == 'run': run(a)
