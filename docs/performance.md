@@ -187,7 +187,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
   instructions weighted by 2v2 function entries. Estimate -0.5 to -1.0 ms of 2v2 game time after the boundary cost (~14k
   mode switches per frame, CPU state swapped on the runtime side). Needs an object converter + image fix-up (as in
   2gifts/melee-3ds), thunks from recomp.py, big-endian CPU state with accessor changes across runtime/: not started,
-  waiting for a decision.
+  not pursued: the user stopped the perf loop here on 2026-10-27 (2v2 at 47.2 fps, run 50b).
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
 
