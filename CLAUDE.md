@@ -522,6 +522,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   -0.11 ms (sd 0.14, 51/73), cycles -0.034M: noise level, LTO stays off. `make LTO=1` links again (cpu.o / mtx.o
   -fno-lto for their top-level-asm symbols; -ffunction-sections at the LTO link, else hot_order.ld places nothing).
   Details: unknowns "-O3 and LTO".
+- Card UI (2026-10-27, merged to main): the bottom screen as cards (runtime/menu_card.c: title, build id + flags,
+  fps / game / GX / audio tiles, every btn[] toggle as a card with an on/off dot, last printf line), drawn on the CPU
+  with the system font, glyphs spaced by their ink. Default `CARDUI=1` = release builds; `make CARDUI=0` = test
+  builds (console layout with every stats row, build id ends in "console"): use 0 for Citra runs and hardware A/Bs
+  (user, 2026-10-27). Logs are the same either way. Citra checked by screenshot; touch and hardware not yet checked.
+  Details: unknowns "Card layout of the bottom screen".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
@@ -531,8 +537,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 python tools/extract_disc.py "<disc>.iso" data/extracted   # once (--sys-only: sys/ only)
 PYTHONUTF8=1 python tools/recomp/recomp.py                   # -> gen/
 (cd tools/recomp && PYTHONUTF8=1 python gen_sdk_log.py)      # after adding an sdk_* to runtime/
-docker run --rm -v "C:/Users/Alexander/source/repos/custom-robo-recomp:/proj" -w /proj mkw3ds-build:2026-10-09 make -j20
+docker run --rm -v "C:/Users/Alexander/source/repos/custom-robo-recomp:/proj" -w /proj mkw3ds-build:2026-10-09 make -j20 CARDUI=0
 ```
+Test builds use `CARDUI=0` (console bottom screen with every stats row); plain `make` (CARDUI=1, card layout) is the
+release build.
 Full rebuild ~36 s with -j20 (gen/ is ~46 files of 60 functions; recomp.py rewrites only files whose
 content changed, so an unchanged regen rebuilds nothing). Was 5-7 min serial with 11 large files.
 Citra: `tools/citra/autotest.ps1 -Fast -Shots 0` (title: add `-Pad '360 366 100; 450 456 100; 540 546 100; 630 636 100'`), never take desktop focus; log in
