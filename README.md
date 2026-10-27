@@ -87,7 +87,8 @@ button): runs 46a/46b, game thread -0.12 ms, 47.0 fps. A hardware profile (run 4
 misaligned guest accesses (`make ALIGNVERIFY=1`: ~2M per 2v2 replay, many in the particle code) ruled out keeping
 guest RAM as native-endian words. Tried and not kept on 2026-10-27: AX decode predictions on the mix worker (runs
 49a/49b: 0.2 ms of audio off the game thread, but the game thread got 0.27 ms slower, likely L2 cache pressure from
-core 2), sin/cos computed in pairs (runs 51a/51b: game +0.46 ms), and guest RAM at a fixed host address (`make RANGEVERIFY=1` shows it would work, but it would save under ~0.1 ms).
+core 2), sin/cos computed in pairs (runs 51a/51b: game +0.46 ms), guest RAM at a fixed host address (`make RANGEVERIFY=1` shows it would work, but it would save under ~0.1 ms), and GX register records written inline at the
+call site (2466 calls per 2v2 frame, ~0.1 ms by the run 46 cost per call: not built).
 Studied, not built: running the translated code in the ARM11's big-endian data mode (BE8; `setend` costs 1 cycle on
 the New 3DS, run 52; estimated -0.5 to -1.0 ms of 2v2 game time for a large toolchain change).
 
