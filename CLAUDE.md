@@ -444,6 +444,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   with nobody at the console): 2v2 game 20.26 -> 19.80 ms (-0.46, 72/73 windows faster), busy cycles -2.2%, I-cache
   misses 35.2 -> 33.6/k; campaign -0.13 ms. The 2v2 replay is ~176 s of frames plus boot: hw_loop --wait 230 is enough.
   Details: unknowns "Stores without the hardware check".
+- GX pipe stores as a call (2026-10-26, branch task/2026-10-26-fifo-call, D4, not merged): `mov r0, v; bl` to asm
+  routines in runtime/fifo_put.c instead of the ~10-instruction inline append; .text -2.2%, Citra +1.2%; hardware runs
+  38a/38b: 2v2 game +0.34 ms, busy cycles +0.37M. Dropped (performance.md "Tried and not kept"). Runs 38a/38b also hit
+  two 3DS freezes with Wi-Fi loss (after ~10 netloads since boot, and after a run whose boot already had 5-6 s SD stalls);
+  a separate session ("Why the 3DS crashes during automated runs") is looking for the cause.
 - Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
   over the network: InputRedirection presses (START leaves ftpd, Y opens the netloader), 3dslink starts the build
   and `tools/hw/ftpd.3dsx` (mtheall/ftpd v3.2.1; the user's ftpd is a CIA, which exits to the HOME menu), FTP
