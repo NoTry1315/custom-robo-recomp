@@ -509,7 +509,7 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 - BE8 study (2026-10-27, not built; branch task/2026-10-27-be8-study @4208804 = probe): gen/ in big-endian data mode
   would drop rev + core<->VFP vmov (~8.8% of translated instructions, 2v2 entry-weighted); hw run 52: setend 1 cycle,
   BE loads right, .text RWX possible on hw (not Citra). Est. 2v2 game -0.5..-1.0 ms; needs object converter + image
-  fix-up + thunks + BE CPU state across runtime/. Waiting for a user decision. Details: unknowns "BE8 big-endian data mode".
+  fix-up + thunks + BE CPU state across runtime/. Not pursued (user, 2026-10-27): perf loop stopped at 47.2 fps. Details: unknowns "BE8 big-endian data mode".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
