@@ -50,6 +50,21 @@ void hw_write(u32 a, u32 v, int size);
 #else
 #define LOAD_HW(a) 0
 #endif
+/* Stores (D3, 2026-10-26): a gen/ file that recomp.py writes with RECOMP_STORE_FAST (every function that never sets
+ * a hardware address, 0xCC/0xCD......) only takes the hardware path for an address GCC knows to be hardware; its
+ * other stores write RAM without the test. The functions that set one (lis 0xCC01 for the GX write-gather pipe;
+ * recomp_hw_*.c), runtime/ and `make STORECHECK=1` / HWCHECK=1 / HWCHECK=verify test every store. No replay
+ * or hardware log has had a store reach hw_write (make HWCHECK=verify counts them per site). */
+#if defined(RECOMP_STORECHECK) || defined(RECOMP_HWCHECK) || defined(RECOMP_HWCHECK_VERIFY)
+#define RECOMP_STORE_MODE "checked in every function"
+#else
+#define RECOMP_STORE_MODE "checked only in functions that set a hardware address (recomp_hw_*.c)"
+#endif
+#if defined(RECOMP_STORE_FAST) && !defined(RECOMP_STORECHECK) && !defined(RECOMP_HWCHECK) && !defined(RECOMP_HWCHECK_VERIFY)
+#define STORE_HW(a) (__builtin_constant_p(a) && IS_HW(a))
+#else
+#define STORE_HW(a) __builtin_expect(IS_HW(a), 0)
+#endif
 #ifdef RECOMP_HWCHECK_VERIFY
 u32 hw_read_verify(u32 a, int size);
 #define HW_READ(a, n) hw_read_verify(a, n)
@@ -108,9 +123,9 @@ RI u8  rd8 (u32 a){ if (LOAD_HW(a)) return HW_READ(a,1); return ram[a & RAM_MASK
 RI u16 rd16(u32 a){ if (LOAD_HW(a)) return HW_READ(a,2); u16 v; memcpy(&v, ram + (a & RAM_MASK), 2); return __builtin_bswap16(v); }
 RI u32 rd32(u32 a){ if (LOAD_HW(a)) return HW_READ(a,4); u32 v; memcpy(&v, ram + (a & RAM_MASK), 4); return __builtin_bswap32(v); }
 RI u64 rd64(u32 a){ return ((u64)rd32(a) << 32) | rd32(a + 4); }
-RI void wr8 (u32 a, u8 v){ if (__builtin_expect(IS_HW(a),0)) { HW_WRITE(a,v,1); return; } WR_MARK(a); ram[a & RAM_MASK] = v; }
-RI void wr16(u32 a, u16 v){ if (__builtin_expect(IS_HW(a),0)) { HW_WRITE(a,v,2); return; } WR_MARK(a); v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
-RI void wr32(u32 a, u32 v){ if (__builtin_expect(IS_HW(a),0)) { HW_WRITE(a,v,4); return; } WR_MARK(a); v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
+RI void wr8 (u32 a, u8 v){ if (STORE_HW(a)) { HW_WRITE(a,v,1); return; } WR_MARK(a); ram[a & RAM_MASK] = v; }
+RI void wr16(u32 a, u16 v){ if (STORE_HW(a)) { HW_WRITE(a,v,2); return; } WR_MARK(a); v = __builtin_bswap16(v); memcpy(ram + (a & RAM_MASK), &v, 2); }
+RI void wr32(u32 a, u32 v){ if (STORE_HW(a)) { HW_WRITE(a,v,4); return; } WR_MARK(a); v = __builtin_bswap32(v); memcpy(ram + (a & RAM_MASK), &v, 4); }
 RI void wr64(u32 a, u64 v){ wr32(a, (u32)(v >> 32)); wr32(a + 4, (u32)v); }
 
 /* r1-relative (stack) accesses never reach hardware registers: no IS_HW check */
@@ -149,9 +164,9 @@ RI u8  rd8_b (u32 b, s32 k){ if (LOAD_HW(b)) return HW_READ(b + k,1); return *b_
 RI u16 rd16_b(u32 b, s32 k){ if (LOAD_HW(b)) return HW_READ(b + k,2); u16 v; memcpy(&v, b_at(b, k), 2); return __builtin_bswap16(v); }
 RI u32 rd32_b(u32 b, s32 k){ if (LOAD_HW(b)) return HW_READ(b + k,4); u32 v; memcpy(&v, b_at(b, k), 4); return __builtin_bswap32(v); }
 RI u64 rd64_b(u32 b, s32 k){ return ((u64)rd32_b(b, k) << 32) | rd32_b(b, k + 4); }
-RI void wr8_b (u32 b, s32 k, u8 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,1); return; } WR_MARK_B(b, k); *b_at(b, k) = v; }
-RI void wr16_b(u32 b, s32 k, u16 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,2); return; } WR_MARK_B(b, k); v = __builtin_bswap16(v); memcpy(b_at(b, k), &v, 2); }
-RI void wr32_b(u32 b, s32 k, u32 v){ if (__builtin_expect(IS_HW(b),0)) { HW_WRITE(b + k,v,4); return; } WR_MARK_B(b, k); v = __builtin_bswap32(v); memcpy(b_at(b, k), &v, 4); }
+RI void wr8_b (u32 b, s32 k, u8 v){ if (STORE_HW(b)) { HW_WRITE(b + k,v,1); return; } WR_MARK_B(b, k); *b_at(b, k) = v; }
+RI void wr16_b(u32 b, s32 k, u16 v){ if (STORE_HW(b)) { HW_WRITE(b + k,v,2); return; } WR_MARK_B(b, k); v = __builtin_bswap16(v); memcpy(b_at(b, k), &v, 2); }
+RI void wr32_b(u32 b, s32 k, u32 v){ if (STORE_HW(b)) { HW_WRITE(b + k,v,4); return; } WR_MARK_B(b, k); v = __builtin_bswap32(v); memcpy(b_at(b, k), &v, 4); }
 RI void wr64_b(u32 b, s32 k, u64 v){ wr32_b(b, k, (u32)(v >> 32)); wr32_b(b, k + 4, (u32)v); }
 
 RI float  u2f(u32 v){ float f; memcpy(&f, &v, 4); return f; }
@@ -464,6 +479,7 @@ extern int recomp_perfctr_on;           /* perfctr.c: ARM11 counters per frame, 
 extern u32 recomp_perfctr_flips;        /* perfctr.c: toggles so far (# time split: "mixed") */
 void recomp_perfctr_init(void);         /* main.c at boot: flag file, button, enable */
 void recomp_perfctr_frame(u32 retrace); /* recomp_prof_frame (game thread): read, rotate, log every 60 retraces */
+void recomp_hwcheck_report(u32 retrace); /* cpu.c, make HWCHECK=verify: stores that reached hw_write, per host site */
 void recomp_perfctr_exit(void);         /* main.c at exit: release the counters */
 void recomp_memdump_request(void);    /* bottom-screen button "Dump RAM": snapshot at the next retrace (memdump.c) */
 void recomp_memdump_retrace(void);     /* recomp_gx_retrace after the sync: button / sdmc:/cr_memdump.txt dumps */
