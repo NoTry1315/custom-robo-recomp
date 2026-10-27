@@ -478,6 +478,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   because its battery ran out (user; not a Wi-Fi crash, not on the charger): agent 2 PING reports batt/pct/charging/
   adapter, `run` stops at level <= 2 of 5 without the charger. Agent changes: rebuild with
   `docker ... -w /proj/tools/hw/agent ... make`, `hw_loop.py agent-install`.
+- Audio mixer (2026-10-27, branch task/2026-10-27-audio-mix): `# time .. split` audio = "mix" (host AX mixer) +
+  "callback" (guest sound tick); 2v2 hw run 42a: mix 1.91 + tick 0.27 ms, outside "game" on core 0. Fast mixer
+  (decode a frame's samples in one pass, ARAM read directly; `make AXFAST=0` = old) and mix jobs on a worker on core
+  2 (game thread decodes and writes the PB state; resample/volume/output in the job; `make AXWORKER=0` = at once).
+  `# AX: frame` lines end with an output hash (identical Citra/hardware/AXFAST=0). HW runs 42a/42b: mix 1.91 ->
+  1.06, frame 22.35 -> 21.62; 43a/43b: mix on core 0 1.06 -> 0.59, frame 21.68 -> 21.42 ms: 2v2 44.7 -> 46.7 fps.
+  GX thread busy 16.9 ms now includes the worker (~0.5 ms). hw_loop.py paths from Git Bash: pass `cygpath -m` paths
+  (with MSYS_NO_PATHCONV=1 a /c/... path is "missing"). Details: unknowns "AX mixer".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

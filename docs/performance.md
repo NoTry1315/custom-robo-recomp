@@ -50,23 +50,25 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
   After the 2026-10-23 2v2 work (branch claude/2v2-perf-2-5cf2f9 @ 40381bd): 2v2 game 36.0 ms (GX thread busy 38.6,
   now longer than the game thread in Citra), battle 14.1, campaign 8.0.
 
-## Where it stands (latest hardware run per scene, 2026-10-26, main@35e6839)
+## Where it stands (latest hardware run per scene, 2026-10-27, branch task/2026-10-27-audio-mix)
 
 | Scene | fps | game speed | game CPU ms | GPU ms | bound by | run |
 |---|---|---|---|---|---|---|
-| Campaign 8.3 | 59.0 | 98% | 6.4 | 2.9 | near 60 (GX thread 15.5) | 41a (2v2 replay route) |
+| Campaign 8.3 | 59.2 | 99% | 6.5 | 2.9 | near 60 (GX thread 15.5) | 43b (2v2 replay route) |
 | Battle 1v1, mono | 57.3 | 95% | 15.1 | 2.2 | near 60 | 28 |
 | Battle 1v1, stereo 3D | 51.4 | 86% | 14.5 | 9.8 | GPU + CPU | 28 |
-| Battle 2v2 | 44.7 | 74% | 19.6 | 2.1 | **game CPU** (GX thread 15.8) | 41a (Citra 2v2 replay) |
+| Battle 2v2 | 46.7 | 78% | 19.9 (+ 0.9 audio mix and sound tick) | 2.3 | **game CPU** (GX thread 16.9, incl. ~0.5 ms of mix worker) | 43b (Citra 2v2 replay) |
 | Title, menus | ~60 | 97-100% | | | | 31 |
 
 Game speed is fps / 60: the game runs one logic step per frame. From the first battle on
-hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (run 28) -> 40.3 fps (run 32a) -> 44.7 fps (run 41a, after the density steps D1-D5).
+hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (run 28) -> 40.3 fps (run 32a) -> 44.7 fps (run 41a, after the density steps D1-D5) -> 46.7 fps (run 43b, audio mixer).
 
 ## Changes that helped (newest first)
 
 | Date | Change | Measured effect | Status | Details (unknowns) |
 |---|---|---|---|---|
+| 10-27 | **AX mix jobs on a worker thread** (runtime/ax.c: the game thread decodes each voice and writes back its PB state, which the sound tick reads; resampling, volumes, sum and ndsp output run as a job on a thread on core 2, priority between the game and GX threads, ring of 16 frames; the movie's AI path still mixes at once; `make AXWORKER=0` = at once) | Citra: boot/battle/campaign/2v2 logs, fb dumps and audio hashes identical to the fast mixer; 2v2 mixer time on the game thread 3.26 -> 1.54 ms. **HW runs 43a -> 43b (2v2 replay): mixer on the game thread 1.06 -> 0.59 ms, frame 21.68 -> 21.42 ms (-0.26, 46.1 -> 46.7 fps), busy cycles -0.12M (fewer in 72 of 73); GX thread busy 16.3 -> 16.9 ms (the worker preempts it on core 2); game ms +0.18 (cycles fewer); campaign 8.3 -0.07 ms frame** | default on | AX mixer |
+| 10-27 | **Fast AX mixer** (runtime/ax.c: a voice's source samples for the frame decoded in one pass with ARAM read directly, then the resampling loop indexes them; constant-volume and silent voices skip the ramps; `make AXFAST=0` = one recomp_aram_read8 call per sample) | Measured first: the 2v2 frame's audio time (1.9 ms on hardware, 6.3 ms in Citra) is ~90% host mixing, the game's sound tick 0.27 ms. Citra: logs, fb dumps and a new output hash in the `# AX: frame` lines identical to AXFAST=0 (2v2, battle, campaign) and SDK logs to main; 2v2 mixer 6.32 -> 3.26 ms. **HW runs 42a -> 42b (2v2 replay): mixer 1.91 -> 1.06 ms per frame, frame 22.35 -> 21.62 ms (-0.73, 44.7 -> 46.3 fps), busy cycles -0.56M (fewer in 73 of 73), game thread unchanged (+0.08); output hash a2d491c6 = Citra in both** | default on | AX mixer |
 | 10-26 | **Float locals for single-precision FPR halves** (D5: the 10-22 branch claude/float-locals-d57296 @3f77d16, cherry-picked onto main: recomp.py fp_single() keeps FPR halves that provably hold a single as float locals; single ops of floats in float) | .text 4.27 -> 4.25 MB; static vcvt f32<->f64 14285 -> 10621 (-26%). Citra game: 2v2 4.2 32.3 -> 32.1 ms, battle 13.1 -> 13.0, campaign 7.6 -> 7.5; boot/battle/campaign/2v2 logs + fb identical to D3. **HW runs 39a -> 39b (2v2 replay through cr_agent): game 19.81 -> 19.68 ms (-0.13, median -0.20, sd 0.40, faster in 61 of 73), busy cycles -0.20M (-1.2%, 73 of 73); campaign 8.3 -0.11 ms (cycles fewer in 37 of 37). Stall-data share unchanged (26.0 -> 25.9%): the gain is fewer instructions** | default on | Single-precision FPR halves |
 | 10-26 | **Stores without the hardware check** (D3: stores write RAM untested outside the 33 functions that set a hardware address, gen/recomp_hw_*.c; an address GCC knows is the GX pipe still goes to the FIFO; `make STORECHECK=1` = all checked; HWCHECK=verify counts stores reaching hw_write) | .text 5.12 -> 4.27 MB (-16.6%); 2v2 hot set 89.3k -> 76.3k ARM instructions (-14.5%). Verify replays: 0 stores reached hw_write. **HW runs 37a -> 37b (2v2 replay, two builds back to back, run by tools/hw_loop.py): 2v2 game 20.26 -> 19.80 ms (-0.46, median -0.50, sd 0.13, faster in 72 of 73), 43.5 -> 44.4 fps; busy cycles -0.39M (-2.2%, 73 of 73), I-cache misses 35.2 -> 33.6 per 1000 instructions; campaign 8.3 game -0.13 ms.** Citra game: 2v2 4.2 32.6 -> 32.3 ms, battle 13.1 -> 13.1, campaign 7.6 -> 7.6; boot/battle/campaign/2v2 logs + fb dumps identical to D2 | default on | Stores without the hardware check |
 | 10-26 | **Write tracking through a byte map** (D2: guest stores mark their 1 KB page with a constant byte instead of writing the epoch; sdk_GXCopyDisp sweeps the marks into `ram_wr[]` epochs; `make WRMAP=0` = old) | .text 5.31 -> 5.14 MB (-3.1%); 2v2 hot set 91.6k -> 89.3k ARM instructions (-2.5%). **HW runs 36a -> 36b (2v2 replay, two builds back to back): 2v2 game -0.18 ms vs the clean run 35b (20.25 -> 20.07, -0.9%; sd 0.11, faster in 65 of 73), busy cycles 17.79 -> 17.62M (-1.0%, fewer in 73 of 73), instructions 6.07 -> 6.03M; the sweep itself is ~0.12 ms of it; campaign unchanged.** Citra game (sweep included, 0.21 ms in the 2v2): 2v2 4.2 32.9 -> 32.6 ms, battle 13.1 -> 13.1, campaign 7.6 -> 7.6; boot/battle/campaign/2v2 logs + fb dumps identical to D1 | default on | Write tracking through a byte map |
@@ -129,6 +131,11 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 
 ## Open (next)
 
+- **Core 0 per 2v2 frame after the audio work (run 43b, 21.4 ms):** game thread 19.9 ms, audio 0.9 (decode 0.6 +
+  sound tick 0.3), GX wait 0.6. 60 fps needs ~4.7 ms less. Core 2 is now nearly full too: GX thread busy 16.9 ms
+  includes the ~0.5 ms mix worker that preempts it; at 60 fps it has ~16.7 ms. If the GX thread becomes the limit,
+  the worker can go to core 1 or back to the game thread (`make AXWORKER=0`). The decode (~0.5 ms, ADPCM ~25 ARM
+  instructions per sample) is the audio work left on core 0.
 - **2v2 battle is game-CPU bound** (game 22.2 ms of a 24.8 ms frame, GX thread 15.6 ms, run 32a). Path so far:
   run 28 29.8 ms (30.5 fps) -> run 29 22.2 ms (39.6 fps; unknowns "2v2 game CPU", "2v2 game CPU 2") -> run 32a
   22.2 ms (40.3 fps; 2v2-perf-3, -1.5% vs its toggles off in run 32b). The particle system is 7.0 ms of the
@@ -174,6 +181,10 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 
 | Run | Date | Build | Log (`logs/`) | Tested |
 |---|---|---|---|---|
+| 42a | 10-27 | branch audio-mix @b720da0 AXFAST=0 (old mixer + mix/callback split + output hash) | cr_autotest_2026-10-27_hw-run42a-replay-2v2-axref.log | A of the fast-mixer A/B (cr_agent). 2v2 4.2: 44.6 fps, frame 22.4, game 19.7, audio 2.2 ms = mix 1.91 + sound tick 0.27; hash a2d491c6 (= Citra). The first attempt (01:57) never started: the 3DS's battery ran out during the save check; a second attempt's 4.5 MB build upload timed out once (agent alive, retried) |
+| 42b | 10-27 | branch audio-mix @b720da0 (fast mixer) | cr_autotest_2026-10-27_hw-run42b-replay-2v2-axfast.log | B: route identical; mix 1.06 ms, frame 21.62 (46.3 fps), cycles -0.56M (73 of 73), game +0.08; same output hash |
+| 43a | 10-27 | branch audio-mix @b720da0 (fast mixer, = 42b) | cr_autotest_2026-10-27_hw-run43a-replay-2v2-axfast.log | A of the mix-worker A/B, first run with cr_agent 2 (battery fields; console at 3-4 % on the charger). Frame 21.68 (42b: 21.62) |
+| 43b | 10-27 | branch audio-mix @4d76231 (fast mixer + mix worker) | cr_autotest_2026-10-27_hw-run43b-replay-2v2-axworker.log | B: route identical; 2v2 4.2: 46.7 fps (78%), frame 21.42, game 19.9, audio 0.87 (mix 0.59 + tick 0.28), GX thread busy 16.9, GPU 2.3; campaign 8.3 59.2 fps. The "Where it stands" numbers |
 | 35b | 10-26 | branch load-hwcheck @1059b28 (default: loads unchecked) | cr_autotest_2026-10-26_hw-run35b-replay-2v2-unchecked.log | B of the D1 A/B, run right after 35a with the same save and replay: route identical. 2v2 4.2: 43.4 fps (72%), game 20.25 ms, frame 23.0, worst 50.6; per frame 17.79M busy cycles, 6.07M instructions (IPC 0.34), I-miss 35.4/k (215k), stall inst 26.5%, stall data 26.5%. Paired with 35a: -1.99 ms per window, faster in 74 of 74. Campaign 8.3 game 6.6 ms, 59.4 fps |
 | 36a | 10-26 | branch wr-tracking @3792cb4 WRMAP=0 (old per-store epoch; code = run 35b) | cr_autotest_2026-10-26_hw-run36a-replay-2v2-wrepoch.log | A of the D2 A/B (2v2 replay, cr_perfctr): route identical to 35b. 2v2 4.2: 42.1 fps, game 20.94 ms (median window as 35b), 17.79M busy cycles and 6.07M instructions (= 35b). Three windows had 626-813 ms frames: SD reads of sound/v_cubog09.hps at 130-270 ms per 16 KB while the log writer was busy (cr_dvdasync_off = synchronous DVD), so its mean game ms is +0.70 over 35b with the same cycles. Campaign 8.3 game 6.6 ms |
 | 36b | 10-26 | branch wr-tracking @3792cb4 (default: byte map + sweep) | cr_autotest_2026-10-26_hw-run36b-replay-2v2-wrmap.log | B of the D2 A/B, right after 36a, same save and replay: route identical. 2v2 4.2: 43.8 fps (73%), game 20.07 ms, frame 22.8; 17.62M busy cycles, 6.03M instructions. Paired with 35b (clean baseline): game -0.18 ms (sd 0.11, faster in 65 of 73), cycles -0.17M (fewer in 73 of 73); with 36a: median -0.20 ms, cycles -0.16M (73 of 73). Sweep 117-121 us per 2v2 frame (~700-780 pages), 73-99 us elsewhere. Campaign 8.3 game 6.7 ms (+0.1, cycles -0.02M) |
