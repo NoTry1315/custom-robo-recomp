@@ -275,6 +275,9 @@ A whole A/B on the 2v2 replay: `sh tools/hw_ab.sh <run N> <A.3dsx> <B.3dsx> <A t
 custom-robo-recomp.3dsx in two folders; the 2v2 save and the replay flags must already be on the SD): checks the
 save, runs A then B, and prints `tools/hw_pair.py`'s per-window comparison (B - A game ms and busy cycles), route
 identity and the perf counters. Two runs of the same build differ by sd ~0.13 ms per window (runs 37b, 39a).
+Several sessions can share the 3DS: every `hw_loop.py` command takes an exclusive lock on `~/.custom-robo-hw.lock`
+and waits while another session holds it ("waiting for the 3DS"); `hw_ab.sh` holds it for the whole A/B, so another
+session's run never lands between A and B (Citra has the same in `tools/citra/replay.ps1`).
 Keep Rosalina's InputRedirection and debugger **off**: with both on, the 3DS lost Wi-Fi and froze 4 times in an
 hour on 2026-10-26 (three of them during the old ftpd/netloader/InputRedirection loop, one with only ftpd idle),
 and file reads and GPU work stalled together for 5-6 s at a time before one of them; 8 hours of hardware runs

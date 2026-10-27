@@ -14,6 +14,8 @@ N=$1; A=$2; B=$3; TA=$4; TB=$5
 [ -n "$TB" ] || { sed -n '2,9p' "$0"; exit 2; }
 cd "$(dirname "$0")/.."
 export MSYS_NO_PATHCONV=1 PYTHONUTF8=1
+# one lock on the 3DS for the whole A/B (tools/hw_loop.py hw_lock), so another session's run cannot land between A and B
+[ "$CR_HW_LOCKED" = 1 ] || exec python tools/hw_loop.py locked sh tools/hw_ab.sh "$@"
 D=$(date +%Y-%m-%d)
 SAVE_MD5=$(md5sum < data/saves/2026-10-22_pre-2v2/CustomRobo-BattleRevolution.bin | cut -c1-32)
 TMP=$(mktemp -d)
