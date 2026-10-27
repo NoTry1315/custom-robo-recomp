@@ -7,7 +7,8 @@
  *   rows 1-2   flags: <sdmc flag files present at boot, cr_ prefix dropped>
  *   rows 4-12  stats, one metric per row (STAT_ROWS)
  *   rows 14-16 messages (printf scrolls here)
- *   rows 18-29 buttons: 2 columns x 4 rows, each 19x2 cells + 1 gap
+ *   rows 18-29 buttons: 2 columns x 4 rows, each 19x2 cells + 1 gap row (more than 8 buttons:
+ *              up to 6 rows without the gap row, BTN_PITCH)
  *
  * Adding a button: one line in btn[] below. Either get/toggle functions (the toggle is a
  * request the owner applies at a safe point, as gx.c and ax.c do), or a flag variable bound at
@@ -47,8 +48,10 @@ static struct btn {
     { "Inline sites",  "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_inline_sites, cr_inline_off (main.c binds it) */
     { "Dump RAM",      "",   0,  recomp_memdump_request, 0, 0, 0, 0, -2, &recomp_memdump_n },   /* memdump.c: guest RAM + ARAM to SD */
     { "Perf counters", "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_perfctr_on, cr_perfctr (perfctr.c binds it) */
+    { "Widescreen",    "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_widescreen, cr_widescreen (gx.c binds it) */
 };
 #define NBTN (int)(sizeof btn / sizeof btn[0])
+#define BTN_PITCH (NBTN <= 8 ? 3 : 2)   /* rows per button row: 12 rows (18-29) hold 4 with gaps, 6 without */
 
 static int btn_state(const struct btn *b) {
     if (b->count) return (int)*b->count;
@@ -73,7 +76,7 @@ static void btn_draw(int i) {
     recomp_card_button(i, NBTN, b->name, s, b->count != 0, b->count ? s : 0);
     return;
 #endif
-    int row = BTN_ROW0 + (i / 2) * 3, col = (i % 2) * 20;
+    int row = BTN_ROW0 + (i / 2) * BTN_PITCH, col = (i % 2) * 20;
     /* ON: black on green; OFF: white on red; unavailable: plain, "--"; action: black on white, TAP */
     const char *c = b->count ? "\x1b[30;47m" : s > 0 ? "\x1b[30;42m" : s == 0 ? "\x1b[37;41m" : "\x1b[0m";
     char l1[BTN_W + 1], l2[BTN_W + 1], st[8], hint[BTN_W];
@@ -97,8 +100,8 @@ void recomp_menu_touch(int px, int py) {
     int col = px / 8, row = py / 8;
     if (row < BTN_ROW0) return;
     int r = row - BTN_ROW0, c = col / 20;
-    if (r % 3 == 2 || col % 20 >= BTN_W) return;   /* gaps */
-    int i = r / 3 * 2 + c;
+    if (r % BTN_PITCH == 2 || col % 20 >= BTN_W) return;   /* gaps */
+    int i = r / BTN_PITCH * 2 + c;
     if (i >= NBTN) return;
 #endif
     struct btn *b = &btn[i];
