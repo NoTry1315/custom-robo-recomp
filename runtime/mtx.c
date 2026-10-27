@@ -83,11 +83,95 @@ static inline MT LF_FLAT(u32 x) { u32 v; memcpy(&v, ram + x, 4); return u2f(__bu
 /* guest range [a, a+n) as one block of ram[] (no wrap at the end of the mirror) */
 static inline int flat(u32 a, u32 n) { return (a & RAM_MASK) <= RAM_MASK + 1 - n; }
 #define FL(a) ((a) & RAM_MASK)
+#ifdef RECOMP_FLOATOPS
+/* word-aligned flat variants wp_: hand-scheduled ARM (fp_ is ~186 instructions for a concat: one
+ * ldr -> rev -> vmov chain per word, and copies for the destructive vmla). Here ldm / stm move 8 words
+ * at a time, vmov moves two floats at a time, and the rows' independent chains are interleaved. The same
+ * float operations as mtx_impl.h / fp_ (vmul, then vmla per MADD, vadd per ADD, operands only swapped
+ * where the operation is commutative: FPSCR has default NaN on, so the bits are the same), so the same
+ * results. All loads happen before the first store (ab may be a or b); multvec writes dst[0] before it
+ * reads row 2, as the guest code does. Needs 4-byte aligned matrices (ldm/stm), else the fp_ body. */
+void wa_concat(const u32 *a, const u32 *b, u32 *ab, const u32 *k);
+void wa_multvec(const u32 *m, const u32 *s, u32 *d);
+__asm__(
+    ".text\n.arm\n.align 2\n.type wa_concat, %function\nwa_concat:\n"
+    "push {r4-r11}\n"
+    "vpush {d8-d15}\n"
+    "ldm r1, {r4-r11}\n"                                   /* B row 0, 1 */
+    "rev r4, r4\nrev r5, r5\nrev r6, r6\nrev r7, r7\nrev r8, r8\nrev r9, r9\nrev r10, r10\nrev r11, r11\n"
+    "vmov s0, s1, r4, r5\nvmov s2, s3, r6, r7\nvmov s4, s5, r8, r9\nvmov s6, s7, r10, r11\n"
+    "add ip, r1, #32\nldm ip, {r4-r7}\nldm r3, {r8, r9}\n"  /* B row 2, k0 k1 */
+    "rev r4, r4\nrev r5, r5\nrev r6, r6\nrev r7, r7\nrev r8, r8\nrev r9, r9\n"
+    "vmov s8, s9, r4, r5\nvmov s10, s11, r6, r7\nvmov s12, s13, r8, r9\n"
+    "ldm r0, {r4-r11}\n"                                   /* A row 0 -> s14-s17, row 1 -> s22-s25 */
+    "rev r4, r4\nrev r5, r5\nrev r6, r6\nrev r7, r7\nrev r8, r8\nrev r9, r9\nrev r10, r10\nrev r11, r11\n"
+    "vmov s14, s15, r4, r5\nvmov s16, s17, r6, r7\nvmov s22, s23, r8, r9\nvmov s24, s25, r10, r11\n"
+    "add ip, r0, #32\nldm ip, {r4-r7}\n"                   /* A row 2 (before any store) */
+    /* rows 0 (s18-s21) and 1 (s26-s29): B[j]*r0, + B[4+j]*r1, + B[8+j]*r2, (+ k*r3 for j = 2, 3) */
+    "vmul.f32 s18, s0, s14\nvmul.f32 s19, s1, s14\nvmul.f32 s20, s2, s14\nvmul.f32 s21, s3, s14\n"
+    "vmul.f32 s26, s0, s22\nvmul.f32 s27, s1, s22\nvmul.f32 s28, s2, s22\nvmul.f32 s29, s3, s22\n"
+    "vmla.f32 s18, s4, s15\nvmla.f32 s19, s5, s15\nvmla.f32 s20, s6, s15\nvmla.f32 s21, s7, s15\n"
+    "vmla.f32 s26, s4, s23\nvmla.f32 s27, s5, s23\nvmla.f32 s28, s6, s23\nvmla.f32 s29, s7, s23\n"
+    "rev r4, r4\nrev r5, r5\nrev r6, r6\nrev r7, r7\n"
+    "vmla.f32 s18, s8, s16\nvmla.f32 s19, s9, s16\nvmla.f32 s20, s10, s16\nvmla.f32 s21, s11, s16\n"
+    "vmla.f32 s26, s8, s24\nvmla.f32 s27, s9, s24\nvmla.f32 s28, s10, s24\nvmla.f32 s29, s11, s24\n"
+    "vmla.f32 s20, s12, s17\nvmla.f32 s21, s13, s17\nvmla.f32 s28, s12, s25\nvmla.f32 s29, s13, s25\n"
+    /* row 2: A in s14-s17, outputs s30 s31 s22 s23 */
+    "vmov s14, s15, r4, r5\nvmov s16, s17, r6, r7\n"
+    "vmul.f32 s30, s0, s14\nvmul.f32 s31, s1, s14\nvmul.f32 s22, s2, s14\nvmul.f32 s23, s3, s14\n"
+    "vmla.f32 s30, s4, s15\nvmla.f32 s31, s5, s15\nvmla.f32 s22, s6, s15\nvmla.f32 s23, s7, s15\n"
+    "vmov r4, r5, s18, s19\nvmov r6, r7, s20, s21\n"
+    "vmla.f32 s30, s8, s16\nvmla.f32 s31, s9, s16\nvmla.f32 s22, s10, s16\nvmla.f32 s23, s11, s16\n"
+    "vmov r8, r9, s26, s27\nvmov r10, r11, s28, s29\n"
+    "vmla.f32 s22, s12, s17\nvmla.f32 s23, s13, s17\n"
+    "rev r4, r4\nrev r5, r5\nrev r6, r6\nrev r7, r7\nrev r8, r8\nrev r9, r9\nrev r10, r10\nrev r11, r11\n"
+    "stm r2, {r4-r11}\n"
+    "vmov r4, r5, s30, s31\nvmov r6, r7, s22, s23\n"
+    "rev r4, r4\nrev r5, r5\nrev r6, r6\nrev r7, r7\n"
+    "add ip, r2, #32\nstm ip, {r4-r7}\n"
+    "vpop {d8-d15}\n"
+    "pop {r4-r11}\n"
+    "bx lr\n"
+    ".size wa_concat, .-wa_concat\n"
+    /* multvec: s = (r0*v0 + r2*v2) + (r3 + r1*v1) per row (mtx_impl.h; GCC folds r3 * 1.0f to r3) */
+    ".align 2\n.type wa_multvec, %function\nwa_multvec:\n"
+    "push {r4-r11, lr}\n"
+    "ldm r1, {r4-r6}\n"
+    "ldm r0, {r3, r7-r11, ip, lr}\n"                       /* m0..m7 */
+    "rev r4, r4\nrev r5, r5\nrev r6, r6\n"
+    "rev r3, r3\nrev r7, r7\nrev r8, r8\nrev r9, r9\nrev r10, r10\nrev r11, r11\nrev ip, ip\nrev lr, lr\n"
+    "vmov s0, s1, r4, r5\nvmov s2, r6\n"                    /* v0 v1 v2 */
+    "vmov s4, s5, r3, r7\nvmov s6, s7, r8, r9\nvmov s8, s9, r10, r11\nvmov s10, s11, ip, lr\n"
+    "vmul.f32 s12, s4, s0\nvmul.f32 s13, s8, s0\n"
+    "vmla.f32 s7, s5, s1\nvmla.f32 s11, s9, s1\n"
+    "vmla.f32 s12, s6, s2\nvmla.f32 s13, s10, s2\n"
+    "vadd.f32 s12, s12, s7\nvadd.f32 s13, s13, s11\n"
+    "vmov r3, s12\nrev r3, r3\nstr r3, [r2]\n"              /* dst[0] before row 2 */
+    "add ip, r0, #32\nldm ip, {r4-r7}\n"
+    "rev r4, r4\nrev r5, r5\nrev r6, r6\nrev r7, r7\n"
+    "vmov s4, s5, r4, r5\nvmov s6, s7, r6, r7\n"
+    "vmul.f32 s14, s4, s0\nvmla.f32 s7, s5, s1\nvmla.f32 s14, s6, s2\nvadd.f32 s14, s14, s7\n"
+    "vmov r4, r5, s13, s14\nrev r4, r4\nrev r5, r5\nstr r4, [r2, #4]\nstr r5, [r2, #8]\n"
+    "pop {r4-r11, pc}\n"
+    ".size wa_multvec, .-wa_multvec\n");
+#define WP(x) ((u32 *)(ram + (x)))
+static void wp_concat(u32 a, u32 b, u32 ab) { wa_concat(WP(a), WP(b), WP(ab), WP(MTX_K01 & RAM_MASK)); MARK(ab, 48); }
+static void wp_multvec(u32 m, u32 s, u32 d) { wa_multvec(WP(m), WP(s), WP(d)); MARK(d, 12); }
+#define WPOK(x) (!((x) & 3))   /* else the fp_ body */
+#else
+#define WPOK(x) 0
+#define wp_concat fp_concat
+#define wp_multvec fp_multvec
+#endif
 static void d_concat(u32 a, u32 b, u32 ab) {
-    if (flat(a, 48) && flat(b, 48) && flat(ab, 48)) fp_concat(FL(a), FL(b), FL(ab)); else nat_concat(a, b, ab);
+    if (flat(a, 48) && flat(b, 48) && flat(ab, 48)) {
+        if (WPOK(a | b | ab)) wp_concat(FL(a), FL(b), FL(ab)); else fp_concat(FL(a), FL(b), FL(ab));
+    } else nat_concat(a, b, ab);
 }
 static void d_multvec(u32 m, u32 s, u32 d) {
-    if (flat(m, 48) && flat(s, 12) && flat(d, 12)) fp_multvec(FL(m), FL(s), FL(d)); else nat_multvec(m, s, d);
+    if (flat(m, 48) && flat(s, 12) && flat(d, 12)) {
+        if (WPOK(m | s | d)) wp_multvec(FL(m), FL(s), FL(d)); else fp_multvec(FL(m), FL(s), FL(d));
+    } else nat_multvec(m, s, d);
 }
 static void d_multvecsr(u32 m, u32 s, u32 d) {
     if (flat(m, 48) && flat(s, 12) && flat(d, 12)) fp_multvecsr(FL(m), FL(s), FL(d)); else nat_multvecsr(m, s, d);
