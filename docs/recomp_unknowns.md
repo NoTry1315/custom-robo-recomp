@@ -2674,6 +2674,54 @@ Agent 2 reports the battery in PING and `hw_loop.py run` stops on a low battery 
 run 39a's first log GET (4 s after the agent restarted) stalled for 60 s and worked a minute later (hw_loop now
 waits 10 s and retries once).
 
+## AX mixer (2026-10-27, branch task/2026-10-27-audio-mix)
+
+Task: the 2v2 frame on core 0 is game thread + audio + GX wait (`# time` "audio" is outside "game"); run 41a had
+audio at 2.1-2.5 ms per frame. Measured first: `# time .. split` now ends the audio field with "mix <ms>, callback
+<ms>" (PROF_AUDIO_CB = the guest AX/AI callbacks, the sound driver's tick). Citra 2v2 (r4500+): mix 6.32 ms,
+callback 0.23 ms; hardware run 42a: mix 1.91, callback 0.27. So ~90% was the host mixer in runtime/ax.c: up to 35
+voices x 160 samples x 3.3 AX frames per retrace, each source sample fetched through an out-of-line
+`recomp_aram_read8` call per byte, with the end/loop and stop checks of `fetch()` per call.
+
+Output check: the `# AX: frame` line (every 1000 AX frames) now has "hash %08lx", a running hash of every output
+sample pair (L, R as clamped s16) since boot. It is not a compare_logs.py key line; compare it with grep. The line
+reports the window before the frame it is printed at (as it always did).
+
+**Fast mixer** (`mix_voice_fast` at first, now `voice_frame` + `decode`): per voice and frame, the number of source
+samples is `(frac + ratio * 160) >> 16`; `decode()` produces exactly those samples into a buffer after the 4 SRC
+history samples (same arithmetic, end/loop/stop handling and vlog as `fetch()`, state in locals, ARAM through
+`recomp_aram()` with the same 24-bit mask), then the resampling loop indexes the buffer (`k += f >> 16; f &= 0xffff`
+equals the `while (frac >= 0x10000)` loop). Constant volumes (ve/vl/vr deltas 0) skip the clamps, and a voice whose
+constant volume makes every product 0 is not summed at all. Voices that would need more than the buffer (ratio >
+12.8) and builds with `make AXFAST=0` (RECOMP_AX_REF) use the old `mix_voice`. Citra replays: SDK logs and fb dumps
+identical to main, `# AX: frame` hashes identical to AXFAST=0 (2v2 28 lines, battle 12, campaign 8); 2v2 mix 6.32
+-> 3.26 ms. Hardware A/B runs 42a (AXFAST=0) / 42b: mix 1.91 -> 1.06 ms per 2v2 frame, frame 22.35 -> 21.62 ms,
+busy cycles -0.56M (fewer in 73 of 73 windows), game thread +0.08 ms (noise); hash a2d491c6 in both, = Citra.
+ADPCM decode is ~25 ARM instructions per source sample, the constant-volume resampling loop ~23 per output sample.
+
+**Mix jobs on a worker** (`FJob`, `job_mix`, `job_out`, `job_worker_fn`): what the sound tick (the guest callback
+right after each AX frame) can read back is the PB state the mixer writes: state (voice ended), current address,
+ADPCM predictor/history, SRC fraction and history, volumes. All of it comes from the decode plus arithmetic: the
+fraction and history from the sample count, and the volumes after 160 clamped steps of a constant delta are one
+clamp of the sum (the sequence is monotone and starts in 0..0xffff, so it stays at a bound once it reaches one).
+So the game thread (`ax_frame`) consumes the sync flags, decodes each playing voice into the frame's job, writes
+the final PB state and runs the tick; the job (decoded samples, start fraction, ratio, volumes and deltas, plus
+any slow-path voices already summed into fbL/fbR) is mixed and output by `job_worker_fn` on core 2 (priority
+game + 1, ahead of the GX thread at game + 2: a full ring would stop the game thread). Ring of 16 jobs; the game
+thread waits only when it is full. The 1000-frame line carries the game thread's counters in the job and is
+printed by the worker before that frame's output. While the game's own AI callback is installed (THP movie,
+`ai_frame` reads the mix through __AXOutAiCallback), the frame is drained and mixed at once. `ndsp_lead` counts
+queued jobs as lead (real-time pacing). Without core 2 or with `make AXWORKER=0` (RECOMP_AX_NO_WORKER) the jobs
+run at once on the game thread; boot line `# AX: mix jobs ...`. Citra replays (boot, battle, campaign, 2v2): SDK
+logs, fb dumps and AX hashes identical to the fast mixer; 2v2 mix on the game thread 3.26 -> 1.54 ms. A first
+version printed the line after the frame's output (hash windows shifted by one frame, so every hash differed) and
+ran the worker below the GX thread (Citra: the ring filled and the game thread waited, mix 15.7 ms). Hardware
+A/B runs 43a (fast mixer) / 43b: mix on the game thread 1.06 -> 0.59 ms, frame 21.68 -> 21.42 ms (46.1 -> 46.7
+fps), busy cycles -0.12M (fewer in 72 of 73); the GX thread's busy time rose 16.3 -> 16.9 ms because the worker
+preempts it on core 2 (its own work is unchanged), and the game thread's ms rose 0.18 with fewer cycles (not
+explained; the frame is what counts). Assumption (new): the game reads nothing the jobs write (mixL/mixR are read
+only through __AXOutAiCallback in the movie path, which mixes at once).
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
