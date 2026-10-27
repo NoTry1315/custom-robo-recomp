@@ -313,3 +313,84 @@ when the battery is at level 2 of 5 or less without the charger.
 - `docs/sdk_functions.md`: the SDK functions in `main.dol` (address, name,
   module) and which ones are hand-written.
 - `CLAUDE.md`: project rules and the development status log.
+
+## Credits
+
+This project builds on other people's work: emulators, documentation, research, other
+ports and a lot of tools. Everything it borrows, as a technique, a format description, a
+behaviour it matches or a program it is built and tested with, is listed here. Add to this
+list in the same change whenever something new is borrowed.
+
+### The game
+
+- *Custom Robo* (GameCube, 2004) by Noise, published by Nintendo. Its code and data come
+  only from your own disc and are never part of this repository. This project is not
+  affiliated with or endorsed by Nintendo, Noise or HAL Laboratory; all trademarks belong
+  to their owners.
+- The libraries linked into `main.dol` that the runtime replaces or translates: Nintendo's
+  GameCube (Dolphin) SDK, Metrowerks CodeWarrior's MSL C library and MetroTRK, and HAL
+  Laboratory's sysdolphin (HSD) library.
+
+### Reference behaviour and documentation
+
+- [Dolphin](https://dolphin-emu.org/), the GameCube/Wii emulator, is the oracle: the
+  runtime is correct when it matches Dolphin on the same disc, and Dolphin's framebuffer
+  and audio dumps are what the 3DS output is compared with. Much of the runtime follows
+  Dolphin's behaviour: the PowerPC interpreter's integer and floating-point rules
+  (single rounding, the 25-bit multiply operand, `fctiw` and divide results) in
+  `runtime/ppc.h` and `tools/recomp/recomp.py`; the HLE AX mixer's parameter-block
+  layout and output order (`runtime/ax.c`); HLE BS2 boot info (`runtime/dol.c`); default
+  SRAM (`runtime/os.c`); the vertex loader, colour bit replication and mip-level rules
+  (`runtime/gx.c`); and the texture decoder (`tools/gxtex.py`).
+- YAGCD (Yet Another GameCube Documentation): GX texture formats and tile layouts
+  (`tools/gxtex.py`).
+- The Super Smash Bros. Melee decompilation
+  ([doldecomp/melee](https://github.com/doldecomp/melee), `src/sysdolphin/baselib`) and
+  HSDLib: the sysdolphin object layouts read by `tools/hsd.py`, `HSD_JObjSetupMatrixSub`'s
+  effector case, and the particle system's function names in `tools/decomp_names.tsv`.
+- fdlibm (Sun Microsystems), the code behind MSL's `sin`/`cos`: `runtime/libm.c` reproduces
+  the game's copy of it operation for operation.
+- [3dbrew](https://3dbrew.org/): New 3DS hardware (cores, clock, L2 cache).
+- FFmpeg's ARM VFP code and Siarhei Siamashka's ffmpeg-devel notes on VFP11 timings, used for
+  the ARM11 FPU latencies behind the float and matrix work.
+- The [Luma3DS](https://github.com/LumaTeam/Luma3DS) issue tracker (issues #2248, #2250,
+  #2071), which explained the Wi-Fi freezes with Rosalina's InputRedirection and debugger.
+
+### Ideas from other projects
+
+- mw3ds: stereo 3D by replaying the left eye's GPU command words for the right eye
+  (`runtime/gx.c`, "Stereo 3D"), and small integer vertex formats (vertex packing).
+- The Simpsons: Hit & Run Old 3DS port and REGTA: dropping and packing normals (vertex
+  packing); the Simpsons port and MKW-3DS: cached textures in VRAM.
+- [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) (hedge-dev),
+  [ReXGlue](https://mintlify.wiki/rexglue/rexglue-sdk/concepts/recompilation) and
+  [N64Recomp](https://github.com/N64Recomp/N64Recomp): how other static recompilers hold
+  guest registers and handle calls, compared against when tuning `tools/recomp/recomp.py`.
+- `custom-robo-3ds`, the author's earlier hand-written reimplementation of the game: the
+  format notes and the asset tools carried over into `tools/` (`dol.py`, `sound.py`,
+  `tpl.py`, `font.py`, `bmg.py`, `gxtex.py`) come from it; no game logic does.
+
+### Tools used to build, test and run it
+
+- [devkitPro](https://devkitpro.org/): devkitARM (GCC, binutils, GDB, newlib), libctru,
+  citro3d, picasso (the PICA200 shader assembler), the 3dsx/SMDH tools and the 3DS
+  Makefile rules, 3dslink, and the `devkitpro/devkitarm` Docker image the build image
+  is based on.
+- [Docker](https://www.docker.com/): the build runs in a devkitARM container.
+- [Citra](https://github.com/citra-emu/citra), the 3DS emulator (installed through
+  [EmuDeck](https://www.emudeck.com/)): every change is tested in Citra first
+  (`tools/citra/`), with recorded pad input replayed.
+- [Dolphin](https://dolphin-emu.org/): the reference runs, logs and dumps (see above).
+- [Luma3DS](https://github.com/LumaTeam/Luma3DS) and Rosalina (the 3dsx loader the
+  unattended runs start builds through, and the GDB stub used by `tools/hw_dump.sh`), the
+  Homebrew Launcher, [ftpd](https://github.com/mtheall/ftpd) for SD card transfers, and
+  [DSP1](https://github.com/zoogie/DSP1) to dump the DSP firmware the sound needs.
+- [Ghidra](https://ghidra-sre.org/) (NSA): headless decompiles of `main.dol` functions
+  (`tools/ghidra/`).
+- [Python](https://www.python.org/) with [Capstone](https://www.capstone-engine.org/)
+  (PowerPC disassembly in `tools/dol.py`), [NumPy](https://numpy.org/) and
+  [Pillow](https://python-pillow.org/) (asset decoders and contact sheets).
+- [Git](https://git-scm.com/) and Git for Windows (Git Bash), and Windows PowerShell for
+  the Citra scripts.
+- [Claude Code](https://claude.com/claude-code) (Anthropic): most of the translator,
+  runtime, tools and docs were written with it.
