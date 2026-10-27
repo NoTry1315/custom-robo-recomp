@@ -246,7 +246,7 @@ for the agent after `--first` s (default 120), then every ~20 s until `--timeout
 that hangs never comes back: the script stops and says so. Once per boot, by hand: open the Homebrew Launcher
 and start cr_agent (first install: press Y and `3dslink tools/hw/agent/cr_agent.3dsx`; later updates:
 `agent-install`). Build the agent with `docker run --rm -v "<repo>:/proj" -w /proj/tools/hw/agent
-mkw3ds-build:2026-10-09 make`. Also `ping` (uptime, Wi-Fi strength, SD free; logged to
+mkw3ds-build:2026-10-09 make`. Also `ping` (uptime, Wi-Fi strength, SD free, battery and charger; logged to
 `logs/hw_loop_agent.log`), `ls`, `get`, `put`, `mv` (no delete; `/custom-robo/save` is refused).
 A whole A/B on the 2v2 replay: `sh tools/hw_ab.sh <run N> <A.3dsx> <B.3dsx> <A tag> <B tag>` (both builds named
 custom-robo-recomp.3dsx in two folders; the 2v2 save and the replay flags must already be on the SD): checks the
@@ -260,8 +260,10 @@ was on then is not recorded). Both Rosalina features poll the network from the s
 core every 10-50 ms (Luma3DS issues #2248, #2250, #2071 report InputRedirection freezes and lost IPs). The agent
 loop needs neither: 4 full cycles back to back on 2026-10-26 (20:34-20:55, ~5.3 min each: 4.5 MB build put, 2v2 replay, return,
 log fetched; logs `cr_autotest_2026-10-26_hwagent-soak-01..04.log`) had no stall over 0.6 s and no network
-trouble, and gave the same 2v2 game ms as run 37b (19.6-19.7). Stopped after 4 (user's call); longer sequences
-are the next A/Bs.
+trouble, and gave the same 2v2 game ms as run 37b (19.6-19.7); runs 39a-41b followed through it the same evening.
+On 2026-10-27 01:57 the 3DS powered off mid-transfer because its battery ran out (it was not on the charger):
+keep it charging. Agent 2's `ping` reports battery level, percent and the charger, and `run` stops before starting
+when the battery is at level 2 of 5 or less without the charger.
 
 ## How it works
 
