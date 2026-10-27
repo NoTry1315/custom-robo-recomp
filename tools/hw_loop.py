@@ -1,74 +1,174 @@
-"""Drive the 3DS for hardware runs without anyone at the console: ftpd -> Homebrew Launcher -> game -> ftpd.
-Inputs go through Rosalina's InputRedirection (UDP 4950), apps are started with the Homebrew Launcher's
-netloader (3dslink, TCP 17491). The only state read is whether ftpd answers on TCP 5000.
-Once per boot, by hand: Rosalina menu (L+Down+Select) -> Miscellaneous options -> Start InputRedirection;
-start the Homebrew Launcher (or ftpd.3dsx from it). Keep the console plugged in with the lid open (sleep drops
-Wi-Fi). Leave the Rosalina debugger off: twice the 3DS lost its network while this script polled the debugger's
-process list (qXfer:osdata on TCP 4000, 2026-10-26).
-Nothing may connect to TCP 17491 except 3dslink: the netloader takes any connection as an upload and shows an
-error screen (B closes it). Its UDP ping answer does not reach this PC (firewall), so it is not used either.
-No 3dslink within SETTLE (30) s of ftpd exiting: two runs back to back (3dslink ~6 s after START in ftpd) gave
-"Failed sending", then the 3DS lost Wi-Fi and the Homebrew Launcher froze (2026-10-26 19:45); with ~1 min between
-runs it worked. The time of the last START is kept in a temp file, so this holds across invocations. A failed
-3dslink gets one retry after 30 s, then the script stops: ask the user to look at the console.
+"""Hardware runs without anyone at the console, through cr_agent (tools/hw/agent) on the 3DS.
+The agent is a small homebrew app with one TCP port (5001): it puts/gets/renames SD files and starts a .3dsx
+through Luma3DS's 3dsx loader (hb:ldr, as the Homebrew Launcher does). A game build started with
+"--return /3ds/cr_agent.3dsx" points the loader back at the agent when its run length ends (runtime/main.c
+hw_return), so a run is: put the build and flag files, RUN, wait for the agent to answer again, get the log.
+No button presses, no netloader, no ftpd, and nothing from Rosalina's network features.
 
-    PYTHONUTF8=1 python tools/hw_loop.py state
-    PYTHONUTF8=1 python tools/hw_loop.py press START [--hold 150]     (A B X Y L R ZL ZR START SELECT UP DOWN
-                                                                       LEFT RIGHT HOME POWER; several = chord)
-    PYTHONUTF8=1 python tools/hw_loop.py touch 160 120                (bottom screen, 320x240)
-    PYTHONUTF8=1 python tools/hw_loop.py launch <file.3dsx>           (Homebrew Launcher -> Y -> 3dslink)
-    PYTHONUTF8=1 python tools/hw_loop.py ftp ls|get|put|mv ...        (ftpd on the SD; no delete)
+Why: with Rosalina InputRedirection + debugger on (the old version of this script pressed buttons through
+InputRedirection and started apps with 3dslink + ftpd), the 3DS lost Wi-Fi and froze 4 times in an hour on
+2026-10-26, once with only ftpd idle; before they were turned on, 8 hours of hardware runs had no network trouble.
+Both Rosalina threads poll the network every 10-50 ms from the system core (README "Unattended hardware runs").
+
+Once per boot, by hand: Rosalina menu -> InputRedirection and debugger OFF (or simply reboot: both start off);
+start cr_agent from the Homebrew Launcher. Keep the console plugged in with the lid open (sleep drops Wi-Fi).
+First install (or an agent update): `agent-install` (needs a running agent), or put tools/hw/agent/cr_agent.3dsx
+in sdmc:/3ds/ with any FTP client.
+
+    PYTHONUTF8=1 python tools/hw_loop.py ping
+    PYTHONUTF8=1 python tools/hw_loop.py ls|get|put|mv ...           (SD files; no delete, /custom-robo/save refused)
     PYTHONUTF8=1 python tools/hw_loop.py run --build custom-robo-recomp.3dsx --name 2026-10-26_hw-run37-x \\
-        --wait 120 [--put local=remote ...] [--mv a=b ...]
+        [--timeout 400] [--put local=remote ...] [--mv a=b ...]
+    PYTHONUTF8=1 python tools/hw_loop.py quit                         (agent -> Homebrew Launcher)
+    PYTHONUTF8=1 python tools/hw_loop.py agent-install                (put the built agent, RUN it: restarts it)
 (Git Bash: MSYS_NO_PATHCONV=1, else SD paths like /3ds/.. are rewritten to Windows paths.)
 
-`run`: in ftpd, uploads --put files and applies --mv renames (flag files on/off), START (ftpd exits to the
-Homebrew Launcher), Y + 3dslink the build (the netloader writes sdmc:/3ds/<basename> and starts it). The run
-length ends the game (runtime/vi.c) and it exits to the Homebrew Launcher. After --wait seconds (longer than the
-run takes), Y + 3dslink ftpd.3dsx (one retry); Y reaches the game if it is still running, so make --wait
-generous. Then downloads /cr_autotest.log to logs/cr_autotest_<name>.log, renames it on the SD
-to /cr_autotest_<name>.log and presses START: the 3DS is left in the Homebrew Launcher, as a run starts from
-there or from ftpd. After any manual `ftp`/`launch` use, leave it there too (`press START` in ftpd)."""
-import argparse, ftplib, os, socket, struct, subprocess, tempfile, time
+`run`: --put uploads and --mv renames (flag files on/off), then the build goes to sdmc:/3ds/<basename> and is
+started. The run needs a run length (pad script or replay, runtime/vi.c) so the game exits by itself. The script
+does not connect to the console while the game runs: it waits --first s (default 120), then tries the agent port
+every 15 s until --timeout s (default 600) from the start. Then it downloads /cr_autotest.log to
+logs/cr_autotest_<name>.log and renames it on the SD to /cr_autotest_<name>.log. The 3DS is left in the agent,
+ready for the next run; `quit` at the end of a session returns it to the Homebrew Launcher. A game that hangs or
+crashes never returns to the agent: the script stops after --timeout and says so (look at the console).
+Every agent PING reply (uptime, Wi-Fi strength 0-3, SD free) is appended to logs/hw_loop_agent.log."""
+import argparse, os, socket, sys, time
 
 IP = os.environ.get('CR_3DS_IP', '192.168.1.129')
-FTP_PORT, FTP_USER, FTP_PASS = 5000, 'a', 'a'
-IR_PORT = 4950
-IMAGE = 'mkw3ds-build:2026-10-09'
+AGENT_PORT = 5001
+AGENT_SD = '/3ds/cr_agent.3dsx'
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FTPD_3DSX = os.path.join(REPO, 'tools', 'hw', 'ftpd.3dsx')   # mtheall/ftpd v3.2.1 release asset (not committed)
-SETTLE = float(os.environ.get('CR_HW_SETTLE', 30))   # s from ftpd exiting to the next 3dslink
-RETRY_WAIT = 30
-EXIT_STAMP = os.path.join(tempfile.gettempdir(), 'cr_hw_loop_ftpd_exit')   # mtime = last START in ftpd
+AGENT_3DSX = os.path.join(REPO, 'tools', 'hw', 'agent', 'cr_agent.3dsx')
+AGENT_LOG = os.path.join(REPO, 'logs', 'hw_loop_agent.log')
+IR_PORT = 4950
 
-# InputRedirection packet (Luma3DS rosalina/source/input_redirection.c, TuxSH/InputRedirectionClient-Qt):
-# 5 little-endian words: HID buttons (12 bits, pressed = 0), touch, circle pad, C-stick/ZL/ZR, HOME/POWER.
+
+def now():
+    return time.strftime('%H:%M:%S')
+
+
+class Agent:
+    """One connection to cr_agent; line commands, see tools/hw/agent/source/main.c."""
+    def __init__(self, timeout=20):
+        self.s = socket.create_connection((IP, AGENT_PORT), timeout)
+        self.s.settimeout(60)
+        self.f = self.s.makefile('rb')
+
+    def line(self):
+        l = self.f.readline()
+        if not l: raise OSError('agent closed the connection')
+        return l.decode('utf-8', 'replace').rstrip('\r\n')
+
+    def cmd(self, text):
+        self.s.sendall(text.encode() + b'\n')
+        r = self.line()
+        if not r.startswith(('OK', 'READY')): raise SystemExit(f'agent: {text!r} -> {r}')
+        return r
+
+    def ping(self):
+        r = self.cmd('PING')
+        os.makedirs(os.path.dirname(AGENT_LOG), exist_ok=True)
+        with open(AGENT_LOG, 'a') as fh: fh.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {r}\n')
+        return r
+
+    def put(self, local, remote):
+        data = open(local, 'rb').read()
+        self.cmd(f'PUT {len(data)} {remote}')
+        self.s.sendall(data)
+        r = self.line()
+        if r != f'OK {len(data)}': raise SystemExit(f'agent: PUT {remote} -> {r}')
+
+    def get(self, remote, local):
+        n = int(self.cmd(f'GET {remote}').split()[1])
+        buf = bytearray()
+        while len(buf) < n:
+            b = self.f.read(min(65536, n - len(buf)))
+            if not b: raise OSError(f'GET {remote}: connection closed at {len(buf)} of {n} bytes')
+            buf += b
+        with open(local, 'wb') as fh: fh.write(buf)
+        return n
+
+    def ls(self, path):
+        self.cmd(f'LS {path}')
+        out = []
+        while (l := self.line()) != '.': out.append(l)
+        return out
+
+    def close(self):
+        try: self.s.close()
+        except OSError: pass
+
+
+def agent(timeout=20):
+    try:
+        return Agent(timeout)
+    except OSError as e:
+        raise SystemExit(f'cr_agent not reachable at {IP}:{AGENT_PORT} ({e}). Start it from the Homebrew Launcher '
+                         '(Rosalina InputRedirection and debugger off), then try again.')
+
+
+def wait_agent(first, timeout, every=15):
+    """Sleeps `first` s, then tries the agent port every `every` s; False after `timeout` s."""
+    t0 = time.time()
+    time.sleep(first)
+    while time.time() - t0 < timeout:
+        try:
+            a = Agent(5)
+            return a
+        except OSError:
+            time.sleep(every)
+    return None
+
+
+def run(a):
+    log_local = os.path.join(REPO, 'logs', f'cr_autotest_{a.name}.log')
+    if os.path.exists(log_local): raise SystemExit(f'{log_local} exists')
+    if not os.path.exists(a.build): raise SystemExit(f'{a.build} missing')
+    g = agent()
+    print(now(), g.ping(), flush=True)
+    for kv in a.put:
+        local, remote = kv.split('=', 1)
+        g.put(local, remote); print('put', local, '->', remote)
+    for kv in a.mv:
+        src, dst = kv.split('=', 1)
+        g.cmd(f'MV {src} {dst}'); print('mv', src, '->', dst)
+    remote = '/3ds/' + os.path.basename(a.build)
+    g.put(a.build, remote)
+    print(now(), 'put', a.build, '->', remote, flush=True)
+    g.cmd(f'RUN {remote} --return {AGENT_SD}')
+    g.close()
+    t0 = time.time()
+    print(now(), f'game started, first look after {a.first:.0f} s', flush=True)
+    g = wait_agent(a.first, a.timeout)
+    if not g:
+        raise SystemExit(f'{now()} the agent did not come back within {a.timeout:.0f} s: the game hung or crashed, '
+                         'or the network is down. Look at the console before anything else.')
+    print(now(), f'agent back {time.time() - t0:.0f} s after the game started;', g.ping(), flush=True)
+    os.makedirs(os.path.dirname(log_local), exist_ok=True)
+    n = g.get('/cr_autotest.log', log_local)
+    g.cmd(f'MV /cr_autotest.log /cr_autotest_{a.name}.log')
+    g.close()
+    with open(log_local, 'rb') as fh:
+        tail = fh.read()[-4000:].decode(errors='replace')
+    done = [l for l in tail.splitlines() if l.startswith('# DONE')]
+    print(os.path.relpath(log_local, REPO), n, 'bytes,', done[-1] if done else 'no # DONE line', flush=True)
+    if not done: sys.exit(1)
+
+
+# InputRedirection (Rosalina, UDP 4950): not used by `run`. Kept for a one-off press with someone at the
+# console; turn InputRedirection off again afterwards (suspected in the 2026-10-26 Wi-Fi crashes).
 HID = {'A': 0, 'B': 1, 'SELECT': 2, 'START': 3, 'RIGHT': 4, 'LEFT': 5, 'UP': 6, 'DOWN': 7, 'R': 8, 'L': 9,
        'X': 10, 'Y': 11}
-IRB = {'ZR': 1, 'ZL': 2}
-SPECIAL = {'HOME': 0, 'POWER': 1, 'POWER_LONG': 2}
-TOUCH_IDLE, CIRCLE_IDLE, CPP_IDLE = 0x2000000, 0x7ff7ff, 0x80800081
 
 
-def packet(buttons=(), touch=None):
-    hid, irb, spe = 0xfff, 0, 0
+def press(buttons, hold_ms=150):
+    import struct
+    hid = 0xfff
     for b in buttons:
-        if b in HID: hid &= ~(1 << HID[b])
-        elif b in IRB: irb |= 1 << IRB[b]
-        elif b in SPECIAL: spe |= 1 << SPECIAL[b]
-        else: raise SystemExit(f'unknown button {b}')
-    t = TOUCH_IDLE
-    if touch:
-        x = 0xfff * min(max(0, touch[0]), 320) // 320
-        y = 0xfff * min(max(0, touch[1]), 240) // 240
-        t = (1 << 24) | (y << 12) | x
-    return struct.pack('<5I', hid, t, CIRCLE_IDLE, CPP_IDLE | (irb << 8), spe)
-
-
-def press(buttons=(), touch=None, hold_ms=150):
-    """Holds the input for hold_ms, then sends the idle state (Rosalina keeps the last packet's values)."""
+        if b not in HID: raise SystemExit(f'unknown button {b}')
+        hid &= ~(1 << HID[b])
+    down = struct.pack('<5I', hid, 0x2000000, 0x7ff7ff, 0x80800081, 0)
+    idle = struct.pack('<5I', 0xfff, 0x2000000, 0x7ff7ff, 0x80800081, 0)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    down, idle = packet(buttons, touch), packet()
     end = time.time() + hold_ms / 1000
     while time.time() < end:
         s.sendto(down, (IP, IR_PORT)); time.sleep(0.02)
@@ -77,146 +177,32 @@ def press(buttons=(), touch=None, hold_ms=150):
     s.close()
 
 
-def port_open(port, timeout=2.0):
-    try:
-        socket.create_connection((IP, port), timeout).close()
-        return True
-    except OSError:
-        return False
-
-
-def wait_for(what, cond, timeout, every=1.0):
-    end = time.time() + timeout
-    while time.time() < end:
-        if cond(): return True
-        time.sleep(every)
-    raise SystemExit(f'timed out after {timeout:.0f} s waiting for {what}')
-
-
-def mark_ftpd_exit():
-    with open(EXIT_STAMP, 'w'): pass
-
-
-def settle():
-    """Waits until SETTLE s have passed since ftpd last exited (its network shutdown races the next upload)."""
-    try:
-        left = SETTLE - (time.time() - os.path.getmtime(EXIT_STAMP))
-    except OSError:
-        return
-    if left > 0:
-        print(time.strftime('%H:%M:%S'), f'waiting {left:.0f} s after ftpd exited', flush=True)
-        time.sleep(left)
-
-
-def try_launch(path, close_error=False):
-    """One attempt: Y (netloader; nothing if it is already open) + 3dslink. False if 3dslink failed.
-    close_error: B first, which closes the error screen a failed transfer leaves (nothing in the menu)."""
-    d, f = os.path.split(os.path.abspath(path))
-    if close_error:
-        press(['B']); time.sleep(1)
-    press(['Y']); time.sleep(2)
-    print(time.strftime('%H:%M:%S'), '3dslink', f, flush=True)
-    cmd = ['docker', 'run', '--rm', '-v', f'{d}:/w', IMAGE, '/opt/devkitpro/tools/bin/3dslink', '-a', IP, f'/w/{f}']
-    return subprocess.run(cmd, env=dict(os.environ, MSYS_NO_PATHCONV='1')).returncode == 0
-
-
-def launch(path):
-    settle()
-    if not try_launch(path):
-        print(time.strftime('%H:%M:%S'), f'3dslink failed, one retry in {RETRY_WAIT} s', flush=True)
-        time.sleep(RETRY_WAIT)
-        if not try_launch(path, close_error=True):
-            raise SystemExit(f'3dslink {os.path.basename(path)} failed twice: stopped. Ask the user to look at the '
-                             'console (Homebrew Launcher frozen? Wi-Fi? InputRedirection on?) before trying again.')
-    time.sleep(3)
-
-
-def ftp():
-    f = ftplib.FTP()
-    f.connect(IP, FTP_PORT, timeout=20)
-    f.login(FTP_USER, FTP_PASS)
-    return f
-
-
-def to_ftpd():
-    if port_open(FTP_PORT): return
-    if not os.path.exists(FTPD_3DSX):
-        raise SystemExit(f'{FTPD_3DSX} missing (ftpd.3dsx from github.com/mtheall/ftpd releases)')
-    launch(FTPD_3DSX)
-    wait_for('ftpd', lambda: port_open(FTP_PORT), 30)
-
-
-def leave_ftpd():
-    press(['START'])
-    mark_ftpd_exit()
-    wait_for('ftpd to exit (START)', lambda: not port_open(FTP_PORT), 20)
-
-
-def state():
-    return {'ftpd': port_open(FTP_PORT)}
-
-
-def run(a):
-    log_local = os.path.join(REPO, 'logs', f'cr_autotest_{a.name}.log')
-    if os.path.exists(log_local): raise SystemExit(f'{log_local} exists')
-    to_ftpd()
-    f = ftp()
-    for kv in a.put:
-        local, remote = kv.split('=', 1)
-        with open(local, 'rb') as fh: f.storbinary(f'STOR {remote}', fh)
-        print('put', local, '->', remote)
-    for kv in a.mv:
-        src, dst = kv.split('=', 1)
-        f.rename(src, dst); print('mv', src, '->', dst)
-    f.quit()
-    leave_ftpd()
-    launch(a.build)
-    t0 = time.time()
-    print(time.strftime('%H:%M:%S'), f'game started, waiting {a.wait:.0f} s', flush=True)
-    time.sleep(a.wait)
-    to_ftpd()
-    print(time.strftime('%H:%M:%S'), f'ftpd up {time.time() - t0:.0f} s after the game started', flush=True)
-    f = ftp()
-    os.makedirs(os.path.dirname(log_local), exist_ok=True)
-    with open(log_local, 'wb') as fh: f.retrbinary('RETR /cr_autotest.log', fh.write)
-    f.rename('/cr_autotest.log', f'/cr_autotest_{a.name}.log')
-    f.quit()
-    leave_ftpd()   # every run ends in the Homebrew Launcher, ready for the next one
-    with open(log_local, 'rb') as fh:
-        tail = fh.read()[-4000:].decode(errors='replace')
-    done = [l for l in tail.splitlines() if l.startswith('# DONE')]
-    print(os.path.relpath(log_local, REPO), os.path.getsize(log_local), 'bytes,', done[-1] if done else 'no # DONE line')
-
-
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
-    sub.add_parser('state')
+    sub.add_parser('ping'); sub.add_parser('quit'); sub.add_parser('agent-install')
+    p = sub.add_parser('ls'); p.add_argument('path', nargs='?', default='/')
+    p = sub.add_parser('get'); p.add_argument('remote'); p.add_argument('local')
+    p = sub.add_parser('put'); p.add_argument('local'); p.add_argument('remote')
+    p = sub.add_parser('mv'); p.add_argument('src'); p.add_argument('dst')
     p = sub.add_parser('press'); p.add_argument('buttons', nargs='+'); p.add_argument('--hold', type=int, default=150)
-    p = sub.add_parser('touch'); p.add_argument('x', type=int); p.add_argument('y', type=int)
-    p.add_argument('--hold', type=int, default=150)
-    p = sub.add_parser('launch'); p.add_argument('file')
-    p = sub.add_parser('ftp'); p.add_argument('op', choices=['ls', 'get', 'put', 'mv']); p.add_argument('args', nargs='*')
     p = sub.add_parser('run'); p.add_argument('--build', required=True); p.add_argument('--name', required=True)
-    p.add_argument('--wait', type=float, required=True, help='seconds from game start to the first ftpd attempt')
+    p.add_argument('--first', type=float, default=120, help='seconds before the first look for the agent')
+    p.add_argument('--timeout', type=float, default=600, help='seconds from the game start to give up')
     p.add_argument('--put', action='append', default=[]); p.add_argument('--mv', action='append', default=[])
     a = ap.parse_args()
-    if a.cmd == 'state': print(state())
-    elif a.cmd == 'press':
-        press([b.upper() for b in a.buttons], hold_ms=a.hold)
-        if 'START' in (b.upper() for b in a.buttons): mark_ftpd_exit()   # may have closed ftpd: settle before 3dslink
-    elif a.cmd == 'touch': press(touch=(a.x, a.y), hold_ms=a.hold)
-    elif a.cmd == 'launch': launch(a.file)
-    elif a.cmd == 'run': run(a)
-    elif a.cmd == 'ftp':
-        f = ftp()
-        if a.op == 'ls': print('\n'.join(f.nlst(a.args[0] if a.args else '/')))
-        elif a.op == 'get':
-            with open(a.args[1], 'wb') as fh: f.retrbinary(f'RETR {a.args[0]}', fh.write)
-        elif a.op == 'put':
-            with open(a.args[0], 'rb') as fh: f.storbinary(f'STOR {a.args[1]}', fh)
-        elif a.op == 'mv': f.rename(a.args[0], a.args[1])
-        f.quit()
+    if a.cmd == 'run': return run(a)
+    if a.cmd == 'press': return press([b.upper() for b in a.buttons], a.hold)
+    g = agent()
+    if a.cmd == 'ping': print(g.ping())
+    elif a.cmd == 'ls': print('\n'.join(g.ls(a.path)))
+    elif a.cmd == 'get': print(g.get(a.remote, a.local), 'bytes')
+    elif a.cmd == 'put': g.put(a.local, a.remote)
+    elif a.cmd == 'mv': g.cmd(f'MV {a.src} {a.dst}')
+    elif a.cmd == 'quit': g.cmd('QUIT')
+    elif a.cmd == 'agent-install':
+        g.put(AGENT_3DSX, AGENT_SD); g.cmd(f'RUN {AGENT_SD}'); print('agent replaced and restarted')
+    g.close()
 
 
 if __name__ == '__main__':

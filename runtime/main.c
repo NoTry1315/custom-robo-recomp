@@ -39,7 +39,33 @@ static void codegen_init(void) {
                recomp_ptr_extent ? "on" : "off", recomp_inline_sites ? "on" : "off");
 }
 
-int main(void) {
+/* tools/hw/agent (cr_agent.3dsx) starts the build with argv "--return <agent path>": at exit, point Luma's 3dsx
+ * loader (hb:ldr SetTarget/SetArgv, as the Homebrew Launcher does) back at the agent, so unattended runs need no
+ * button presses or netloader. Any other launch leaves the target alone (exit goes to the Homebrew Launcher). */
+static void hw_return(int argc, char **argv) {
+    if (argc < 3 || strcmp(argv[1], "--return") || argv[2][0] != '/') return;
+    static char path[0x400];
+    static u32 args[0x400 / 4];
+    Handle h;
+    if (R_FAILED(svcConnectToPort(&h, "hb:ldr"))) return;
+    strncpy(path, argv[2], sizeof path - 1);
+    snprintf((char *)&args[1], sizeof args - 4, "sdmc:%s", path);
+    args[0] = 1;
+    u32 *cmd = getThreadCommandBuffer();
+    cmd[0] = IPC_MakeHeader(2, 0, 2);
+    cmd[1] = IPC_Desc_StaticBuffer(strlen(path) + 1, 0);
+    cmd[2] = (u32)path;
+    if (R_SUCCEEDED(svcSendSyncRequest(h)) && R_SUCCEEDED(cmd[1])) {
+        cmd = getThreadCommandBuffer();
+        cmd[0] = IPC_MakeHeader(3, 0, 2);
+        cmd[1] = IPC_Desc_StaticBuffer(sizeof args, 1);
+        cmd[2] = (u32)args;
+        svcSendSyncRequest(h);
+    }
+    svcCloseHandle(h);
+}
+
+int main(int argc, char **argv) {
     gfxInitDefault();
     recomp_menu_init();   /* bottom screen (runtime/menu.c) */
     cpu_init();
@@ -92,6 +118,7 @@ int main(void) {
     recomp_gx_stop();   /* the GX thread is done with citro3d before gfxExit */
     recomp_perfctr_exit();
     recomp_log_close();
+    hw_return(argc, argv);
     gfxExit();
     return 0;
 }
