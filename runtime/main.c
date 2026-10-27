@@ -70,6 +70,7 @@ int main(int argc, char **argv) {
     recomp_menu_init();   /* bottom screen (runtime/menu.c) */
     cpu_init();
     recomp_gx_init();
+    printf("boot: log, helper threads\n");   /* boot stages on the bottom screen (hw run 45a hung before the first log line) */
     recomp_log_open();
     recomp_prof_sampler_start();
     recomp_gx_start();
@@ -79,6 +80,7 @@ int main(int argc, char **argv) {
     bool n3ds = false;
     APT_CheckNew3DS(&n3ds);
     recomp_log("# system: %s, speedup requested\n", n3ds ? "New 3DS" : "old 3DS (or emulator reporting old)");
+    printf("boot: loading main.dol\n");
     if (recomp_load_dol() == 0) {
         recomp_mtx_init();
         recomp_libm_init();

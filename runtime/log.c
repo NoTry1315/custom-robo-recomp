@@ -52,15 +52,21 @@ static void sampler(void *arg) {
 /* Helper threads (sampler, watchdog, log writer) run off the game's core 0:
  * core 2 (New 3DS) if threadCreate there works, else core 1 after
  * APT_SetAppCpuTimeLimit(30), else core 0. Probed once, like mGBA. */
-static int aux_core = -3;
+static int aux_core = -3, aux_probe_timeouts;
 static void aux_probe_fn(void *arg) { (void)arg; }
 static Thread aux_thread(ThreadFunc f, size_t stack, int prio) {
     if (aux_core == -3) {
+        /* the probe must also run: a join that times out (2 s) counts as no core 2 (hw run 45a hung at boot
+         * before the first log line; this join was one candidate). A thread that never ran is left allocated. */
         Thread t = threadCreate(aux_probe_fn, NULL, 0x1000, 0x30, 2, false);
-        if (t) aux_core = 2;
-        else if (R_SUCCEEDED(APT_SetAppCpuTimeLimit(30)) && (t = threadCreate(aux_probe_fn, NULL, 0x1000, 0x30, 1, false))) aux_core = 1;
-        else aux_core = 0;
-        if (t) { threadJoin(t, U64_MAX); threadFree(t); }
+        if (t && R_SUCCEEDED(threadJoin(t, 2000000000ull))) { threadFree(t); aux_core = 2; }
+        else {
+            if (t) { aux_probe_timeouts++; printf("boot: core 2 probe timed out\n"); }
+            t = NULL;
+            if (R_SUCCEEDED(APT_SetAppCpuTimeLimit(30)) && (t = threadCreate(aux_probe_fn, NULL, 0x1000, 0x30, 1, false)) &&
+                R_SUCCEEDED(threadJoin(t, 2000000000ull))) { threadFree(t); aux_core = 1; }
+            else { if (t) aux_probe_timeouts++; aux_core = 0; }
+        }
     }
     return threadCreate(f, NULL, stack, prio, aux_core, true);
 }
@@ -501,7 +507,7 @@ void recomp_log_open(void) {
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     aux_thread(watchdog, 0x2000, prio - 1);
     aux_thread(log_writer, 0x2000, prio + 1);
-    recomp_log("# log: helper threads on core %d\n", aux_core);
+    recomp_log("# log: helper threads on core %d%s\n", aux_core, aux_probe_timeouts ? " (a core probe timed out)" : "");
 }
 
 void recomp_log_close(void) {
