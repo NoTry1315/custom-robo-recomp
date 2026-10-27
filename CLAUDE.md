@@ -514,8 +514,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   2v2 functions first in .text, C3-clustered; ld `--section-ordering-file`, crt0 must stay first; `make HOTORDER=0` =
   link order). Citra identical; hw runs 53a/53b: 2v2 game -0.09 ms, cycles fewer 73/73, 47.3 fps; I-cache misses
   barely change (capacity misses). Item 2 (GX register records inline) measured only, ~0.1 ms, not built (unknowns "GX natives
-  on the game thread"). Item 1 of the 2026-10-27 plan (items: hot order, GX native path, DSP voices (needs
-  the user's OK: not bit-identical to Dolphin), BE8; native HSD particles cancelled by the user, rule stands).
+  on the game thread"). Items 1-2 of the 2026-10-27 plan; the user stopped items 3 (DSP voices) and 4 (BE8) and
+  cancelled native HSD particles (the hand-port rule stands). BE8 groundwork left unmerged on branch
+  task/2026-10-27-be8 @76a615c: runtime/ reads guest CPU state through RGET/RSET/FGET/FSET/CGET/CSET and swaps guest
+  data with GS16/GS32 (normal build byte-identical, Citra identical); converter, bridges and image fix-up not written.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
