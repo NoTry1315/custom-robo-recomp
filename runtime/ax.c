@@ -178,7 +178,7 @@ void sdk_AXRegisterAuxBCallback(void) { LOG(); }
 /* ---- mixer ---- */
 
 static s32 mixL[FRAME], mixR[FRAME];
-static struct { u32 frames, peak, active_max, ended, looped, queued, dropped, underruns, skipped, trimmed; u64 sumsq; } st;
+static struct { u32 frames, peak, active_max, ended, looped, queued, dropped, underruns, skipped, trimmed, hash; u64 sumsq; } st;
 
 static inline s16 clamp16(s32 x) { return x < -32768 ? -32768 : x > 32767 ? 32767 : x; }
 
@@ -220,7 +220,128 @@ static s16 fetch(Src *s) {
     return out;
 }
 
+/* n source samples into out[], the same values and state changes as n fetch() calls, with the
+ * ARAM bytes read directly and the state in locals */
+static void decode(Src *s, const u8 *A, s16 *out, u32 n) {
+    const u32 M = 0x00ffffffu;   /* ARAM_SIZE - 1, as recomp_aram_read8 masks */
+    u32 cur = s->cur, end = s->end, i = 0;
+    if (s->stopped) goto zero;
+    if (s->fmt == 0) {                        /* DSP-ADPCM */
+        u32 ps = s->ps;
+        s32 yn1 = s->yn1, yn2 = s->yn2;
+        s32 c1 = s->coef[(ps >> 4) * 2 & 15], c2 = s->coef[((ps >> 4) * 2 + 1) & 15];
+        for (; i < n; i++) {
+            if ((cur & 15) == 0) {
+                ps = A[(cur >> 1) & M]; cur += 2;
+                c1 = s->coef[(ps >> 4) * 2 & 15]; c2 = s->coef[((ps >> 4) * 2 + 1) & 15];
+            }
+            u32 b = A[(cur >> 1) & M];
+            s32 nib = (cur & 1) ? (b & 15) : (b >> 4);
+            if (nib >= 8) nib -= 16;
+            s32 val = ((nib << (ps & 15)) << 11) + c1 * yn1 + c2 * yn2;
+            s16 o = clamp16((val + 1024) >> 11);
+            yn2 = yn1; yn1 = o;
+            out[i] = o;
+            if (cur == end) {
+                if (s->looping) {
+                    cur = s->loop;
+                    ps = (u16)rd16(s->v + P_ADPCMLOOP);
+                    if (!s->is_stream) { yn1 = (s16)rd16(s->v + P_ADPCMLOOP + 2); yn2 = (s16)rd16(s->v + P_ADPCMLOOP + 4); }
+                    c1 = s->coef[(ps >> 4) * 2 & 15]; c2 = s->coef[((ps >> 4) * 2 + 1) & 15];
+                    st.looped++;
+                } else {
+                    s->stopped = 1; st.ended++; vlog("ended", s->v, cur);
+                    i++; break;
+                }
+            } else cur++;
+        }
+        s->ps = ps; s->yn1 = yn1; s->yn2 = yn2;
+    } else {                                  /* PCM16 (word addresses) / PCM8 */
+        int w = s->fmt == 0x0a;
+        for (; i < n; i++) {
+            out[i] = w ? (s16)((A[(cur * 2) & M] << 8) | A[(cur * 2 + 1) & M]) : (s16)((s8)A[cur & M] << 8);
+            if (cur == end) {
+                if (s->looping) { cur = s->loop; st.looped++; }
+                else { s->stopped = 1; st.ended++; vlog("ended", s->v, cur); i++; break; }
+            } else cur++;
+        }
+    }
+    s->cur = cur;
+zero:
+    for (; i < n; i++) out[i] = 0;
+}
+
+#define MAX_FETCH 2048                     /* source samples per frame in the fast path (ratio up to 12.8) */
+
+/* the same arithmetic as mix_voice's loop, with the source samples decoded first */
+static int mix_voice_fast(u32 v) {
+    const u8 *A = recomp_aram();
+    u32 ratio = rd32(v + P_SRC);
+    u32 frac = rd16(v + P_SRC + 4);
+    u64 total = ((u64)frac + (u64)ratio * FRAME) >> 16;
+    if (!A || total > MAX_FETCH) return 0;
+    Src s;
+    s.v = v;
+    s.looping = rd16(v + P_ADDR);
+    s.fmt = rd16(v + P_ADDR + 2);
+    s.loop = rd32(v + P_ADDR + 4);
+    s.end = rd32(v + P_ADDR + 8);
+    s.cur = rd32(v + P_ADDR + 12);
+    for (int k = 0; k < 16; k++) s.coef[k] = rd16(v + P_ADPCM + k * 2);
+    s.ps = rd16(v + P_ADPCM + 0x22);
+    s.yn1 = rd16(v + P_ADPCM + 0x24);
+    s.yn2 = rd16(v + P_ADPCM + 0x26);
+    s.is_stream = rd16(v + P_TYPE) != 0;
+    s.stopped = 0;
+
+    s16 h[4 + MAX_FETCH];                     /* last[0..3], then the samples fetched this frame */
+    for (int k = 0; k < 4; k++) h[k] = rd16(v + P_SRC + 6 + k * 2);
+    decode(&s, A, h + 4, (u32)total);
+    s32 ve = rd16(v + P_VE);
+    s16 ved = rd16(v + P_VE + 2);
+    s32 vl = rd16(v + P_MIX), vr = rd16(v + P_MIX + 4);
+    s16 dl = rd16(v + P_MIX + 2), dr = rd16(v + P_MIX + 6);
+
+    u32 f = frac, k = 0;
+    if (ved == 0 && dl == 0 && dr == 0) {     /* constant volumes: the clamps leave them as they are */
+        if ((vl == 0 && vr == 0) || ve == 0) {   /* adds 0 to every sample */
+            u64 t = (u64)f + (u64)ratio * FRAME;
+            k = (u32)(t >> 16); f = (u32)t & 0xffff;
+        } else for (int i = 0; i < FRAME; i++) {
+            f += ratio; k += f >> 16; f &= 0xffff;
+            s32 a = h[k + 2], b = h[k + 3];
+            s32 x = a + (((s32)(b - a) * (s32)(f >> 1)) >> 15);
+            x = (x * ve) >> 15;
+            mixL[i] += (x * vl) >> 15;
+            mixR[i] += (x * vr) >> 15;
+        }
+    } else for (int i = 0; i < FRAME; i++) {
+        f += ratio; k += f >> 16; f &= 0xffff;
+        s32 a = h[k + 2], b = h[k + 3];
+        s32 x = a + (((s32)(b - a) * (s32)(f >> 1)) >> 15);
+        x = (x * ve) >> 15;
+        mixL[i] += (x * vl) >> 15;
+        mixR[i] += (x * vr) >> 15;
+        ve += ved; ve = ve < 0 ? 0 : ve > 0xffff ? 0xffff : ve;
+        vl += dl; vr += dr;
+        vl = vl < 0 ? 0 : vl > 0xffff ? 0xffff : vl;
+        vr = vr < 0 ? 0 : vr > 0xffff ? 0xffff : vr;
+    }
+
+    if (s.stopped) wr16(v + P_STATE, 0);
+    wr16(v + P_ADDR + 12, s.cur >> 16); wr16(v + P_ADDR + 14, s.cur);
+    wr16(v + P_ADPCM + 0x22, s.ps); wr16(v + P_ADPCM + 0x24, s.yn1); wr16(v + P_ADPCM + 0x26, s.yn2);
+    wr16(v + P_SRC + 4, f);
+    for (int j = 0; j < 4; j++) wr16(v + P_SRC + 6 + j * 2, h[k + j]);
+    wr16(v + P_VE, ve);
+    wr16(v + P_MIX, vl); wr16(v + P_MIX + 4, vr);
+    return 1;
+}
+
 static void mix_voice(u32 v) {
+#ifndef RECOMP_AX_REF
+    if (mix_voice_fast(v)) return;
+#endif
     Src s;
     s.v = v;
     s.looping = rd16(v + P_ADDR);
@@ -328,6 +449,7 @@ static void out_frame(void) {
         pcm[i * 2] = l; pcm[i * 2 + 1] = r;
         u32 a = l < 0 ? -l : l; if (a > st.peak) st.peak = a;
         st.sumsq += (s32)l * l;
+        st.hash = (st.hash * 31 + (u16)l) * 31 + (u16)r;
     }
     if (wav) {
         fwrite(pcm, 2, FRAME * 2, wav);     /* little-endian host = WAV order */
@@ -358,10 +480,10 @@ static void ax_frame(void) {
     }
     if (active > st.active_max) st.active_max = active;
     if (++st.frames % 1000 == 0) {          /* every 5 s of audio */
-        recomp_log("# AX: frame %lu voices started %lu max active %lu ended %lu loops %lu peak %lu ndsp bufs %lu dropped frames %lu rms %lu; pacing %s, underruns %lu, skipped %lu, trimmed %lu\n",
+        recomp_log("# AX: frame %lu voices started %lu max active %lu ended %lu loops %lu peak %lu ndsp bufs %lu dropped frames %lu rms %lu, hash %08lx; pacing %s, underruns %lu, skipped %lu, trimmed %lu\n",
                    (unsigned long)st.frames, (unsigned long)voices_started, (unsigned long)st.active_max,
                    (unsigned long)st.ended, (unsigned long)st.looped, (unsigned long)st.peak, (unsigned long)st.queued, (unsigned long)st.dropped,
-                   (unsigned long)__builtin_sqrt((double)st.sumsq / (FRAME * 1000)), recomp_ax_rt ? "rt" : "retrace",
+                   (unsigned long)__builtin_sqrt((double)st.sumsq / (FRAME * 1000)), (unsigned long)st.hash, recomp_ax_rt ? "rt" : "retrace",
                    (unsigned long)st.underruns, (unsigned long)st.skipped, (unsigned long)st.trimmed);
         st.active_max = st.peak = st.ended = st.looped = st.queued = st.dropped = st.underruns = st.skipped = st.trimmed = 0; st.sumsq = 0;
     }
@@ -498,9 +620,9 @@ void recomp_ax_service(void) {
     }
     for (u32 k = 0; k < due; k++) {
         ax_frame();
-        if (recomp_ai_dma_cb && recomp_ai_dma_cb != AX_AI_CALLBACK) ai_frame();
+        if (recomp_ai_dma_cb && recomp_ai_dma_cb != AX_AI_CALLBACK) { u64 c0 = recomp_ticks(); ai_frame(); recomp_prof[PROF_AUDIO_CB] += recomp_ticks() - c0; }
         out_frame();
-        if (ax_cb) recomp_call_guest(ax_cb, 0);
+        if (ax_cb) { u64 c0 = recomp_ticks(); recomp_call_guest(ax_cb, 0); recomp_prof[PROF_AUDIO_CB] += recomp_ticks() - c0; }
     }
     recomp_prof[PROF_AUDIO] += recomp_ticks() - t0;
 }
