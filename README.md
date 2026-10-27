@@ -227,6 +227,20 @@ translated function in a build, weighted by a `RECOMP_SITEPROF=1` replay's call 
 With the 3DS on Wi-Fi and Rosalina's debugger enabled, `tools/hw_dump.sh [ip]` attaches gdb
 to the running game and saves thread registers, backtraces and memory to `logs/hwdump/`.
 
+Unattended hardware runs: `tools/hw_loop.py run --build <3dsx> --name <date>_hw-runNN-<purpose> --wait <s>
+[--put local=/remote] [--mv /a=/b]` does ftpd -> Homebrew Launcher -> game -> ftpd with nobody at the
+console: uploads/renames flag files over FTP, presses START in ftpd and Y in the Homebrew Launcher through
+Rosalina's InputRedirection (UDP 4950), starts the build and then ftpd with 3dslink (the netloader), and
+fetches the log to `logs/cr_autotest_<name>.log` (renamed the same on the SD), then presses START so the 3DS
+is left in the Homebrew Launcher (leave it there after manual `ftp` use too: `press START`). The run needs a run length
+(pad script or replay) so the game exits by itself; `--wait` must be longer than the run, since the Y that
+starts ftpd would reach a game still running. Once per boot, by hand: Rosalina menu -> Miscellaneous options
+-> Start InputRedirection, then open the Homebrew Launcher. Needs `tools/hw/ftpd.3dsx` (mtheall/ftpd v3.2.1
+release, not committed); the installed ftpd CIA exits to the HOME menu instead. Leave Rosalina's debugger
+off: the 3DS lost its network twice while an earlier version polled the debugger's process list. Never
+connect to TCP 17491 other than through 3dslink (the netloader takes it as an upload and shows an error screen,
+B closes it). Also `state`, `press <buttons>`, `touch x y`, `launch <3dsx>`, `ftp ls|get|put|mv`.
+
 ## How it works
 
 - `tools/recomp/recomp.py` turns every PowerPC function into a C function
