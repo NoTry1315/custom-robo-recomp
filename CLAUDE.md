@@ -434,6 +434,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   (-0.9%, 65/73 windows faster), busy cycles 17.79 -> 17.62M (73/73 fewer); sweep ~0.12 ms per 2v2 frame on hardware.
   Run 36a had 0.6-0.8 s SD stalls (voice stream reads while the log writer was busy): same cycles as 35b, +0.7 ms mean, so
   pair windows by median / busy cycles, not mean game ms alone. Details: unknowns "Write tracking through a byte map".
+- Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
+  over the network: InputRedirection presses (START leaves ftpd, Y opens the netloader), 3dslink starts the build
+  and `tools/hw/ftpd.3dsx` (mtheall/ftpd v3.2.1; the user's ftpd is a CIA, which exits to the HOME menu), FTP
+  puts flags and fetches the log; every run ends in the Homebrew Launcher (user's rule). Two full cycles in a
+  row on hardware (dry runs, 600-retrace pad script, ~75 s each, logs/cr_autotest_2026-10-26_hwloop-dryrun2/3.log).
+  Do not use Rosalina's debugger in it: the 3DS lost its network twice while an earlier version polled qXfer:osdata processes on TCP 4000 (not proven the cause; no
+  crash without it). Any TCP connect to 17491 breaks the netloader (error screen), and its UDP ping answer does
+  not reach the PC. Git Bash: MSYS_NO_PATHCONV=1 (else /3ds/.. SD paths become Windows paths).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
