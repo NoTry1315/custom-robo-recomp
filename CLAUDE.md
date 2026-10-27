@@ -518,6 +518,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   cancelled native HSD particles (the hand-port rule stands). BE8 groundwork left unmerged on branch
   task/2026-10-27-be8 @76a615c: runtime/ reads guest CPU state through RGET/RSET/FGET/FSET/CGET/CSET and swaps guest
   data with GS16/GS32 (normal build byte-identical, Citra identical); converter, bridges and image fix-up not written.
+- LTO on hardware (2026-10-27, branch task/2026-10-27-lto-hw): runs 54a/54b (main vs `make LTO=1`, 2v2 replay) game
+  -0.11 ms (sd 0.14, 51/73), cycles -0.034M: noise level, LTO stays off. `make LTO=1` links again (cpu.o / mtx.o
+  -fno-lto for their top-level-asm symbols; -ffunction-sections at the LTO link, else hot_order.ld places nothing).
+  Details: unknowns "-O3 and LTO".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

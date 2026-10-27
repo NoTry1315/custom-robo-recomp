@@ -88,7 +88,8 @@ ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=svcBreak \
 			-Wl,--wrap=linearAlloc,--wrap=linearMemAlign,--wrap=linearFree
 ifeq ($(LTO),1)
-LDFLAGS	+=	-flto=20
+# -ffunction-sections again at link time: without it the LTO output has no .text.f_* sections for hot_order.ld
+LDFLAGS	+=	-flto=20 -ffunction-sections -mword-relocations
 endif
 # HOTORDER: the 2v2's hot functions first in .text, clustered with their callers (tools/recomp/hot_order.py ->
 # hot_order.ld); HOTORDER=0 = link order. make does not relink when only this changes: delete the .elf
@@ -133,6 +134,9 @@ $(OFILES_SRC)	:	$(HFILES)
 # gen/: IVOPTS folds `ram + (p & RAM_MASK)` into `ram - 0x80000000 + k` literals, which the
 # 3dsx format cannot relocate (tools/check_3dsx.py, run after every build)
 recomp_%.o	:	CFLAGS += -fno-ivopts $(GENOPT)
+# symbols defined in top-level asm (cpu.c ram/ram_wr/ram_dirty, mtx.c wa_concat/wa_multvec) stay undefined
+# in an LTO link: these files are never LTO
+cpu.o mtx.o	:	CFLAGS += -fno-lto
 # vertex shaders: picasso, then embedded with bin2s (symbols <name>_shbin, _shbin_size)
 %.shbin.o %_shbin.h : %.v.pica
 	@echo $(notdir $<)
