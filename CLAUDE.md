@@ -502,6 +502,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   (runtime/mtx.c wa_concat / wa_multvec: ldm/stm, paired vmov, interleaved rows; fp_ when not 4-aligned). Citra logs,
   fb, audio identical, bench 0 ulp (Citra + hw). HW bench concat 495 -> 412 ns, multvec 367 -> 302; runs 50a/50b 2v2
   game -0.27 ms (cycles fewer 73/73), 47.2 fps. Details: unknowns "Native MTX in ARM assembly".
+- sin/cos pairs (2026-10-27, not kept, branch task/2026-10-27-sincos-pair @38a1d43): cos computed with sin and served
+  from the pair (~1150 of ~1175 cos calls per 2v2 frame); Citra identical but hw runs 51a/51b game +0.46 ms (native sin
+  489 -> 645 ns per call: bigger body). Details: unknowns "sin/cos pairs".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
