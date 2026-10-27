@@ -253,6 +253,22 @@ RI u64 fctiw_bits(double b, int tz){
     if (r == 0 && signbit(b)) v |= 0x100000000ull;
     return v;
 }
+/* fctiw of a float (recomp.py fp_single): vcvt from single, the same integer as from its double */
+RI u64 fctiw_bits_f(float b, int tz){
+#ifdef __arm__
+    s32 r;
+    float t;
+    if (tz) __asm__("vcvt.s32.f32 %0, %1" : "=t"(t) : "t"(b));
+    else __asm__("vcvtr.s32.f32 %0, %1" : "=t"(t) : "t"(b));
+    memcpy(&r, &t, 4);
+    if (isnan(b)) r = (s32)0x80000000;
+    u64 v = 0xFFF8000000000000ull | (u32)r;
+    if (r == 0 && signbit(b)) v |= 0x100000000ull;
+    return v;
+#else
+    return fctiw_bits(b, tz);
+#endif
+}
 double ppc_fres(double b);      /* Gekko table estimates; see recomp_unknowns.md */
 double ppc_frsqrte(double b);
 /* single-precision madd (fmadds, ps_madd...): a is single, c is cut to 25 bits (f25), so
@@ -281,6 +297,25 @@ static inline double SMUL(double a, double c){ return fsgl(a * f25(c)); }
 static inline double SMADD(double a, double c, double b){ return fsgl(fmadd_s(a, f25(c), b)); }
 static inline double SMSUB(double a, double c, double b){ return fsgl(fmadd_s(a, f25(c), -b)); }
 #endif
+/* the same ops when every input is a float (recomp.py fp_single: FPR halves that provably hold a
+ * single). add/sub/mul/div in float are the double op + fsgl bit for bit: a double has 53 >= 2*24+2
+ * bits, so rounding twice gives the correctly rounded float (any rounding mode; a float's f25 is
+ * itself). madd/msub as SMADD/SMSUB: FLOATOPS float, else Dolphin's one double rounding then fsgl.
+ * recomp_unknowns.md "Single-precision FPR halves". */
+RI float FADD(float a, float b){ return a + b; }
+RI float FSUB(float a, float b){ return a - b; }
+RI float FMUL(float a, float c){ return a * c; }
+RI float FDIV(float a, float b){ return a / b; }
+#ifdef RECOMP_FLOATOPS
+RI float FMADD(float a, float c, float b){ return a * c + b; }
+RI float FMSUB(float a, float c, float b){ return a * c - b; }
+#else
+RI float FMADD(float a, float c, float b){ return (float)fmadd_s(a, c, b); }
+RI float FMSUB(float a, float c, float b){ return (float)fmadd_s(a, c, -(double)b); }
+#endif
+RI float fnoneg_f(float d){ return isnan(d) ? d : -d; }
+RI float fnabs_f(float d){ return -__builtin_fabsf(d); }
+RI float fsel_f(double a, float b, float c){ return (a >= -0.0) ? b : c; }
 
 /* ---- paired-single quantization (GQR) ---- */
 static inline double dequant(u32 a, int type, int scale, int *size){
