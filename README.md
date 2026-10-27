@@ -86,7 +86,7 @@ button): runs 46a/46b, game thread -0.12 ms, 47.0 fps. A hardware profile (run 4
 misaligned guest accesses (`make ALIGNVERIFY=1`: ~2M per 2v2 replay, many in the particle code) ruled out keeping
 guest RAM as native-endian words. Tried and not kept on 2026-10-27: AX decode predictions on the mix worker (runs
 49a/49b: 0.2 ms of audio off the game thread, but the game thread got 0.27 ms slower, likely L2 cache pressure from
-core 2), and guest RAM at a fixed host address (`make RANGEVERIFY=1` shows it would work, but it would save under ~0.1 ms).
+core 2), sin/cos computed in pairs (runs 51a/51b: game +0.46 ms), and guest RAM at a fixed host address (`make RANGEVERIFY=1` shows it would work, but it would save under ~0.1 ms).
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
