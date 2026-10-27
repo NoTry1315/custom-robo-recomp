@@ -442,6 +442,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   Do not use Rosalina's debugger in it: the 3DS lost its network twice while an earlier version polled qXfer:osdata processes on TCP 4000 (not proven the cause; no
   crash without it). Any TCP connect to 17491 breaks the netloader (error screen), and its UDP ping answer does
   not reach the PC. Git Bash: MSYS_NO_PATHCONV=1 (else /3ds/.. SD paths become Windows paths).
+  Back-to-back runs (3dslink ftpd ~6 s after START in ftpd) crashed the 3DS's Wi-Fi and froze the Homebrew
+  Launcher (19:45, no debugger in use); now >= 30 s from ftpd exit to any 3dslink (temp-file stamp, CR_HW_SETTLE)
+  and one retry after 30 s, then stop and ask the user.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
