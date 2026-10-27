@@ -34,8 +34,13 @@ ready for the next run; `quit` at the end of a session returns it to the Homebre
 crashes never returns to the agent: the script stops after --timeout and says so (look at the console).
 Every agent PING reply (uptime, Wi-Fi strength 0-3, SD free, battery level 0-5 and percent, charging, charger
 connected) is appended to logs/hw_loop_agent.log; `run` stops before starting when the battery is at level 2 or
-less without the charger."""
-import argparse, os, socket, sys, time
+less without the charger.
+
+One 3DS, several sessions and worktrees: every command holds an exclusive lock on ~/.custom-robo-hw.lock (the OS
+drops it if the process dies) and waits while another holds it, like tools/citra/replay.ps1's Citra lock.
+`locked <command ...>` runs a whole script under one lock (tools/hw_ab.sh does, so its A and B stay back to back);
+inside it CR_HW_LOCKED=1 tells the nested hw_loop.py calls not to lock again."""
+import argparse, os, socket, subprocess, sys, time
 
 IP = os.environ.get('CR_3DS_IP', '192.168.1.129')
 AGENT_PORT = 5001
@@ -206,7 +211,30 @@ def press(buttons, hold_ms=150):
     s.close()
 
 
+HW_LOCK = os.path.join(os.path.expanduser('~'), '.custom-robo-hw.lock')
+
+
+def hw_lock():
+    """Exclusive lock on the 3DS for this process's lifetime; None when a parent (`locked`) already holds it."""
+    if os.environ.get('CR_HW_LOCKED') == '1': return None
+    f = open(HW_LOCK, 'a+')
+    for i in range(10 ** 9):
+        try:
+            if os.name == 'nt':
+                import msvcrt; f.seek(0); msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl; fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except OSError:
+            if i % 30 == 0: print(f'{now()} waiting for the 3DS: another session holds {HW_LOCK}', flush=True)
+            time.sleep(2)
+
+
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == 'locked':
+        lock = hw_lock()
+        sys.exit(subprocess.call(sys.argv[2:], env=dict(os.environ, CR_HW_LOCKED='1')))
+    lock = hw_lock()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
     sub.add_parser('ping'); sub.add_parser('quit'); sub.add_parser('agent-install')
