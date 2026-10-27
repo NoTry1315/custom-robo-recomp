@@ -522,6 +522,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   -0.11 ms (sd 0.14, 51/73), cycles -0.034M: noise level, LTO stays off. `make LTO=1` links again (cpu.o / mtx.o
   -fno-lto for their top-level-asm symbols; -ffunction-sections at the LTO link, else hot_order.ld places nothing).
   Details: unknowns "-O3 and LTO".
+- Card UI (2026-10-27, branch task/2026-10-27-card-ui): `make CARDUI=1` draws the bottom screen as cards
+  (runtime/menu_card.c: title, build id + flags, fps / game / GX / audio tiles, every btn[] toggle as a card with
+  an on/off dot, last printf line) on the CPU with the system font, glyphs spaced by their ink. Default build keeps
+  the console layout (unchanged; boots in Citra). Citra checked by screenshot; touch and hardware not yet checked.
+  Details: unknowns "Card layout of the bottom screen".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

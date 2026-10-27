@@ -171,6 +171,11 @@ scene          8  sub 3  r12345
 io  late 0 slow 3 stall 0 lin 17714K
 ```
 
+`make CARDUI=1` builds a tidier bottom screen instead: the title, the build id (plus flag files), four
+tiles (fps, game ms, GX ms = GX thread busy, audio ms) and the same touch buttons as rounded cards with
+an on/off dot, with the last message line at the bottom. It is drawn on the CPU with the 3DS system font,
+only where something changed. The full stats table is only in the default layout.
+
 Touch buttons on the bottom screen switch test features live (the log records each switch,
 and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack",
 "Lazy vtx desc", "Native sin/cos", "Ptr extent" (pointer-extent stack promotion in the 16 hottest
@@ -239,7 +244,8 @@ every store that reaches a hardware address as `# hwcheck store` lines), `make A
 read call per source sample) and `make AXWORKER=0` (the mix jobs run on the game thread instead of a worker thread on
 core 2; boot line `# AX: mix jobs`), `make ALIGNVERIFY=1` (every misaligned 16/32-bit guest access logged per
 host site as `# align` lines) and `make RANGEVERIFY=1` (the same lines for every guest access outside
-0x80000000-0x81ffffff). Switching any of these needs `make clean` first. `make HOTORDER=0` links .text in plain
+0x80000000-0x81ffffff), and `make CARDUI=1` (the card layout of the bottom screen, see Install; the
+build id ends in `cardui`). Switching any of these needs `make clean` first. `make HOTORDER=0` links .text in plain
 link order instead of `tools/recomp/hot_order.ld` (the 2v2's hot functions first; delete the .elf to relink).
 Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
 `RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `RECOMP_INLINE_TSV=0` leaves out the profile sites of

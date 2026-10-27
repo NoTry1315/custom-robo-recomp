@@ -510,6 +510,13 @@ extern u32 recomp_gx_thread_flips;     /* GX thread switches so far (for the # t
 void recomp_status_row(int row, const char *s);   /* stats row 0..RECOMP_STAT_ROWS-1, redrawn only when changed (menu.c; game thread) */
 void recomp_menu_init(void);           /* bottom screen console + layout (menu.c) */
 void recomp_menu_header(const char *build, const char *flags);   /* build id + sdmc flags rows */
+void recomp_menu_stats(double fps, double game, double gx, double audio);   /* `make CARDUI=1`: the four stat tiles (log.c, game thread) */
+/* menu_card.c: the card layout (`make CARDUI=1`), called by menu.c */
+void recomp_card_init(void);
+void recomp_card_header(const char *build, const char *flags);
+void recomp_card_stats(double fps, double game, double gx, double audio);
+void recomp_card_button(int i, int n, const char *name, int state, int action, int count);
+int  recomp_card_hit(int px, int py, int n);   /* button index at a touch, or -1 */
 int  recomp_gx_thread_ok(void);        /* the GX thread exists (core 2) */
 extern volatile u32 recomp_gx_stat[4];  /* GX frames, draws, triangles (running totals), linear heap free (bytes); written by whoever runs GX */
 extern u32 recomp_dvd_slow_n, recomp_dvd_late_n;   /* dvd.c */
