@@ -229,7 +229,7 @@ Profiling tools: `tools/time_avg.py` (per-scene `# time` averages, split by togg
 `# perf` hardware counter averages next to game ms), `tools/callcost.py` (the call-boundary instructions of every
 translated function in a build, weighted by a `RECOMP_SITEPROF=1` replay's call counts; workflow in its docstring).
 
-With the 3DS on Wi-Fi and Rosalina's debugger enabled, `tools/hw_dump.sh [ip]` attaches gdb
+With the 3DS on Wi-Fi and Rosalina's debugger enabled (never during unattended runs: see below), `tools/hw_dump.sh [ip]` attaches gdb
 to the running game and saves thread registers, backtraces and memory to `logs/hwdump/`.
 
 Unattended hardware runs: `tools/hw_loop.py run --build <3dsx> --name <date>_hw-runNN-<purpose>
@@ -249,9 +249,13 @@ mkw3ds-build:2026-10-09 make`. Also `ping` (uptime, Wi-Fi strength, SD free; log
 Keep Rosalina's InputRedirection and debugger **off**: with both on, the 3DS lost Wi-Fi and froze 4 times in an
 hour on 2026-10-26 (three of them during the old ftpd/netloader/InputRedirection loop, one with only ftpd idle),
 and file reads and GPU work stalled together for 5-6 s at a time before one of them; 8 hours of hardware runs
-earlier that day without them had no network trouble. Both Rosalina features poll the network from the system
+earlier that day, before InputRedirection was first turned on, had no network trouble (whether the debugger
+was on then is not recorded). Both Rosalina features poll the network from the system
 core every 10-50 ms (Luma3DS issues #2248, #2250, #2071 report InputRedirection freezes and lost IPs). The agent
-loop needs neither: SOAK_RESULT
+loop needs neither: 4 full cycles back to back on 2026-10-26 (20:34-20:55, ~5.3 min each: 4.5 MB build put, 2v2 replay, return,
+log fetched; logs `cr_autotest_2026-10-26_hwagent-soak-01..04.log`) had no stall over 0.6 s and no network
+trouble, and gave the same 2v2 game ms as run 37b (19.6-19.7). Stopped after 4 (user's call); longer sequences
+are the next A/Bs.
 
 ## How it works
 

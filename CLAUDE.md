@@ -448,7 +448,7 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   routines in runtime/fifo_put.c instead of the ~10-instruction inline append; .text -2.2%, Citra +1.2%; hardware runs
   38a/38b: 2v2 game +0.34 ms, busy cycles +0.37M. Dropped (performance.md "Tried and not kept"). Runs 38a/38b also hit
   two 3DS freezes with Wi-Fi loss (after ~10 netloads since boot, and after a run whose boot already had 5-6 s SD stalls);
-  a separate session ("Why the 3DS crashes during automated runs") is looking for the cause.
+  not the game (38b reached its run length): Rosalina InputRedirection + debugger, see "Unattended hardware runs".
 - Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
   through cr_agent (`tools/hw/agent`, TCP 5001: PUT/GET/MV/LS/RUN/QUIT, no delete, /custom-robo/save refused): put
   flags + build, RUN through Luma's hb:ldr with "--return /3ds/cr_agent.3dsx", the build points hb:ldr back at the
@@ -458,11 +458,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   Why: the first version (InputRedirection presses + 3dslink + ftpd.3dsx, both Rosalina network features on) lost
   Wi-Fi and froze the 3DS 4 times in ~1 h (19:03 while polling the debugger, 19:45 after a 3dslink "Failed
   sending", 19:52 after a game run whose boot had 5-6 s FS + GX stalls (run 38b; the game itself finished), 19:58
-  with only ftpd idle ~1 min after one netload). Runs 31-36 that day (10:50-18:40, no InputRedirection/debugger,
-  user-driven ftpd) had none. Rosalina's InputRedirection polls soc every 10 ms and the debugger every 50 ms from
+  with only ftpd idle ~1 min after one netload). Runs 31-36 that day (10:50-18:40, before InputRedirection was first
+  turned on; debugger state then not recorded; user-driven ftpd) had none. Rosalina's InputRedirection polls soc every 10 ms and the debugger every 50 ms from
   the system core (prio 0x20; Luma3DS issues #2248/#2250/#2071: InputRedirection freezes, lost IP). Both on +
   idle in the Homebrew Launcher with only a ping every 30 s survived 27 min, so traffic or app switches seem to be
-  needed too (not isolated further: one feature on at a time was not tried). SOAK_RESULT
+  needed too (not isolated further: one feature on at a time was not tried). Soak (20:34-20:55, user stopped it after 4
+  runs): 4 full cycles back to back, ~5.3 min each, no stall > 0.6 s, no network trouble, 2v2 game 19.6-19.7 ms
+  (= run 37b, pad lines identical). Not yet an hour: the next A/Bs extend it. Agent changes: rebuild with
+  `docker ... -w /proj/tools/hw/agent ... make`, `hw_loop.py agent-install`.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
