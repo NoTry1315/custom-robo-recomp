@@ -510,7 +510,7 @@ static void out_frame(void) {
 #define NJOB 16
 static FJob jobs[NJOB];
 static volatile u32 job_w, job_r;
-static volatile int job_sleeping, job_waiting;
+static volatile int job_sleeping, job_waiting, job_quit;
 static LightEvent job_ev, job_done_ev;
 static int job_worker = -1;        /* -1 not started yet, 0 none (jobs run at once), 1 worker thread */
 
@@ -532,6 +532,7 @@ static void job_worker_fn(void *arg) {
     for (;;) {
         u32 r = job_r;
         while (job_w == r) {
+            if (job_quit) return;   /* recomp_ax_close: every job done */
             job_sleeping = 1;
             __dmb();
             if (job_w == r) LightEvent_WaitTimeout(&job_ev, 2000000);
@@ -748,7 +749,12 @@ void recomp_ax_service(void) {
 }
 
 void recomp_ax_close(void) {
-    if (job_worker == 1) job_drain(job_w);
+    if (job_worker == 1) {   /* the worker ends once every job is out, before ndsp and the log close */
+        job_drain(job_w);
+        job_quit = 1;
+        __dmb();
+        LightEvent_Signal(&job_ev);
+    }
     wav_close();
     if (ndsp_ok == 1) { ndspExit(); ndsp_ok = 0; }
 }

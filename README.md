@@ -15,13 +15,13 @@ with sound, memory card saves, stereoscopic 3D, the attract movie and the HOME b
 Frame rates on hardware (New 3DS, averages of the in-game `# time` windows from
 `tools/time_avg.py`). Each run was played by hand, so the scenes differ from run to run:
 
-| Scene | Run 24 (10-21) | Run 25 (10-22) | Run 27 (10-22) | Run 28 (10-22) | Run 29 (10-23, 2v2 CPU work, now in main) | Run 41a (10-26, 2v2 replay, density work) | Run 43b (10-27, 2v2 replay, audio mixer) | Game speed now |
+| Scene | Run 24 (10-21) | Run 25 (10-22) | Run 27 (10-22) | Run 28 (10-22) | Run 29 (10-23, 2v2 CPU work, now in main) | Run 41a (10-26, 2v2 replay, density work) | Run 46b (10-27, 2v2 replay, audio mixer + inlining) | Game speed now |
 |---|---|---|---|---|---|---|---|---|
 | Title, menus (2.x, 5.0) | 49-60 | ~60 | 58-60 | 58-60 | not recorded | - | - | 97-100% |
-| Campaign (8.3) | 42.4 | 44.4 | 51.2 | 56.7 (39 windows) | 58.5 | 59.0 (37 windows) | **59.2** (37 windows) | 99% |
+| Campaign (8.3) | 42.4 | 44.4 | 51.2 | 56.7 (39 windows) | 58.5 | 59.0 (37 windows) | **59.4** (37 windows) | 99% |
 | Battle 1v1 (4.2) | 47.9 | 54.2 | 45.3 (campaign battles) | **57.3** (19 windows) | not played | - | - | 95% |
 | Battle 1v1, 3D slider up | - | - | - | 51.4 (20 windows) | not played | - | - | 86% |
-| Battle 2v2 (4.2) | - | - | - | 30.5 (72 windows) | 39.6 | 44.7 (74 windows) | **46.7** (74 windows) | 78% |
+| Battle 2v2 (4.2) | - | - | - | 30.5 (72 windows) | 39.6 | 44.7 (74 windows) | **47.0** (74 windows) | 78% |
 | Pause (c.0) | 40.1 | 55.8 | 59.1 | 57.5 (2 windows) | not played | - | - | 96% |
 | Attract movie | ~9 | 13.9 | not played | not played | not played | - | - | ~46% |
 
@@ -29,19 +29,19 @@ The game runs one logic step per frame, so game speed is fps / 60: at 48 fps a
 battle plays in slow motion at 80% of real time. 100% needs a steady 60 fps.
 The movie is measured against its own 30 fps.
 
-Where the time goes now (run 28; 2v2 from run 43b; ms per frame):
+Where the time goes now (run 28; 2v2 from run 46b; ms per frame):
 
 | Scene | frame | game CPU | GX thread busy | GPU | bound by |
 |---|---|---|---|---|---|
 | Campaign 8.3 | 17.6 | 9.9 | 16.1 | 3.7 | near 60 fps |
 | Battle 1v1 | 17.5 | 15.1 | 12.2 | 2.2 | near 60 fps |
 | Battle 1v1, 3D | 19.5 | 14.5 | 16.5 | 9.8 | GPU + CPU |
-| Battle 2v2 (run 43b) | 21.4 | 19.9 (+ 0.9 audio) | 16.9 | 2.3 | **game CPU** |
+| Battle 2v2 (run 46b) | 21.3 | 19.7 (+ 0.9 audio) | 16.9 | 2.4 | **game CPU** |
 
 Textures in VRAM (2026-10-22) cut GPU time to under a third: campaign 12.2 -> 3.7 ms, battle
 9.3 -> 2.2 ms (runs 27 -> 28; the battles were different fights, so that one is rough). The 2v2 battle is now the heaviest scene, and it is bound by the
 game's own code: 29.8 ms per frame in run 28, 22.2 ms after the 2v2 CPU work (run 29: 30.5 -> 39.6 fps), 19.6 ms after
-the translator density steps (run 41a: 44.7 fps), 21.4 ms per frame after the audio mixer work (run 43b: 46.7 fps). Every performance change and its measured effect, including
+the translator density steps (run 41a: 44.7 fps), 21.4 ms per frame after the audio mixer work (run 43b: 46.7 fps), 21.3 ms with profile-guided inlining (run 46b: 47.0 fps). Every performance change and its measured effect, including
 the ones that did not help, is listed in `docs/performance.md`.
 
 2v2-perf-3 (merged to main 2026-10-26, from `task/2026-10-26-2v2-perf-3`): lazy vertex descriptor, pointer-extent
@@ -78,7 +78,12 @@ frame on the game's core (the game's own sound tick only 0.3 ms). It now decodes
 reads ARAM directly (runs 42a/42b: mixer 1.91 -> 1.06 ms, frame 22.35 -> 21.62 ms), and the resampling, volumes and
 output run as a job on a worker thread on core 2 while the game goes on (runs 43a/43b: mixer on the game thread
 1.06 -> 0.59 ms, frame 21.68 -> 21.42 ms). 2v2 44.7 -> 46.7 fps; the mixed audio is bit-identical (a hash of the
-output in the `# AX: frame` lines matches in Citra and on hardware).
+output in the `# AX: frame` lines matches in Citra and on hardware). Profile-guided inlining (branch
+`task/2026-10-27-hot-inline`: the 90 hottest calls to small translated functions in the Citra 2v2 replay, listed in
+`tools/recomp/inline_sites.tsv` by `tools/recomp/inline_sites.py`, get an inline copy; covered by the "Inline sites"
+button): runs 46a/46b, game thread -0.12 ms, 47.0 fps. A hardware profile (run 44, `make FNPROF=1`) and a count of
+misaligned guest accesses (`make ALIGNVERIFY=1`: ~2M per 2v2 replay, many in the particle code) ruled out keeping
+guest RAM as native-endian words.
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
@@ -224,9 +229,11 @@ that is swept once per frame; boot line `# wrmap:`) and `make STORECHECK=1` (eve
 hardware addresses again; by default only the functions in gen/recomp_hw_*.c do, and `HWCHECK=verify` also lists
 every store that reaches a hardware address as `# hwcheck store` lines), `make AXFAST=0` (the old AX mixer, one ARAM
 read call per source sample) and `make AXWORKER=0` (the mix jobs run on the game thread instead of a worker thread on
-core 2; boot line `# AX: mix jobs`). Switching any of these needs `make clean` first.
+core 2; boot line `# AX: mix jobs`) and `make ALIGNVERIFY=1` (every misaligned 16/32-bit guest access logged per
+host site as `# align` lines). Switching any of these needs `make clean` first.
 Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
-`RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `dual`, the default, builds both variants into the one
+`RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `RECOMP_INLINE_TSV=0` leaves out the profile sites of
+`tools/recomp/inline_sites.tsv`; `dual`, the default, builds both variants into the one
 `.3dsx` behind the "Ptr extent" / "Inline sites" buttons; `0` is the plain main code).
 
 Citra tests: `tools/citra/replay.ps1 -Name battle|campaign|2v2` plays recorded input
@@ -238,7 +245,8 @@ hardware log's pad lines from a save (how the run 30 story event was replayed).
 
 Profiling tools: `tools/time_avg.py` (per-scene `# time` averages, split by toggle), `tools/perf_avg.py` (per-scene
 `# perf` hardware counter averages next to game ms), `tools/callcost.py` (the call-boundary instructions of every
-translated function in a build, weighted by a `RECOMP_SITEPROF=1` replay's call counts; workflow in its docstring).
+translated function in a build, weighted by a `RECOMP_SITEPROF=1` replay's call counts; workflow in its docstring),
+`tools/recomp/inline_sites.py` (the hot call sites of a `RECOMP_SITEPROF=1` replay -> `tools/recomp/inline_sites.tsv`).
 
 With the 3DS on Wi-Fi and Rosalina's debugger enabled (never during unattended runs: see below), `tools/hw_dump.sh [ip]` attaches gdb
 to the running game and saves thread registers, backtraces and memory to `logs/hwdump/`.

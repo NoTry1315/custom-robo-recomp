@@ -2722,6 +2722,59 @@ preempts it on core 2 (its own work is unchanged), and the game thread's ms rose
 explained; the frame is what counts). Assumption (new): the game reads nothing the jobs write (mixL/mixR are read
 only through __AXOutAiCallback in the movie path, which mixes at once).
 
+## Hardware profile of the 2v2 (2026-10-27, run 44)
+
+`make FNPROF=1` on hardware: the sampler (core 2, every 0.5 ms) reads `recomp_cur_fn`, which gen/ sets at each
+function's entry reload and after each call's reload, and LOG()/NATIVE_PROF set to the SDK or native name. 0 is
+stored at every call site's spill and return store, so "0" is the call boundary: the bl, the callee's push and entry
+reloads, the return and the caller's reloads, including the I-cache misses of entering the callee. Run 44 (2v2
+replay, r4500+, 174k samples): "0" 27.0%, PSMTXConcat 3.0, ps_disp_quad 2.6, DVDReadAsyncPrio 2.3 (synchronous SD
+reads, cr_dvdasync_off), cos 1.9, PSMTXMultVec 1.8, PSMTXInvXpose 1.6, GXDrawDone 1.6, sin 1.5, then translated
+functions at <= 1.5% each; natives together ~25% (MTX ~7.8, sin/cos/sinf/cosf ~5.0, GX ~7). The same build in
+Citra: "0" 18.6%, GXDrawDone 12.9 (Citra's GX thread is slower), PSMTXConcat 5.1. FNPROF costs ~1 ms of game
+thread (21.0 vs 19.9 ms) and charges each native a count_of() lookup. The "0" share does not price the calls:
+inlining 4.4k calls per frame (run 46) saved ~22 cycles each, so most of that bucket is work that moves with the
+code (entry I-cache misses, reloads) rather than glue that disappears.
+
+## Misaligned guest accesses (2026-10-27, measured)
+
+Question: can guest RAM hold native-endian words (32-bit accesses without `rev`, float loads as one `vldr`)? That
+needs every 16/32-bit access to be naturally aligned. `make ALIGNVERIFY=1` (RECOMP_ALIGN_VERIFY, ppc.h `ALN` in
+every rd16/rd32/wr16/wr32 helper, cpu.c `recomp_align_miss`) logs each misaligned access's host site ("# align
+site", "# align count", "# align r<n>" every 600 retraces). Citra replays: 2v2 1,965,778 misaligned 32-bit and 16
+16-bit accesses at 30 sites; battle 144,305 at 30; campaign 43,528 at 21; boot 0. Sites: rd32_b/wr32_b in the HSD
+particle code (lr 0x8017d228, 0x8017d350, 0x80181d4c: ~650k, addresses 0x815c7ef2 / 0x815c8032 ...), the game's
+sound driver reading AX PB fields at 2-aligned addresses (lr 0x8000569c, 0x80179150 ...: 0x818001aa.. in the VPB
+area, whose 32-bit fields are u16 pairs at even offsets), runtime ax.c voice_frame on the same fields, and
+0x80446426.. (lr 0x801760d0, 0x80176360). Consequence: native-endian words are not built (performance.md "Tried and
+not kept"). Gekko handles these misaligned lwz in hardware, so the game has them on hot paths, and a replay cannot
+show that no other path has them.
+
+## Profile-guided inlining (2026-10-27, branch task/2026-10-27-hot-inline)
+
+`tools/recomp/inline_sites.py` reads a RECOMP_SITEPROF generation (gen/sites.tsv; each call site's `cpu.lr =
+<bl + 4>; SITEC(k)` gives its bl address) and a replay's `# site` counts, and writes `tools/recomp/inline_sites.tsv`:
+every direct bl to a translated function of at most 64 guest instructions run at least 10 times per frame in the
+window (Citra 2v2, r4800-8400), without self-calls and without callees that are callers of another chosen site.
+recomp.py `profile_inline_sites()` adds them to INLINE_SITES (dropping any whose copy would hold another inline
+copy, against the explicit list too), so they get the same always_inline `fi_` copy and the run-time "Inline sites"
+toggle; `RECOMP_INLINE_TSV=0` leaves them out. 90 sites, 4,420 calls per 2v2 frame (of 25.7k: 11.6k direct
+translated calls, 11.5k SDK calls, 2.5k call_indirect), 69 callees, 2560 guest instructions copied; .text +26 KB
+(+0.6%). Citra: boot/battle/campaign/2v2 SDK logs, fb dumps and AX hashes identical to main; 2v2 game 33.0 -> 32.6
+ms. Hardware A/B runs 46a/46b: game -0.12 ms (median -0.10, sd 0.11, faster in 59 of 73), busy cycles -0.10M
+(73 of 73), frame 21.37 -> 21.27 ms. ~22 cycles per removed call. Wider thresholds (<= 128 instructions: 5.5k
+calls) would add ~39 KB for ~1k more calls; not tried. The SITEPROF data were taken on main@1d6d4e8; the list holds
+bl addresses, so it stays valid while main.dol is the same, but call counts drift as the runtime changes.
+
+## Boot hang before the first log line (2026-10-27, hardware run 45a)
+
+Run 45a (main@1d6d4e8, a build that had booted in run 43b) froze at boot with the bottom screen drawn and before
+main.dol was read; /cr_autotest.log was created but empty, so it stopped in recomp_log_open or the first SD write
+after it. Candidates (crash-hunt session): the core 2 probe thread's join (threadJoin with no timeout: if the probe
+never runs, boot waits forever), or an FS stall right after the fopen. Not reproduced. Since 0848aa3 the probe joins
+time out after 2 s (then core 1, then core 0; "# log: helper threads on core N (a core probe timed out)") and the
+bottom screen prints "boot: log, helper threads" and "boot: loading main.dol", so the next one shows where it stops.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 

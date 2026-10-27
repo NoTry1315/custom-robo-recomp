@@ -39,6 +39,28 @@ INLINE_SITES = [
     (0x80183f38, 0x801829d0),   # ps_disp_particle_b -> ps_disp_quad, 102
 ]
 
+
+def profile_inline_sites(owners):
+    """Profile-guided sites (tools/recomp/inline_sites.tsv, written by inline_sites.py from a SITEPROF replay):
+    hot bl sites to small callees. RECOMP_INLINE_TSV=0 leaves them out. A site is dropped when its copy would hold
+    another inline copy (its callee calls through a listed site) or its caller is the callee of a listed site.
+    owners(a): the entries of the functions whose body holds address a."""
+    p = Path(__file__).with_name('inline_sites.tsv')
+    if os.environ.get('RECOMP_INLINE_TSV', '1') == '0' or not p.exists():
+        return []
+    new = [(int(f[0], 16), int(f[1], 16), int(f[4], 16)) for f in
+           (l.split('\t') for l in p.read_text(encoding='utf-8').splitlines() if l and not l.startswith('#'))]
+    have = {a for a, _ in INLINE_SITES}
+    new = [s for s in new if s[0] not in have]
+    old_callers = {c for a, _ in INLINE_SITES for c in owners(a)}
+    while True:
+        callers = old_callers | {c for _, _, c in new}
+        callees = {t for _, t in INLINE_SITES} | {t for _, t, _ in new}
+        keep = [s for s in new if s[1] not in callers and s[2] not in callees]
+        if len(keep) == len(new):
+            return [(a, t) for a, t, _ in keep]
+        new = keep
+
 # RECOMP_PTR_EXTENT=dual (default): the functions that get both bodies (old rule f_, pointer extents fp_,
 # chosen at entry by recomp_ptr_extent). Every one of the 142 functions whose C differs would add 1.03 MB
 # (+15.7% .text), so only these: each has >= 0.05% of the FNPROF samples of the Citra 2v2 (scene 4.2, r4500+)
@@ -2845,7 +2867,8 @@ def main():
     if in_mode != '0':
         idx = {fn.entry: i for i, fn in enumerate(fns)}
         inl = 'static inline __attribute__((always_inline)) void'
-        for a, t in INLINE_SITES:
+        sites = INLINE_SITES + profile_inline_sites(lambda a: {fn.entry for fn in fns if a in fn.body})
+        for a, t in sites:
             rx = re.compile(rf'(cpu\.lr = 0x{a + 4:08x}u; [^\n]*?)\bf_{t:08x}\(\);')
             call = (f'{{ if (recomp_inline_sites) fi_{t:08x}(); else f_{t:08x}(); }}' if in_mode == 'dual'
                     else f'fi_{t:08x}();')
@@ -2859,7 +2882,7 @@ def main():
                 if j in pe_body:   # a callee with two bodies: its extent body is inlined there too
                     cp[f'{t:08x}b'] = cp[f'{t:08x}b'].replace(f'{{ fp_{t:08x}(); return; }}', f'{{ fpi_{t:08x}(); return; }}', 1)
                     cp[f'{t:08x}a'] = pe_body[j].replace(f'void fp_{t:08x}(void) {{', f'{inl} fpi_{t:08x}(void) {{', 1)
-        print(f'{len(INLINE_SITES)} call sites to {len({t for _, t in INLINE_SITES})} functions inlined (INLINE_SITES, '
+        print(f'{len(sites)} call sites to {len({t for _, t in sites})} functions inlined (INLINE_SITES + inline_sites.tsv, '
               f'RECOMP_INLINE_SITES={in_mode}{", run-time recomp_inline_sites" if in_mode == "dual" else ""})')
     else:
         print('note: INLINE_SITES off (RECOMP_INLINE_SITES=0)')
