@@ -510,6 +510,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   would drop rev + core<->VFP vmov (~8.8% of translated instructions, 2v2 entry-weighted); hw run 52: setend 1 cycle,
   BE loads right, .text RWX possible on hw (not Citra). Est. 2v2 game -0.5..-1.0 ms; needs object converter + image
   fix-up + thunks + BE CPU state across runtime/. Not pursued (user, 2026-10-27): perf loop stopped at 47.2 fps. Details: unknowns "BE8 big-endian data mode".
+- Hot-code order (2026-10-27, branch task/2026-10-27-hot-order): `tools/recomp/hot_order.py` -> `hot_order.ld` (561 hot
+  2v2 functions first in .text, C3-clustered; ld `--section-ordering-file`, crt0 must stay first; `make HOTORDER=0` =
+  link order). Citra identical; hw runs 53a/53b: 2v2 game -0.09 ms, cycles fewer 73/73, 47.3 fps; I-cache misses
+  barely change (capacity misses). Item 1 of the 2026-10-27 plan (items: hot order, GX native path, DSP voices (needs
+  the user's OK: not bit-identical to Dolphin), BE8; native HSD particles cancelled by the user, rule stands).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
