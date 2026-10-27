@@ -486,6 +486,13 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   1.06, frame 22.35 -> 21.62; 43a/43b: mix on core 0 1.06 -> 0.59, frame 21.68 -> 21.42 ms: 2v2 44.7 -> 46.7 fps.
   GX thread busy 16.9 ms now includes the worker (~0.5 ms). hw_loop.py paths from Git Bash: pass `cygpath -m` paths
   (with MSYS_NO_PATHCONV=1 a /c/... path is "missing"). Details: unknowns "AX mixer".
+- Hardware profile + inlining (2026-10-27, branch task/2026-10-27-hot-inline): hw run 44 (`make FNPROF=1`, 2v2
+  replay): "0" (call boundaries) 27%, MTX natives 7.8%, sin/cos 5%, GX natives ~7%; translated functions <= 2.6% each.
+  Native-endian guest words ruled out: `make ALIGNVERIFY=1` finds ~2M misaligned 32-bit accesses per 2v2 replay (30
+  sites, particle code and sound driver). Profile-guided inlining (tools/recomp/inline_sites.py -> inline_sites.tsv,
+  90 sites; RECOMP_INLINE_TSV=0 = without): runs 46a/46b game -0.12 ms, ~22 cycles per removed call (so the 27% "0"
+  bucket is not call glue), 2v2 47.0 fps. Run 45a hung at boot before the first log line (screen frozen, log empty):
+  probe joins now time out after 2 s and the bottom screen shows boot stages. The AX worker now ends at close.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
