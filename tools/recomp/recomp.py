@@ -87,7 +87,10 @@ MTX_NATIVE = {0x801394c4, 0x801394f0, 0x80139524, 0x801395f0, 0x80139640, 0x8013
 # MSL sin/cos and their float wrappers, replaced in runtime/libm.c the same way (body translated,
 # sdmc:/cr_libm_off.txt and the native's rare paths call it); summary = the translated body's
 MSL_NATIVE = {0x80168f38, 0x801689d0, 0x801693dc, 0x80169400}   # sin, cos, sinf, cosf
-BODY_NATIVE = MTX_NATIVE | MSL_NATIVE
+# THPVideoDecode, replaced in runtime/thp.c (libjpeg-turbo; body translated for
+# sdmc:/cr_thpnative_off.txt); summary = the translated body's
+THP_NATIVE = {0x801aeb40}
+BODY_NATIVE = MTX_NATIVE | MSL_NATIVE | THP_NATIVE
 # SDK functions inside STUB_MODULES that are pure memory code: translated from the guest
 # (PADClamp + ClampStick: deadzone 15, circle radius 56/44, triggers 30..180)
 # Whole ranges: every instruction must be 'tr', not only the entry (else recomp_bad).
@@ -2211,7 +2214,7 @@ class Summaries:
         if a in MTX_NATIVE and a in self.s:
             i, c = self.s[a]
             return i | MTX_REGS[0], c | MTX_REGS[1]
-        if a in MSL_NATIVE and a in self.s:   # libm.c reads f1, writes a subset of the body's clob
+        if a in MSL_NATIVE | THP_NATIVE and a in self.s:   # libm.c / thp.c write a subset of the body's clob
             return self.s[a]
         if callee == 'call_indirect':   # its targets: p.taken (functable.c logs any other) and natives
             return self.native_in | self.ind_in, RELU

@@ -923,11 +923,11 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 
 ## THP (movie decode; Dolphin SDK add-on)
 
-3 identified of 23 functions (high 2, medium 1, low 0). All but THPInit are translated from main.dol (recomp.py TRANSLATE_SDK_RANGES); names here are for reading only.
+3 identified of 23 functions (high 2, medium 1, low 0). THPInit and THPVideoDecode are native (runtime/thp.c; THPVideoDecode = libjpeg-turbo, its translated body kept for cr_thpnative_off.txt, recomp.py THP_NATIVE); the rest are translated from main.dol (recomp.py TRANSLATE_SDK_RANGES); names here are for reading only.
 
 | address | size | name | confidence | evidence |
 |---|---|---|---|---|
-| 0x801aeb40 | 0x244 | THPVideoDecode | high | (file, Y, U, V, work) from seq_movie; checks HID2[LCE] (PPCMfhid2), JPEG marker loop; non-zero -> OSPanic "Fail to decode video data" |
+| 0x801aeb40 | 0x244 | THPVideoDecode | high | **native** (runtime/thp.c, libjpeg-turbo; output GX I8 tiles). (file, Y, U, V, work) from seq_movie; checks HID2[LCE] (PPCMfhid2), JPEG marker loop; non-zero -> OSPanic "Fail to decode video data" |
 | 0x801aed84 | 0x44 | THP_unk_801aed84 | unk | in module range, no name match; callers=1 ext=1 callees=0 |
 | 0x801aedc8 | 0x13c | THP_unk_801aedc8 | unk | in module range, no name match; callers=1 ext=1 callees=0 |
 | 0x801aef04 | 0x11c | THP_unk_801aef04 | unk | in module range, no name match; callers=1 ext=1 callees=0 |

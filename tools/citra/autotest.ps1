@@ -14,7 +14,10 @@
 # also lifts the speed limit (frame_limit 0) and turns vsync off. The
 # user's qt-config.ini is copied first and put back afterwards; Citra is
 # killed rather than closed, so it never writes its own settings over it.
-param([string]$Dir = 'build\shots', [int]$Shots = 72, [switch]$Fast, [int]$Timeout = 600, [string]$Pad = '', [string]$Replay = '')
+param([string]$Dir = 'build\shots', [int]$Shots = 72, [switch]$Fast, [int]$Timeout = 600, [string]$Pad = '', [string]$Replay = '',
+      [string]$Root = 'C:\Users\Alexander\AppData\Roaming\EmuDeck\Emulators\citra', [string]$Exe = 'citra-qt')
+# -Root/-Exe: a private portable Citra copy with a renamed exe (e.g. C:\Users\Alexander\citra-thp,
+# citra-thp), so parallel sessions share no config, sdmc or log and do not stop each other's process.
 # -Pad '360 366 100; 420 426 100': controller 1 buttons (hex, PAD_BUTTON_*) held for
 # retraces [from, to); written to sdmc:/cr_pad_script.txt for runtime/pad.c.
 # -Replay <log>: the "# pad r<n> ..." lines of a played log are replayed from
@@ -22,9 +25,9 @@ param([string]$Dir = 'build\shots', [int]$Shots = 72, [switch]$Fast, [int]$Timeo
 $sp = Split-Path $MyInvocation.MyCommand.Path
 $repo = Resolve-Path "$sp\..\.."
 New-Item -ItemType Directory -Force $Dir | Out-Null
-Get-Process citra-qt -ErrorAction SilentlyContinue | Stop-Process -Force
-$root = 'C:\Users\Alexander\AppData\Roaming\EmuDeck\Emulators\citra'
-$citra = Join-Path $root 'citra-qt.exe'
+Get-Process $Exe -ErrorAction SilentlyContinue | Stop-Process -Force
+$root = $Root
+$citra = Join-Path $root "$Exe.exe"
 $config = Join-Path $root 'user\config\qt-config.ini'
 $backup = "$config.autotest-bak"
 $sdLog = Join-Path $root 'user\sdmc\cr_autotest.log'
@@ -64,7 +67,7 @@ try {
     Start-Process $citra -ArgumentList "`"$app`""
     for ($i = 0; $i -lt 40; $i++) {
         Start-Sleep -Milliseconds 500
-        $p = Get-Process citra-qt -ErrorAction SilentlyContinue | Where-Object MainWindowHandle -ne 0
+        $p = Get-Process $Exe -ErrorAction SilentlyContinue | Where-Object MainWindowHandle -ne 0
         if ($p) { break }
     }
     # Side by side is 720 x 240, 3:1; the extra height is the menu and status bars.
@@ -72,25 +75,25 @@ try {
     $area = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
     $w = $area.Width
     $h = [Math]::Min($area.Height, [int]($w / 3) + 90)
-    & "$sp\capture.ps1" -SendToBack -Width $w -Height $h | Out-Null
+    & "$sp\capture.ps1" -Name $Exe -SendToBack -Width $w -Height $h | Out-Null
     if ($Shots -le 0) {
         # No screenshots: wait for the app to write its closing "# DONE" line
         # (Citra itself stays open when the app returns, so its process is no
         # signal), then close Citra here.
         $finished = $false
-        while ((Get-Process citra-qt -ErrorAction SilentlyContinue) -and ((Get-Date) - $start).TotalSeconds -lt $Timeout) {
+        while ((Get-Process $Exe -ErrorAction SilentlyContinue) -and ((Get-Date) - $start).TotalSeconds -lt $Timeout) {
             Start-Sleep -Milliseconds 500
             if ((Test-Path $sdLog) -and (Select-String -Path $sdLog -Pattern '^# DONE' -Quiet)) { $finished = $true; break }
         }
         if (-not $finished) { "no DONE line after {0:N0} s" -f ((Get-Date) - $start).TotalSeconds }
     }
     for ($i = 0; $i -lt $Shots; $i++) {
-        if (-not (Get-Process citra-qt -ErrorAction SilentlyContinue)) { "citra exited at shot $i"; break }
-        & "$sp\capture.ps1" -Out (Join-Path $Dir ('shot_{0:D2}.png' -f $i)) | Out-Null
+        if (-not (Get-Process $Exe -ErrorAction SilentlyContinue)) { "citra exited at shot $i"; break }
+        & "$sp\capture.ps1" -Name $Exe -Out (Join-Path $Dir ('shot_{0:D2}.png' -f $i)) | Out-Null
         Start-Sleep -Seconds 2
     }
 } finally {
-    Get-Process citra-qt -ErrorAction SilentlyContinue | Stop-Process -Force
+    Get-Process $Exe -ErrorAction SilentlyContinue | Stop-Process -Force
     Start-Sleep -Milliseconds 500
     Copy-Item $backup $config -Force
     Remove-Item $backup -Force

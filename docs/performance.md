@@ -59,6 +59,7 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
 | Battle 1v1, stereo 3D | 51.4 | 86% | 14.5 | 9.8 | GPU + CPU | 28 |
 | Battle 2v2 | 47.3 | 79% | 19.5 (+ 0.9 audio mix and sound tick) | 2.4 | **game CPU** (GX thread 17.1, incl. ~0.5 ms of mix worker) | 50b (Citra 2v2 replay) |
 | Title, menus | ~60 | 97-100% | | | | 31 |
+| Attract movie 1.0 | 44.2 | 74% of its 30 fps (one decode per 2 frames) | 17.6 (THP decode 20.4 ms per decoded frame = ~10 per loop frame, + ~6.5 DVD read wait) | 1.6 | **game CPU** (GX thread 11.5: plane uploads) | 56b |
 
 Game speed is fps / 60: the game runs one logic step per frame. From the first battle on
 hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (run 28) -> 40.3 fps (run 32a) -> 44.7 fps (run 41a, after the density steps D1-D5) -> 46.7 fps (run 43b, audio mixer) -> 47.0 fps (run 46b, profile-guided inlining) -> 47.3 fps (run 50b, MTX asm).
@@ -67,6 +68,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 
 | Date | Change | Measured effect | Status | Details (unknowns) |
 |---|---|---|---|---|
+| 10-27 | **Native THP video decode** (runtime/thp.c sdk_THPVideoDecode: the frame's scan data re-stuffed with 0x00 after each 0xFF, libjpeg-turbo tjDecompressToYUVPlanes with TJFLAG_FASTDCT, planes written as GX I8 tiles; recomp.py THP_NATIVE keeps the translated body for `cr_thpnative_off.txt` / button "Native THP"; `cr_thp_islow.txt` = accurate IDCT) | Citra (verify mode, all 3436 decodes of opening_a.thp vs the translated decoder): mean abs diff 0.17 / 0.16 / 0.17 per Y/U/V with FASTDCT (0.59 / 0.60 / 0.58 with ISLOW), max 34; movie, return to title and Start fade-out as before; SDK log off vs on differs only in the translated decoder's own calls. **HW runs 55a -> 55b (translated -> native ISLOW, same 3420 decodes on the same retraces): decode 90.2 -> ~23.6 ms (mid-movie), movie loop 14.3 -> 41.0 fps (game 64.5 -> 19.4 ms); runs 56a -> 56b (ISLOW -> FASTDCT): decode 23.6 -> 20.4 ms, 41.4 -> 44.2 fps (74% of the movie's speed)** | default on (FASTDCT) | Native THP decode |
 | 10-27 | **Hot-code order** (tools/recomp/hot_order.py -> hot_order.ld, `make` passes it to ld as `--section-ordering-file`: the 561 functions the 2v2 enters >= 0.5 times a frame (siteprof27 replay, 920 KB) go first in .text, C3-clustered with their most frequent caller (16 KB clusters, hottest per byte first), crt0 kept at the start; `make HOTORDER=0` = link order) | Citra: boot/battle/campaign/2v2 logs, fb dumps and audio hashes identical. **HW runs 53a -> 53b (2v2 replay): game 19.64 -> 19.55 ms (-0.09, median -0.20, sd 0.37, faster in 55 of 73), busy cycles -0.114M (fewer in 73 of 73), frame 21.24 -> 21.16 (47.1 -> 47.3 fps); I-cache misses 38.40 -> 38.22 per 1000 instructions (the misses are capacity misses, as run 34 said); campaign 8.3 unchanged** | default on (no run-time cost; below the 2% bar, kept like profile-guided inlining) | Hot-code order |
 | 10-27 | **PSMTXConcat / PSMTXMultVec in hand-scheduled ARM** (runtime/mtx.c wa_concat / wa_multvec, top-level asm: ldm / stm 8 words at a time, `vmov` of two floats at a time, rows interleaved, the same vmul / vmla / vadd per operation as fp_; used when all three matrices are 4-byte aligned, else fp_; fp_concat was ~186 instructions, wa_concat 114) | Citra: boot/battle/campaign/2v2 logs, fb dumps and audio hashes identical; startup bench 0 ulp vs the translated bodies (Citra and hardware). **HW bench: PSMTXConcat 495 -> 412 ns per call, PSMTXMultVec 367 -> 302. HW runs 50a -> 50b (2v2 replay): game 19.85 -> 19.58 ms (-0.27, median -0.20, sd 0.45, faster in 63 of 73), busy cycles -0.18M (fewer in 73 of 73), frame 21.42 -> 21.18 (46.7 -> 47.2 fps); campaign 8.3 game -0.16 ms** | default on | Native MTX in ARM assembly |
 | 10-27 | **Profile-guided inlining** (tools/recomp/inline_sites.py: from a RECOMP_SITEPROF Citra 2v2 replay, every bl site to a translated callee of <= 64 guest instructions run >= 10 times per frame, callees that hold no listed site themselves; 90 sites, 4.4k calls per frame, in tools/recomp/inline_sites.tsv; recomp.py adds them to INLINE_SITES, so the "Inline sites" button covers them; `RECOMP_INLINE_TSV=0` = without) | .text 4.390 -> 4.416 MB (+0.6%). Citra: boot/battle/campaign/2v2 logs, fb dumps and audio hashes identical; 2v2 game 33.0 -> 32.6 ms, battle 13.0 -> 12.8, campaign 7.5 -> 7.4. **HW runs 46a -> 46b (2v2 replay): game 19.82 -> 19.71 ms (-0.12, median -0.10, sd 0.11, faster in 59 of 73), busy cycles -0.10M (fewer in 73 of 73), frame 21.37 -> 21.27 (46.8 -> 47.0 fps); campaign 8.3 -0.09 ms. ~22 cycles saved per call removed** | default on | Profile-guided inlining |
@@ -141,6 +143,11 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 
 ## Open (next)
 
+- **Attract movie (run 56b, 44.2 fps = 74%):** per decoded frame (2 loop frames, 33.3 ms budget) the game thread
+  spends ~20.4 ms in the native decode and ~13 ms waiting for the frame's SD read at issue (dvd.c wait_read; ~6.5 ms
+  per loop frame). Splitting the decode across cores (libjpeg-turbo skip/crop scanlines) or letting the movie reads
+  overlap the decode would get it to 30; the GX thread's 11.5 ms of plane uploads (Y/U/V as LA8, 1.5 MB per
+  frame) is not the limit yet. Details: unknowns "Native THP decode".
 - **Core 0 per 2v2 frame after the audio work (run 43b, 21.4 ms):** game thread 19.9 ms, audio 0.9 (decode 0.6 +
   sound tick 0.3), GX wait 0.6. 60 fps needs ~4.7 ms less. Core 2 is now nearly full too: GX thread busy 16.9 ms
   includes the ~0.5 ms mix worker that preempts it; at 60 fps it has ~16.7 ms. If the GX thread becomes the limit,
@@ -245,6 +252,8 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 | 28 | 10-22 | main@75ea35d LTO | cr_autotest_2026-10-22_hw-run28-merged-lto.log | VRAM textures, stereo 3D, FPSCR value, 2v2 battle |
 | 27 | 10-22 | main 8575bae | cr_autotest_2026-10-22_hw-run27-clean-main.log | campaign GPU clean build |
 | 26 | 10-22 | campaign-gpu | cr_autotest_2026-10-22_hw-run26-campaign-gpu-vsh-single.log | culling, vertex shader |
+| 55 | 10-27 | branch task/2026-10-27-thp-native (pre-commit build), a = `cr_thpnative_off.txt`, b = native ISLOW; idle into the movie (card off, title presses, 10000 retraces) | cr_autotest_2026-10-27_hw-run55a-movie-thp-translated.log, ..run55b-movie-thp-native.log | native THP: movie 1.0 14.3 -> 41.0 fps, decode 90.2 -> ~23.6 ms; both play to the end and return to the title |
+| 56 | 10-27 | same branch, a = native ISLOW, b = native FASTDCT; 6000 retraces | cr_autotest_2026-10-27_hw-run56a-movie-thp-native.log, ..run56b-movie-thp-fastdct.log | FASTDCT: decode 23.6 -> 20.4 ms, movie 41.4 -> 44.2 fps |
 | 25 | 10-22 | perf-test bcd754a | cr_autotest_2026-10-22_hw-run25-perf-branches.log | codegen, model scaling, call glue |
 | 24 | 10-21 | | cr_autotest_2026-10-21_hw-run24-gx-thread.log | GX thread |
 | 20-23 | 10-21 | | cr_autotest_2026-10-21_hw-run2x-*.log | GPU kick, DVD thread, movie |

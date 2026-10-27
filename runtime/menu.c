@@ -6,8 +6,8 @@
  *   row  0     build <id>
  *   rows 1-2   flags: <sdmc flag files present at boot, cr_ prefix dropped>
  *   rows 4-12  stats, one metric per row (STAT_ROWS)
- *   rows 14-16 messages (printf scrolls here)
- *   rows 18-29 buttons: 2 columns x 4 rows, each 19x2 cells + 1 gap
+ *   rows 14-15 messages (printf scrolls here)
+ *   rows 16-29 buttons: 2 columns x 5 rows, each 19x2 cells + 1 gap
  *
  * Adding a button: one line in btn[] below. Either get/toggle functions (the toggle is a
  * request the owner applies at a safe point, as gx.c and ax.c do), or a flag variable bound at
@@ -23,7 +23,7 @@
 
 static PrintConsole *con_msg, con_ui;
 
-#define BTN_ROW0 18
+#define BTN_ROW0 16
 #define BTN_W 19
 
 static int vt_get(void) { return recomp_vt_on; }
@@ -46,6 +46,7 @@ static struct btn {
     { "Inline sites",  "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_inline_sites, cr_inline_off (main.c binds it) */
     { "Dump RAM",      "",   0,  recomp_memdump_request, 0, 0, 0, 0, -2, &recomp_memdump_n },   /* memdump.c: guest RAM + ARAM to SD */
     { "Perf counters", "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_perfctr_on, cr_perfctr (perfctr.c binds it) */
+    { "Native THP",    "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_thpnative_off (thp.c binds it) */
 };
 #define NBTN (int)(sizeof btn / sizeof btn[0])
 
@@ -129,7 +130,7 @@ void recomp_menu_init(void) {
     con_msg = consoleInit(GFX_BOTTOM, NULL);
     con_ui = *con_msg;
     consoleSetWindow(&con_ui, 0, 0, 40, 30);
-    consoleSetWindow(con_msg, 0, 15, 40, 3);   /* libctru draws a window one row above its y (Citra: y 14 printed over row 13) */
+    consoleSetWindow(con_msg, 0, 15, 40, 2);   /* libctru draws a window one row above its y (Citra: y 14 printed over row 13) */
     consoleSelect(&con_ui);
     at(3, 0); printf("\x1b[36m------------- stats (1/s) -------------\x1b[0m");
     at(13, 0); printf("\x1b[36m--------------- messages --------------\x1b[0m");

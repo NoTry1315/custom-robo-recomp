@@ -522,6 +522,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   -0.11 ms (sd 0.14, 51/73), cycles -0.034M: noise level, LTO stays off. `make LTO=1` links again (cpu.o / mtx.o
   -fno-lto for their top-level-asm symbols; -ffunction-sections at the LTO link, else hot_order.ld places nothing).
   Details: unknowns "-O3 and LTO".
+- Native THP (2026-10-27, branch task/2026-10-27-thp-native, not merged): THPVideoDecode native in runtime/thp.c
+  (re-stuffs THP's unstuffed scan data, libjpeg-turbo FASTDCT to GX I8 tiles; recomp.py THP_NATIVE keeps the body
+  for cr_thpnative_off / button "Native THP"; cr_thp_islow = accurate IDCT; cr_thpverify = both decoders compared
+  per frame). Citra: all 3436 frames within mean abs diff 0.17 per plane of the translated decoder. HW runs 55-56
+  (movie 1.0): decode 90.2 -> 20.4 ms, 14.3 -> 44.2 fps (74% of the movie's 30 fps; it paces by retraces, so slow
+  = slow motion, no skipped frames). Left: ~13 ms SD read wait per movie frame, decode on one core. opening_b.thp
+  is never referenced by main.dol. autotest.ps1 -Root/-Exe = a private Citra copy (renamed exe) when other
+  sessions use Citra. Details: unknowns "Native THP decode".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

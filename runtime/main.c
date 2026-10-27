@@ -8,6 +8,7 @@
 void cpu_init(void);
 void recomp_mtx_init(void);
 void recomp_libm_init(void);
+void recomp_thp_init(void);
 void f_80003154(void); /* __start (DOL entry) */
 extern jmp_buf recomp_exit_jmp;
 u32 __stacksize__ = 1024 * 1024;  /* translated code nests one host frame per guest call */
@@ -84,6 +85,7 @@ int main(int argc, char **argv) {
     if (recomp_load_dol() == 0) {
         recomp_mtx_init();
         recomp_libm_init();
+        recomp_thp_init();
         codegen_init();
         recomp_perfctr_init();
         printf("main.dol loaded, running __start\n");

@@ -23,11 +23,12 @@ Frame rates on hardware (New 3DS, averages of the in-game `# time` windows from
 | Battle 1v1, 3D slider up | - | - | - | 51.4 (20 windows) | not played | - | - | 86% |
 | Battle 2v2 (4.2) | - | - | - | 30.5 (72 windows) | 39.6 | 44.7 (74 windows) | **47.3** (74 windows) | 79% |
 | Pause (c.0) | 40.1 | 55.8 | 59.1 | 57.5 (2 windows) | not played | - | - | 96% |
-| Attract movie | ~9 | 13.9 | not played | not played | not played | - | - | ~46% |
+| Attract movie (1.0) | ~9 | 13.9 | not played | not played | not played | - | - | 74% (run 56b, 10-27, native THP decode: **44.2** fps, 60 windows) |
 
 The game runs one logic step per frame, so game speed is fps / 60: at 48 fps a
 battle plays in slow motion at 80% of real time. 100% needs a steady 60 fps.
-The movie is measured against its own 30 fps.
+The movie decodes one frame every two retraces, so it plays at fps / 2 of its own 30 fps:
+at 44 fps it runs in slow motion at 74% (all frames shown, none skipped).
 
 Where the time goes now (run 28; 2v2 from run 50b; ms per frame):
 
@@ -106,7 +107,9 @@ Known problems:
   screen before quitting.
 - Music can repeat a 1-2 s segment when the SD card stalls for several seconds
   (under investigation).
-- The attract movie is slow: its JPEG frames are decoded on the CPU.
+- The attract movie plays in slow motion (~74% of real time on hardware): each 640x480 JPEG
+  frame still costs ~20 ms to decode (libjpeg-turbo, no SIMD on the ARM11) and the game waits
+  ~13 ms per frame for its SD read (`docs/recomp_unknowns.md` "Native THP decode").
 - Missing graphics features: EFB-to-texture copies, lines/points, specular
   (COLOR1) lighting, post-transform texture matrices, anti-aliasing. See the GX
   sections of `docs/recomp_unknowns.md`.
@@ -173,7 +176,7 @@ io  late 0 slow 3 stall 0 lin 17714K
 
 Touch buttons on the bottom screen switch test features live (the log records each switch,
 and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack",
-"Lazy vtx desc", "Native sin/cos", "Ptr extent" (pointer-extent stack promotion in the 16 hottest
+"Lazy vtx desc", "Native sin/cos", "Native THP" (the attract movie's JPEG decoder), "Ptr extent" (pointer-extent stack promotion in the 16 hottest
 functions it changes) and "Inline sites" (the 5 inlined particle-helper calls), all on by default.
 "Perf counters" (off by default) is a measurement, not a feature: while on, the log gets a `# perf` line every
 60 retraces with the ARM11 core 0 hardware counters per frame (see Test flags, `cr_perfctr.txt`).
@@ -210,6 +213,9 @@ can be compared with a feature on and off:
 | `cr_vtxpack_off.txt` | every vertex in the full 68-byte layout (no vertex packing) |
 | `cr_lazydesc_off.txt` | a GX-queue record for every GXSetVtxDesc/GXClearVtxDesc call (no lazy vertex descriptor) |
 | `cr_libm_off.txt` | translated sin/cos/sinf/cosf/sqrtf instead of the native ones |
+| `cr_thpnative_off.txt` | the translated THP video decoder instead of libjpeg-turbo (button "Native THP") |
+| `cr_thp_islow.txt` | native THP decode with libjpeg-turbo's accurate integer IDCT instead of FASTDCT (the default, which is also closer to the game's own decoder) |
+| `cr_thpverify.txt` | every movie frame decoded both ways (translated, then native) and compared: `# thp verify` lines per frame (mean/max difference, correlation per plane), frame 100 and any frame with a luma mean difference over 10 dumped as `cr_thp_*` files. Slow: for checks only |
 | `cr_ptrext_off.txt` | old stack-promotion bodies (no pointer-extent promotion; button "Ptr extent") |
 | `cr_inline_off.txt` | plain calls at the 5 particle-helper sites (no inline copies; button "Inline sites") |
 | `cr_perfctr.txt` | ARM11 hardware counters on from boot (button "Perf counters"): a `# perf` line every 60 retraces with core 0's cycles, instructions (IPC), I-cache misses, D-cache reads and read/write misses, stall cycles (instruction fetch, data hazard), branch mispredicts and instruction micro-TLB / main TLB misses per frame; two events count per frame, so the five pairs take turns. `tools/perf_avg.py` averages them per scene. Citra only stubs the counters ("no frame counted") |
@@ -250,7 +256,9 @@ Citra tests: `tools/citra/replay.ps1 -Name battle|campaign|2v2` plays recorded i
 deterministically (see `docs/performance.md`, "How performance is measured");
 `tools/citra/compare_logs.py` compares two runs. `2v2` boots the story save in
 `data/saves/2026-10-22_pre-2v2/` (copy it there from your own SD card) and plays into a 2v2
-battle, the heaviest scene so far. `-Name boot -Save <dir> -RecLog <log>` replays a
+battle, the heaviest scene so far. `tools/citra/autotest.ps1 -Root <dir> -Exe <name>` runs a private
+portable Citra copy with a renamed exe, so two sessions running Citra at once do not share its config,
+sdmc or log, or stop each other's process. `replay.ps1 -Name boot -Save <dir> -RecLog <log>` replays a
 hardware log's pad lines from a save (how the run 30 story event was replayed).
 
 Profiling tools: `tools/time_avg.py` (per-scene `# time` averages, split by toggle), `tools/perf_avg.py` (per-scene
@@ -379,6 +387,8 @@ list in the same change whenever something new is borrowed.
 - `custom-robo-3ds`, the author's earlier hand-written reimplementation of the game: the
   format notes and the asset tools carried over into `tools/` (`dol.py`, `sound.py`,
   `tpl.py`, `font.py`, `bmg.py`, `gxtex.py`) come from it; no game logic does.
+- [FFmpeg](https://ffmpeg.org/) (`libavcodec/mjpegdec.c`): THP scan data has no 0xFF00 byte
+  stuffing, so `runtime/thp.c` re-stuffs it before handing the frame to libjpeg-turbo.
 
 ### Tools used to build, test and run it
 
@@ -387,6 +397,8 @@ list in the same change whenever something new is borrowed.
   Makefile rules, 3dslink, and the `devkitpro/devkitarm` Docker image the build image
   is based on.
 - [Docker](https://www.docker.com/): the build runs in a devkitARM container.
+- [libjpeg-turbo](https://libjpeg-turbo.org/) (devkitPro portlibs `libturbojpeg`): linked into
+  the build, decodes the attract movie's frames (`runtime/thp.c`).
 - [Citra](https://github.com/citra-emu/citra), the 3DS emulator (installed through
   [EmuDeck](https://www.emudeck.com/)): every change is tested in Citra first
   (`tools/citra/`), with recorded pad input replayed.

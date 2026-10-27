@@ -97,8 +97,8 @@ HOTORDER ?= 1
 ifeq ($(HOTORDER),1)
 LDFLAGS	+=	-Wl,--section-ordering-file,$(TOPDIR)/tools/recomp/hot_order.ld
 endif
-LIBS	:= -lcitro3d -lctru -lm
-LIBDIRS	:= $(CTRULIB)
+LIBS	:= -lturbojpeg -lcitro3d -lctru -lm
+LIBDIRS	:= $(PORTLIBS) $(CTRULIB)
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 export OUTPUT	:=	$(CURDIR)/$(TARGET)
