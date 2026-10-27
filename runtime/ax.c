@@ -514,16 +514,17 @@ static volatile int job_sleeping, job_waiting;
 static LightEvent job_ev, job_done_ev;
 static int job_worker = -1;        /* -1 not started yet, 0 none (jobs run at once), 1 worker thread */
 
-/* the job's output: ndsp and the WAV, and the 5 s line */
+/* the job's output: the 5 s line (before this frame's output, as it always was), ndsp and the WAV */
 static void job_out(const FJob *j) {
+    if (j->report) {
+        recomp_log("# AX: frame %lu voices started %lu max active %lu ended %lu loops %lu peak %lu ndsp bufs %lu dropped frames %lu rms %lu, hash %08lx; pacing %s, underruns %lu, skipped %lu, trimmed %lu\n",
+                   (unsigned long)j->frames, (unsigned long)j->started, (unsigned long)j->active_max,
+                   (unsigned long)j->ended, (unsigned long)j->looped, (unsigned long)st.peak, (unsigned long)st.queued, (unsigned long)st.dropped,
+                   (unsigned long)__builtin_sqrt((double)st.sumsq / (FRAME * 1000)), (unsigned long)st.hash, j->rt ? "rt" : "retrace",
+                   (unsigned long)j->underruns, (unsigned long)j->skipped, (unsigned long)j->trimmed);
+        st.peak = st.queued = st.dropped = 0; st.sumsq = 0;
+    }
     out_frame();
-    if (!j->report) return;
-    recomp_log("# AX: frame %lu voices started %lu max active %lu ended %lu loops %lu peak %lu ndsp bufs %lu dropped frames %lu rms %lu, hash %08lx; pacing %s, underruns %lu, skipped %lu, trimmed %lu\n",
-               (unsigned long)j->frames, (unsigned long)j->started, (unsigned long)j->active_max,
-               (unsigned long)j->ended, (unsigned long)j->looped, (unsigned long)st.peak, (unsigned long)st.queued, (unsigned long)st.dropped,
-               (unsigned long)__builtin_sqrt((double)st.sumsq / (FRAME * 1000)), (unsigned long)st.hash, j->rt ? "rt" : "retrace",
-               (unsigned long)j->underruns, (unsigned long)j->skipped, (unsigned long)j->trimmed);
-    st.peak = st.queued = st.dropped = 0; st.sumsq = 0;
 }
 
 static void job_worker_fn(void *arg) {
@@ -565,7 +566,7 @@ static void job_start(void) {
         LightEvent_Init(&job_done_ev, RESET_ONESHOT);
         s32 prio = 0x30;
         svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-        job_worker = recomp_aux_thread(job_worker_fn, 0x4000, prio + 3) != NULL;
+        job_worker = recomp_aux_thread(job_worker_fn, 0x4000, prio + 1) != NULL;   /* ahead of the GX thread (prio + 2): a job is short, and a full ring stops the game thread */
     } else
 #endif
         job_worker = 0;
