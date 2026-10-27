@@ -1259,7 +1259,7 @@ R1_ACC = re.compile(r'\b(?:(?P<op>rd|wr)(?P<w>8|16|32|64)_sp\(|psq_(?P<q>ld|st)0
 DERIVE_RE = re.compile(r'R\[(\d+)\] = R\[(\d+)\](?: ([+-]) (\d+|R\[\d+\]))?;')
 
 
-def call_args(x, i):
+def fl_call_args(x, i):
     """x[i] is just past '(': -> (list of top-level argument strings, index just past ')')"""
     depth, start, args = 0, i, []
     while True:
@@ -1984,7 +1984,7 @@ def promote_stack_slots(fns, psq_ok=True, stubs=None, ptr_extent=False):
                 op, w = s['op'] or s['q'], SP_SIZE[s['w']] if s['w'] else 8
                 is_q = bool(s['q'])
                 head = x.index('(', st) + 1
-                args, end = call_args(x, head)
+                args, end = fl_call_args(x, head)
                 W = int(args[-1]) if is_q else 0
                 cover = [k] if (is_q and W) or w == 4 else [k, k + 4]
                 if k % 4 or w < 4:
@@ -2411,13 +2411,286 @@ def check_call_reads(fns):
           (f'; NOTE ctr/ca/cr0 read after a call (EABI broken, see check_call_reads): {", ".join(bad)}' if bad else ''))
 
 
+# ---------------------------------------------------------------- single-precision FPR halves
+# Every FPR half is a double local (fpN.ps0/.ps1, the Gekko register). fp_single() finds, per
+# statement, the halves that provably hold a single-precision value (forward must-dataflow over
+# the function's instructions) and gives those a float copy (fsN_0/fsN_1, pv_fsN_h for an
+# inlined leaf's private registers). A producer of a single value writes both copies; GCC drops
+# the double one where nothing reads it (a double op, stfd, a spill to cpu in a D state). A read
+# of a single half uses the float copy, promoted where the old C took a double, so every
+# expression keeps its value; single ops whose inputs are all floats are emitted in float
+# (FADD..FMADD, ppc.h: exact, see recomp_unknowns.md "Single-precision FPR halves").
+FP_STMT = re.compile(
+    r'(?P<w1>\{ double v = (?P<e1>.*?); (?P<x1>(?:pv_)?fp\d+)\.ps0 = v; (?P=x1)\.ps1 = v; \})'
+    r'|(?P<w2>\{ double v0 = (?P<e20>.*?), v1 = (?P<e21>.*?); (?P<x2>(?:pv_)?fp\d+)\.ps0 = v0; (?P=x2)\.ps1 = v1; \})'
+    r'|(?P<w4>(?<![\w.])(?P<x4>(?:pv_)?fp\d+) = (?P<e4>psq_ld\w*\([^;]*\));)'
+    r'|(?P<w3>(?<![\w.])(?P<x3>(?:pv_)?fp\d+)\.ps(?P<h3>[01]) = (?P<e3>[^;]*);)'
+    r'|(?P<dd>(?<![\w.])PS (?P<xdd>pv_fp\d+))'   # an inlined leaf's private register: a new variable
+    r'|(?P<d>(?<![\w.])(?P<xd>(?:pv_)?fp\d+)(?:\.ps(?P<hd>[01]))? = )')   # other writes
+FP_REF = re.compile(r'^((?:pv_)?fp\d+)\.ps([01])$')
+FP_READ = re.compile(r'(?<![\w.])((?:pv_)?fp\d+)(?:\.ps([01]))?(?!\w)')
+FP_MARK = re.compile(r'@([SL])(\d+)@')
+FP_TOP = (1 << 128) - 1
+# heads whose value is always single (fnoneg only if its argument is)
+FP_SINGLE = {'SADD', 'SSUB', 'SDIV', 'SMUL', 'SMADD', 'SMSUB', 'fsgl', 'u2f'}
+FP_FOPS = {'SADD': 'FADD', 'SSUB': 'FSUB', 'SDIV': 'FDIV', 'SMUL': 'FMUL', 'SMADD': 'FMADD', 'SMSUB': 'FMSUB'}
+
+
+def fp_bit(x, h):
+    return 1 << (2 * (32 + int(x[5:]) if x.startswith('pv_') else int(x[2:])) + int(h))
+
+
+def fp_fs(x, h):
+    return f'pv_fs{x[5:]}_{h}' if x.startswith('pv_') else f'fs{x[2:]}_{h}'
+
+
+def call_args(e):
+    """'name(a, b(c, d))' -> ('name', ['a', 'b(c, d)']); None if e is not one whole call"""
+    m = re.match(r'^(\w+)\(', e)
+    if not m or not e.endswith(')'):
+        return None
+    args, depth, cur = [], 0, ''
+    for ch in e[m.end():-1]:
+        if ch == ',' and depth == 0:
+            args.append(cur.strip())
+            cur = ''
+            continue
+        depth += (ch == '(') - (ch == ')')
+        if depth < 0:
+            return None
+        cur += ch
+    return m[1], args + [cur.strip()]
+
+
+def fp_const_single(e):
+    """u2d(0x..ull) of a double that is a float (normal or 0, not NaN) -> its float bits, else None.
+    Float subnormals stay doubles: flush-to-zero would change a float op on them."""
+    m = re.match(r'^u2d\(0x([0-9a-f]+)ull\)$', e)
+    if not m:
+        return None
+    d = struct.unpack('>d', int(m[1], 16).to_bytes(8, 'big'))[0]
+    if d != d:
+        return None
+    try:
+        f = struct.pack('>f', d)
+    except OverflowError:
+        return None
+    if struct.unpack('>f', f)[0] != d or (d != 0 and abs(d) < 2.0 ** -126 and d not in (float('inf'), float('-inf'))):
+        return None
+    return int.from_bytes(f, 'big')
+
+
+def fp_class(e):
+    """single-ness of a half's new value: True, None (double) or a tuple of source bits (single
+    if all are)"""
+    m = FP_REF.match(e)
+    if m:
+        return (fp_bit(m[1], m[2]),)
+    c = call_args(e)
+    if c:
+        n, args = c
+        if n in FP_SINGLE:
+            return True
+        if n == 'fnoneg':
+            return fp_class(args[0])
+        if n in ('fneg_d', 'fabs_d', 'fnabs_d') and FP_REF.match(args[0]):
+            return fp_class(args[0])
+        if n == 'fsel' and len(args) == 3 and all(FP_REF.match(x) for x in args[1:]):
+            return fp_class(args[1]) + fp_class(args[2])
+        if n == 'u2d' and fp_const_single(e) is not None:
+            return True
+    return None
+
+
+def fp_parse(x):
+    """C line -> items: ('t', text) | ('w', kind, var, exprs, half) | ('d', var, half or None, text)"""
+    out, pos = [], 0
+    for m in FP_STMT.finditer(x):
+        if m.start() > pos:
+            out.append(('t', x[pos:m.start()]))
+        pos = m.end()
+        if m['w1']:
+            out.append(('w', 1, m['x1'], (m['e1'],), None))
+        elif m['w2']:
+            out.append(('w', 2, m['x2'], (m['e20'], m['e21']), None))
+        elif m['w4']:
+            out.append(('w', 4, m['x4'], (m['e4'],), None))
+        elif m['w3']:
+            out.append(('w', 3, m['x3'], (m['e3'],), m['h3']))
+        elif m['dd']:
+            out.append(('d', m['xdd'], None, m['dd']))
+        else:
+            out.append(('d', m['xd'], m['hd'], m['d']))
+    if pos < len(x):
+        out.append(('t', x[pos:]))
+    return out
+
+
+def fp_gen(item, s):
+    """-> (kill, gen) of a write item in state s"""
+    _, kind, x, es, h = item
+    b0, b1 = fp_bit(x, 0), fp_bit(x, 1)
+    if kind in (1, 4):
+        return b0 | b1, b0 | b1
+    halves = [(0, es[0]), (1, es[1])] if kind == 2 else [(int(h), es[0])]
+    kill = gen = 0
+    for k, e in halves:
+        b = fp_bit(x, k)
+        kill |= b
+        c = fp_class(e)
+        if c is True or c and all(s & cb for cb in c):
+            gen |= b
+    return kill, gen
+
+
+def fp_step(items, s, reload_bits):
+    for it in items:
+        if it[0] == 't':
+            for m in FP_MARK.finditer(it[1]):
+                if m[1] == 'L':
+                    s &= ~reload_bits(int(m[2]))
+        elif it[0] == 'd':
+            s &= ~(fp_bit(it[1], it[2]) if it[2] else fp_bit(it[1], 0) | fp_bit(it[1], 1))
+        else:
+            kill, gen = fp_gen(it, s)
+            s = (s & ~kill) | gen
+    return s
+
+
+def fp_sub(e, s):
+    """reads of single halves -> the float copy, promoted (same value as the double local)"""
+    def r(m):
+        x, h = m[1], m[2]
+        if h is not None:
+            return f'(double){fp_fs(x, h)}' if s & fp_bit(x, h) else m[0]
+        if not s & (fp_bit(x, 0) | fp_bit(x, 1)):
+            return m[0]
+        hs = [f'(double){fp_fs(x, k)}' if s & fp_bit(x, k) else f'{x}.ps{k}' for k in (0, 1)]
+        return f'((PS){{{hs[0]}, {hs[1]}}})'
+    t = FP_READ.sub(r, e)
+    # fctiw of a float: vcvt from single (same integer, ppc.h)
+    return re.sub(r'\bfctiw_bits\(\(double\)((?:pv_)?fs\d+_[01]), ', r'fctiw_bits_f(\1, ', t)
+
+
+def fp_float(e, s):
+    """float C for a half whose value is single in state s"""
+    m = FP_REF.match(e)
+    if m:
+        return fp_fs(m[1], m[2])
+    c = call_args(e)
+    if c:
+        n, args = c
+        refs = [FP_REF.match(a) for a in args]
+        fs = [fp_fs(*r.groups()) if r and s & fp_bit(*r.groups()) else None for r in refs]   # single inputs
+        if n in FP_FOPS and all(fs):
+            return f'{FP_FOPS[n]}({", ".join(fs)})'
+        if n == 'fsgl' and fs[0]:
+            return fs[0]
+        if n == 'fnoneg':
+            return f'fnoneg_f({fp_float(args[0], s)})'
+        if n in ('fneg_d', 'fabs_d', 'fnabs_d') and fs[0]:
+            return {'fneg_d': f'-{fs[0]}', 'fabs_d': f'__builtin_fabsf({fs[0]})', 'fnabs_d': f'fnabs_f({fs[0]})'}[n]
+        if n == 'fsel' and fs[1] and fs[2]:
+            return f'fsel_f({fp_sub(args[0], s)}, {fs[1]}, {fs[2]})'
+        if n == 'u2d':
+            return f'u2f(0x{fp_const_single(e):x}u)'
+        if n == 'u2f':
+            return fp_sub(e, s)
+    return f'(float)({fp_sub(e, s)})'
+
+
+def fp_write(item, s):
+    _, kind, x, es, h = item
+    kill, gen = fp_gen(item, s)
+    if kind == 4:
+        return (f'{{ PS t = {fp_sub(es[0], s)}; {fp_fs(x, 0)} = (float)t.ps0; {fp_fs(x, 1)} = (float)t.ps1; '
+                f'{x} = t; }}')
+    halves = [(0, es[0]), (1, es[1])] if kind == 2 else [(0, es[0])] * 2 if kind == 1 else [(int(h), es[0])]
+    if kind == 1:   # one value for both halves
+        if not gen:
+            return f'{{ double v = {fp_sub(es[0], s)}; {x}.ps0 = v; {x}.ps1 = v; }}'
+        return (f'{{ float v = {fp_float(es[0], s)}; {fp_fs(x, 0)} = v; {fp_fs(x, 1)} = v; '
+                f'{x}.ps0 = v; {x}.ps1 = v; }}')
+    decl, asg = [], []
+    for k, e in halves:
+        v = f'v{k}' if kind == 2 else 'v'
+        if gen & fp_bit(x, k):
+            decl.append(f'float {v} = {fp_float(e, s)};')
+            asg.append(f'{fp_fs(x, k)} = {v}; {x}.ps{k} = {v};')
+        else:
+            decl.append(f'double {v} = {fp_sub(e, s)};')
+            asg.append(f'{x}.ps{k} = {v};')
+    return '{ ' + ' '.join(decl + asg) + ' }'
+
+
+def fp_single(fn, sites):
+    """-> (typed lines per instruction, state at each event's store) for emit(); see FP_STMT"""
+    items = {a: [fp_parse(x) for x in fn.lines[a]] for a in fn.order}
+    rl = {}
+
+    def reload_bits(i):
+        if i not in rl:
+            m = sites[i][1]
+            rl[i] = sum(3 << (2 * k) for k in range(32) if m >> (32 + k) & 1)
+        return rl[i]
+    start = fn.order[0]
+    ins = {a: 0 if a == start or not fn.pred[a] else FP_TOP for a in fn.order}
+    outs = {}
+    changed = True
+    while changed:
+        changed = False
+        for a in fn.order:
+            if a != start and fn.pred[a]:
+                s = FP_TOP
+                for p in fn.pred[a]:
+                    s &= outs.get(p, FP_TOP)
+                ins[a] = s
+            o = ins[a]
+            for x in items[a]:
+                o = fp_step(x, o, reload_bits)
+            if outs.get(a) != o:
+                outs[a], changed = o, True
+    lines, at = {}, {}
+    for a in fn.order:
+        s, new = ins[a], []
+        for x in items[a]:
+            t = []
+            for it in x:
+                if it[0] == 't':
+                    pos = 0
+                    for m in FP_MARK.finditer(it[1]):
+                        t.append(fp_sub(it[1][pos:m.start()], s) + m[0])
+                        pos = m.end()
+                        if m[1] == 'S':
+                            at[int(m[2])] = s
+                        else:
+                            s &= ~reload_bits(int(m[2]))
+                    t.append(fp_sub(it[1][pos:], s))
+                elif it[0] == 'd':
+                    t.append(it[3])
+                    s = fp_step([it], s, reload_bits)
+                else:
+                    t.append(fp_write(it, s))
+                    s = fp_step([it], s, reload_bits)
+            new.append(''.join(t))
+        lines[a] = new
+    return lines, at
+
+
 def emit(fn, sites, prof=None):
     """Func + store/reload masks per event -> C."""
     entry = fn.entry
+    lines, fpat = fp_single(fn, sites)
 
-    def spill(m):
+    def spill(m, s=0):
         out = [f'R[{k}] = r{k};' for k in range(32) if m >> k & 1]
-        out += [f'F[{k}] = fp{k};' for k in range(32) if m >> (32 + k) & 1]
+        for k in range(32):
+            if m >> (32 + k) & 1:
+                if s >> (2 * k) & 3:
+                    hs = [f'(double)fs{k}_{h}' if s >> (2 * k + h) & 1 else f'fp{k}.ps{h}' for h in (0, 1)]
+                    out.append(f'F[{k}].ps0 = {hs[0]}; F[{k}].ps1 = {hs[1]};')
+                else:
+                    out.append(f'F[{k}] = fp{k};')
         c = [i for i in range(8) if m >> (64 + i) & 1]
         if c:
             mm = sum(0xF << (28 - 4 * i) for i in c)
@@ -2442,6 +2715,9 @@ def emit(fn, sites, prof=None):
     if fn.fu: decl.append('PS ' + ', '.join(f'fp{k}' for k in fn.fu) + ';')
     if fn.cu: decl.append('u32 ' + ', '.join(f'cr{i}' for i in fn.cu) + ';')
     decl += [f'u32 {n};' for n in fn.xu]
+    fs = sorted({v for a in fn.order for x in lines[a] for v in re.findall(r'(?<![\w.])(?:pv_)?fs\d+_[01](?!\w)', x)},
+                key=lambda v: (v.startswith('pv_'), int(re.findall(r'\d+', v)[0]), v))
+    if fs: decl.append('float ' + ', '.join(fs) + ';')
     out.append('    ' + ' '.join(decl))
     out.append('    ' + reload(ALLREGS))
     if prof is not None:
@@ -2450,7 +2726,7 @@ def emit(fn, sites, prof=None):
     for a in fn.order:
         if a in fn.labels:
             out.append(f'L_{a:08x}:;')
-        out.extend('    ' + x for x in fn.lines[a])
+        out.extend('    ' + x for x in lines[a])
         if a in fn.gotos:
             out.append(f'    goto L_{a + 4:08x};')
     out.append('}')
@@ -2459,9 +2735,9 @@ def emit(fn, sites, prof=None):
     def site(i):
         k, c, _ = fn.events[i]
         if prof is None or k not in ('call', 'tail', 'ret'):
-            return spill(sites[i][0])
+            return spill(sites[i][0], fpat.get(i, 0))
         prof.append((k, entry, c or '', sites[i][0], sites[i][1], 0))
-        return f'SITEC({len(prof) - 1}); ' + spill(sites[i][0])
+        return f'SITEC({len(prof) - 1}); ' + spill(sites[i][0], fpat.get(i, 0))
     return re.sub(r'@([SL])(\d+)@', lambda m: (site(int(m.group(2))) if m.group(1) == 'S'
                                                 else reload(sites[int(m.group(2))][1])), src)
 

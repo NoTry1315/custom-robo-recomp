@@ -20,6 +20,8 @@ logged here with addresses or turned into a runtime call that reports it
   is not yet read: check the `# fpscr:` lines in the next hardware log.
 - lfs/stfs use the C float<->double conversion. Dolphin uses bit-exact
   ConvertToDouble/ConvertToSingle, which differ for SNaN and for denormals on store.
+  Since 2026-10-22 a float that is only moved (lfs .. stfs, no double use in between) stays a
+  float and keeps its bits ("Single-precision FPR halves").
 - fres/frsqrte/ps_res/ps_rsqrte use placeholder `1/x` and `1/sqrt(x)` in runtime/cpu.c.
   Gekko returns table-based estimates; port Dolphin's tables (99 sites, listed below).
 - The FPSCR rounding mode (mtfsf/mtfsb1) is stored but not applied. fctiw rounds
@@ -2539,6 +2541,86 @@ Campaign 8.3: game 6.62 -> 6.49 ms, cycles -0.12M (37 of 37). Run 37a against ru
 windows): +0.09 ms, +0.07M cycles, so moving the 33 functions into their own file cost a little or nothing; D3 net
 against D2 is about -0.4 ms. Logs: logs/cr_autotest_2026-10-26_hw-run37a-replay-2v2-storecheck.log, ..._hw-run37b-
 replay-2v2-storefast.log.
+
+## Single-precision FPR halves (2026-10-22)
+
+Task: cheaper float code in gen/ (the battle game thread is the limit). recomp.py (`fp_single()` and
+helpers, called from `emit()`) and runtime/ppc.h only.
+
+What it does:
+- Every FPR half stays a double local (`fpN.ps0/.ps1`, the Gekko register as before). `fp_single()`
+  runs a forward must-dataflow over each function's instructions and marks, per statement, the halves
+  that provably hold a single-precision value: results of lfs (and folded .sdata2 lfs), psq_l (any
+  GQR; W = 1 gives ps1 = 1.0), every single and paired op (fadds..fnmsubs, frsp, fres, ps_*),
+  lfd of an .sdata2 constant that is exactly a normal float (0.1f as a double, 2^52 + 2^31 ..), and
+  moves, fneg/fabs/fnabs, ps_merge and fsel (both choices single) of such halves. Everything else is
+  double: lfd from memory, double ops, fctiw, mffs, frsqrte, and every half loaded from `cpu` (entry,
+  reloads after calls; f14-f31 are not reloaded, so they keep their state across calls). Joins
+  intersect; an inlined leaf's `PS pv_fpN` declaration starts that register over.
+- A single half also has a float local (`fsN_h`, `pv_fsN_h`). Producers write both (`float v = ..;
+  fsN_0 = v; fpN.ps0 = v;`); GCC deletes the double copy where nothing reads it, including across
+  loops and joins, which its own folding could not see through. Reads of a single half use the float
+  local, promoted where the old C took a double (`(double)fsN_0`), so every expression has the same
+  value as before; stores to `cpu` (spills, return stores) convert there. Single ops whose inputs
+  are all floats are emitted as FADD/FSUB/FMUL/FDIV/FMADD/FMSUB (ppc.h), fctiw of a float as
+  `fctiw_bits_f` (vcvt from single).
+
+Why it is exact (bit-identical to the old code in both FLOATOPS modes, NaN payloads aside):
+- Invariant: where a half is marked single, its double local holds a value that a float represents
+  exactly, and the float local holds that float. Producers establish it (a fsgl'd result, a float
+  load, a checked constant, a sign/abs/select of single values); converting such a double to float
+  and back is the identity, so replacing a read by the promoted float changes no value.
+- add/sub/mul/div of two floats in float equal the old double op + fsgl: the exact result rounded to
+  53 bits and then to 24 bits equals it rounded once to 24 bits, because 53 >= 2*24 + 2 (double
+  rounding is innocuous for +, -, *, / at that precision; for round-toward-zero/up/down any
+  precisions compose). Float subnormal results: their precision is below 24 bits, so the bound holds;
+  overflow gives the same infinity. Flush-to-zero, if the FPSCR enables it, flushes the same inputs
+  and results in both forms (the old form flushed float subnormals when converting to double, and the
+  final fsgl flushed subnormal results); constants that would be float subnormals stay double for that
+  reason. Exact mode (FLOATOPS=0): f25 of a float is the float itself, so SMUL is a float multiply too.
+- madd/msub/nmadd/nmsub: FLOATOPS keeps its two roundings (FMADD = the same float expression as SMADD);
+  exact mode keeps Dolphin's one double rounding then fsgl (FMADD = fsgl(a*c + b) in double, a*c exact).
+- Compares, fsel, fneg/fabs and stfs of promoted floats give the same results as on the doubles.
+- NaN payloads: a float NaN loaded by lfs/psq_l and moved or stored without arithmetic now keeps its
+  bits (a signaling NaN stays signaling; with ARM default-NaN mode the payload is kept too), as in
+  Dolphin's bit-exact lfs/stfs. The old code quieted it (or made it the default NaN) when converting to
+  double, except where GCC had already folded the float->double->float round trip inside a basic block
+  (it does not honour signaling NaNs), so before this it depended on the block structure. Float
+  subnormals moved by lfs/stfs keep their bits in the same way under flush-to-zero. Neither showed up
+  in the replays.
+
+Results (Citra replays, compare_logs.py exit 0 against the base bd68260 for each: SDK calls with
+r3-r6, pad, scenes, summary counts, byte-identical framebuffer dumps; game ms = mean of the `# time`
+windows, battle 4.2 r2460-r3600, campaign 8.3 r1500-r2400):
+
+| build | battle game | campaign game |
+|---|---|---|
+| FLOATOPS=1 (default), base bd68260 (m3 logs) | 19.895 | 9.925 |
+| FLOATOPS=1, single halves | 19.785 (-0.55%) | 9.887 (-0.4%) |
+| FLOATOPS=0, base | 21.415 | 12.181 |
+| FLOATOPS=0, single halves | 20.650 (-3.6%) | 11.594 (-4.8%) |
+
+Battle frame 22.2 -> 22.1 ms (GX thread busy 12.6, unchanged). Static, f_ functions (objdump):
+vcvt.f32.f64 + vcvt.f64.f32 17.5k -> 13.7k, f64 arithmetic/compare 6572 -> 4342, f32 15886 -> 18076,
+vcvt.s32.f64 664 -> 60 (639 vcvt.s32.f32); instructions 1,681,537 -> 1,676,970. recomp.py run +~4 s.
+
+Why the default build gains little: GCC already turns `(float)((double)a + (double)b)` with float
+operands into a float op (checked with a test file: vadd.f32; valid by the same 2p + 2 argument), so single code
+inside a basic block was already float; the change adds loops/joins and removes conversions. Citra
+time counts instructions, so double vs float latency (VFP11: double multiply/divide about twice the
+single cost) is not in these numbers; not yet on hardware.
+
+What is left, per static count in gen/ (all at the `cpu.fpr` boundary, which stays double):
+- 4851 spills of single halves to `cpu` (call arguments, return values): one conversion each.
+- 1880 prologue saves (stfd + psq_st) of f14-f31 loaded from `cpu` at entry: two conversions each,
+  plus the entry loads. These are the stale copies ("Translator performance"), so the stored bits are
+  junk to the guest, but keeping memory identical needs them. Not changed.
+- 2265 single ops with a double input: 1677 are the int->float idiom (lfd of the stack-built double
+  minus the 2^52 + 2^31 magic), which needs the double; most others take a value reloaded after a
+  call or loaded at entry (f1 arguments and return values). Typing those across calls would move one
+  conversion from the use to the reload, which changes no instruction count.
+- General psq_ld/psq_st (GQR != 0) are out of line and take doubles; they appear only in the THP
+  decoders (not in these replays).
 
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
