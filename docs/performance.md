@@ -181,6 +181,13 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
   A/Bs use two builds run back to back on the 2v2 hardware replay (user decision 2026-10-26); `tools/hw_ab.sh`
   runs one unattended through cr_agent. GX-thread work
   stays second: 15.6 ms, under the 16.7 ms budget.
+- **BE8 big-endian data mode** (2026-10-27, feasibility study; unknowns "BE8 big-endian data mode"): gen/ run with
+  `setend be`, so guest loads/stores need no `rev` and floats load with `vldr`. Measured: `setend` costs 1 cycle on the
+  New 3DS (run 52), big-endian loads read guest RAM right, rev + core<->VFP vmov are ~8.8% of the translated
+  instructions weighted by 2v2 function entries. Estimate -0.5 to -1.0 ms of 2v2 game time after the boundary cost (~14k
+  mode switches per frame, CPU state swapped on the runtime side). Needs an object converter + image fix-up (as in
+  2gifts/melee-3ds), thunks from recomp.py, big-endian CPU state with accessor changes across runtime/: not started,
+  waiting for a decision.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
 
@@ -199,6 +206,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 | 50b | 10-27 | branch mtx-wordptr (wa_concat / wa_multvec asm) | cr_autotest_2026-10-27_hw-run50b-replay-2v2-mtxasm.log | B: route identical; bench Concat 412 ns, MultVec 302 ns (0 ulp); 2v2 4.2 game 19.58, frame 21.18 ms (47.2 fps; time_avg 47.3); kept |
 | 51a | 10-27 | main @39da216 (MTX asm) | cr_autotest_2026-10-27_hw-run51a-replay-2v2-main.log | A of the sin/cos-pair A/B (cr_bench on). 2v2 4.2 game 19.58, frame 21.18 ms (47.2 fps): repeats 50b within 0.01 ms |
 | 51b | 10-27 | branch sincos-pair @38a1d43 | cr_autotest_2026-10-27_hw-run51b-replay-2v2-sincospair.log | B: route identical; game 20.04, frame 21.59 ms (46.3 fps); bench sin 645 / cos 634 ns (main 489 / 489): not kept |
+| 52 | 10-27 | branch be8-study @4208804 (main + runtime/be8probe.c, cr_bench on) | cr_autotest_2026-10-27_hw-run52-replay-2v2-be8probe.log | BE8 probe: setend 1.40 ns (= a nop, 1.1 cycles), big-endian ldr/ldrh/vldr.f32/vldr.f64 read guest bytes right, own .text page RWX through a duplicated process handle (Citra refuses). 2v2 4.2 game 19.7, 46.9 fps |
 | 46b | 10-27 | branch hot-inline @34424bb (90 profile sites) | cr_autotest_2026-10-27_hw-run46b-replay-2v2-inline90.log | B: route identical; 2v2 4.2: 47.0 fps (78%), frame 21.27, game 19.7, audio 0.9, GX thread 16.9, GPU 2.4; game -0.12 ms, cycles -0.10M (73 of 73) |
 | 42a | 10-27 | branch audio-mix @b720da0 AXFAST=0 (old mixer + mix/callback split + output hash) | cr_autotest_2026-10-27_hw-run42a-replay-2v2-axref.log | A of the fast-mixer A/B (cr_agent). 2v2 4.2: 44.6 fps, frame 22.4, game 19.7, audio 2.2 ms = mix 1.91 + sound tick 0.27; hash a2d491c6 (= Citra). The first attempt (01:57) never started: the 3DS's battery ran out during the save check; a second attempt's 4.5 MB build upload timed out once (agent alive, retried) |
 | 42b | 10-27 | branch audio-mix @b720da0 (fast mixer) | cr_autotest_2026-10-27_hw-run42b-replay-2v2-axfast.log | B: route identical; mix 1.06 ms, frame 21.62 (46.3 fps), cycles -0.56M (73 of 73), game +0.08; same output hash |
