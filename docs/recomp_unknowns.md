@@ -2736,6 +2736,13 @@ thread (21.0 vs 19.9 ms) and charges each native a count_of() lookup. The "0" sh
 inlining 4.4k calls per frame (run 46) saved ~22 cycles each, so most of that bucket is work that moves with the
 code (entry I-cache misses, reloads) rather than glue that disappears.
 
+Native MTX/libm cost per call on hardware (run 47, startup bench, one fixed input, the native called directly
+without call glue): PSMTXConcat 496 ns (~400 cycles at 804 MHz; the flat body fp_concat alone 422 ns), PSMTXMultVec
+368 (fp_multvec 280), PSMTXInvXpose 617, PSVECNormalize 408, PSVECDotProduct 216, sin 489, cos 492. With the run 44
+call counts that is ~1.3 ms of MTX and ~1.2 ms of sin/cos per 2v2 frame. Rescheduling the MTX bodies in C did not
+help (run 48; performance.md "Tried and not kept"): each float load is an ldr -> rev -> vmov chain and each result
+waits for the VFP11's multiply-add latency.
+
 ## Misaligned guest accesses (2026-10-27, measured)
 
 Question: can guest RAM hold native-endian words (32-bit accesses without `rev`, float loads as one `vldr`)? That
