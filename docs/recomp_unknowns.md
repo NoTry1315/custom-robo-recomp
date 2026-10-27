@@ -2849,6 +2849,59 @@ made, cos 489 -> 634; the larger nat_sincos (two inlined kernels per path, more 
 for every call, and a pair only saves the shared rem_pio2, which half the calls (x = 0 and |x| <= pi/4) never run:
 computing cos inside sin costs about what the cos call cost. Agrees with the earlier memo study (~0.06 ms at best).
 
+## BE8 big-endian data mode (2026-10-27, feasibility study, not built)
+
+Idea (from 2gifts/melee-3ds native-3ds, method only): run gen/ with the ARM11 in big-endian data mode (`setend be`;
+BE8 keeps instructions little-endian). Guest RAM is already big-endian bytes, so guest loads/stores need no `rev`,
+and float loads/stores become `vldr`/`vstr` instead of ldr + rev + vmov. Misaligned guest words (unknowns
+"Misaligned guest accesses") do not matter here: RAM keeps its byte order. Probe: branch task/2026-10-27-be8-study
+@4208804 (runtime/be8probe.c, runs with sdmc:/cr_bench.txt).
+
+1. Toolchain. devkitARM GCC 16.1 (mkw3ds-build:2026-10-09) compiles gen/ with `-mbig-endian` (a `be` multilib
+   exists; the object is ELF32 big-endian, EABI5). ld cannot link it with the little-endian runtime and libctru, and a
+   whole-program `--be8` link would make libctru and every kernel/service buffer big-endian. So, like melee-3ds
+   (tools/be8_object.py, be8_image.py): convert each BE object to an LE ELF object (ELF structures LE, instruction
+   words swapped using the $a/$d mapping symbols, data such as literal pools and jump tables left big-endian, REL
+   addends of linker-owned relocations converted), then after the link byte-swap every word the linker relocated in a
+   BE data area (literal-pool addresses: gen/ uses -mword-relocations and ARMv6K has no movw/movt; switch jump
+   tables; functable) and drop those words from the 3dsx relocations. Luma's homebrew loader puts the segments at the
+   fixed 0x100000, so this can be done in the image (melee checks the address at startup). Alternative: swap them at
+   startup: hardware run 52 shows the process can make its own .text page RWX (svcControlProcessMemory MEMOP_PROT
+   through a duplicated CUR_PROCESS_HANDLE; with the pseudo-handle itself it fails), but Citra refuses it (0x000d002c with the duplicated handle),
+   so the Citra identity tests need the image route. clang is not needed. ppc.h assumes an LE host only in its
+   accessors (bswap in rd*/wr*, gx_fifo_put, memcpy of host words), which a BE compile of gen/ would drop.
+2. Boundary. Every call from gen/ to the runtime and back changes mode: 3045 sdk_ call sites (~11.5k SDK calls per
+   2v2 frame: GX, MTX, libm, OS, DVD, AX), call_indirect (~2.5k per frame; its table holds f_ and sdk_ targets),
+   hw_read/hw_write (cold), recomp_poll_events, recomp_log; and back into gen/: recomp_call_guest (callbacks,
+   interrupts), the translated fallbacks of the natives (cr_libm_off, cr_mtx_off, sin/cos |x| > 2^19 pi/2), __start.
+   Cost of `setend` on the New 3DS (run 52, loop of 8 x 200k): 1.40 ns, the same as a nop (1.1 cycles at 804 MHz),
+   and a load right after it costs nothing extra. So ~14k crossings x 2 setends = ~28k cycles per frame (~0.035 ms);
+   the real boundary cost is the CPU state (3.).
+3. Shared host data read as multi-byte values in both modes: the guest CPU state `cpu` (gpr, fpr ps0/ps1, cr, xer,
+   lr, ctr, gqr, ...: gen/ spills and reloads it at every call), which would be kept big-endian with the 588 runtime/
+   uses of R[]/F[]/cpu going through swapping accessors (a double is a 64-bit byte reverse); recomp_fifo_n /
+   recomp_fifo_lim (gen/ appends to the GX FIFO inline; gx.c moves them too) big-endian with swaps on the runtime
+   side, while the FIFO bytes already are big-endian (gen/'s bswap before the append goes away); call_indirect's table
+   (BE in the image, or call_indirect on the LE side); flags gen/ tests (recomp_event_pending, recomp_inline_sites,
+   recomp_ptr_extent: only tested for nonzero, so either order works; check each); ram_dirty[] (bytes); ram_wr[] and
+   recomp_wr_epoch (WRMAP=0 only); recomp_cur_fn (FNPROF only). The C stack is not shared: natives take their
+   arguments from `cpu`, not from the stack. libgcc helpers called from BE code (__aeabi_idiv, __aeabi_ldivmod ..)
+   use only registers and their own stack slots; memcpy/memset copy bytes, so they work in either mode (melee-3ds
+   still renames them to BE builds).
+4. Gain. main@39da216 .text, the f_ functions: 871k instructions, rev 7.1%, core<->VFP single vmov 2.2% (static).
+   Weighted by function entries per 2v2 frame (RECOMP_SITEPROF replay siteprof27, r4500-8400, 633 functions): rev
+   6.1%, vmov 2.7% of the translated instructions (loop bodies are not weighted). Removing them is ~8.8% of the
+   translated code; with ~75% of core 0's 5.1M instructions per 2v2 frame in translated code (run 50b), ~330k fewer
+   instructions per frame, minus ~14k crossings x ~6 instructions of setend and swapped CPU-state accesses (~90k):
+   net ~240k, ~4.7% of the core's instructions, and ~7-9% smaller hot code. Earlier steps for scale: D1 (loads
+   without the hardware check) -7% instructions = -9% game time; D3 -14.5% static hot instructions = -2.3%.
+   Estimate: 2v2 game -0.5 to -1.0 ms (of 19.6), above the 2% bar.
+
+Verdict: go on the numbers, but not cheap: an object converter and image fix-up step, setend thunks generated by
+recomp.py at every sdk_/call_indirect boundary and on every runtime entry into gen/, the CPU state in big-endian form
+with accessor changes across runtime/, and the shared FIFO counters. It cannot be a one-file prototype, and even the
+upper estimate leaves the 2v2 near 50 fps (60 needs ~4.5 ms). Not started: a decision for the user.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 

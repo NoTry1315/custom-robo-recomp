@@ -87,6 +87,8 @@ misaligned guest accesses (`make ALIGNVERIFY=1`: ~2M per 2v2 replay, many in the
 guest RAM as native-endian words. Tried and not kept on 2026-10-27: AX decode predictions on the mix worker (runs
 49a/49b: 0.2 ms of audio off the game thread, but the game thread got 0.27 ms slower, likely L2 cache pressure from
 core 2), sin/cos computed in pairs (runs 51a/51b: game +0.46 ms), and guest RAM at a fixed host address (`make RANGEVERIFY=1` shows it would work, but it would save under ~0.1 ms).
+Studied, not built: running the translated code in the ARM11's big-endian data mode (BE8; `setend` costs 1 cycle on
+the New 3DS, run 52; estimated -0.5 to -1.0 ms of 2v2 game time for a large toolchain change).
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of

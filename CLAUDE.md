@@ -506,6 +506,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 - sin/cos pairs (2026-10-27, not kept, branch task/2026-10-27-sincos-pair @38a1d43): cos computed with sin and served
   from the pair (~1150 of ~1175 cos calls per 2v2 frame); Citra identical but hw runs 51a/51b game +0.46 ms (native sin
   489 -> 645 ns per call: bigger body). Details: unknowns "sin/cos pairs".
+- BE8 study (2026-10-27, not built; branch task/2026-10-27-be8-study @4208804 = probe): gen/ in big-endian data mode
+  would drop rev + core<->VFP vmov (~8.8% of translated instructions, 2v2 entry-weighted); hw run 52: setend 1 cycle,
+  BE loads right, .text RWX possible on hw (not Citra). Est. 2v2 game -0.5..-1.0 ms; needs object converter + image
+  fix-up + thunks + BE CPU state across runtime/. Waiting for a user decision. Details: unknowns "BE8 big-endian data mode".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
