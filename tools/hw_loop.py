@@ -8,7 +8,8 @@ No button presses, no netloader, no ftpd, and nothing from Rosalina's network fe
 Why: with Rosalina InputRedirection + debugger on (the old version of this script pressed buttons through
 InputRedirection and started apps with 3dslink + ftpd), the 3DS lost Wi-Fi and froze 4 times in an hour on
 2026-10-26, once with only ftpd idle; before InputRedirection was first turned on, 8 hours of hardware runs had no
-network trouble. With the agent, 4 back-to-back 2v2 runs (logs/cr_autotest_2026-10-26_hwagent-soak-0*) had none.
+network trouble. With the agent, 10 runs had none, but at 2026-10-27 01:57 the 3DS left the network with only the agent
+running (a GET stopped at 64 KB after 3.4 h idle): not the whole cause, still open.
 Both Rosalina threads poll the network every 10-50 ms from the system core (README "Unattended hardware runs").
 
 Once per boot, by hand: Rosalina menu -> InputRedirection and debugger OFF (or simply reboot: both start off);
