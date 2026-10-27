@@ -232,22 +232,26 @@ translated function in a build, weighted by a `RECOMP_SITEPROF=1` replay's call 
 With the 3DS on Wi-Fi and Rosalina's debugger enabled, `tools/hw_dump.sh [ip]` attaches gdb
 to the running game and saves thread registers, backtraces and memory to `logs/hwdump/`.
 
-Unattended hardware runs: `tools/hw_loop.py run --build <3dsx> --name <date>_hw-runNN-<purpose> --wait <s>
-[--put local=/remote] [--mv /a=/b]` does ftpd -> Homebrew Launcher -> game -> ftpd with nobody at the
-console: uploads/renames flag files over FTP, presses START in ftpd and Y in the Homebrew Launcher through
-Rosalina's InputRedirection (UDP 4950), starts the build and then ftpd with 3dslink (the netloader), and
-fetches the log to `logs/cr_autotest_<name>.log` (renamed the same on the SD), then presses START so the 3DS
-is left in the Homebrew Launcher (leave it there after manual `ftp` use too: `press START`). The run needs a run length
-(pad script or replay) so the game exits by itself; `--wait` must be longer than the run, since the Y that
-starts ftpd would reach a game still running. Once per boot, by hand: Rosalina menu -> Miscellaneous options
--> Start InputRedirection, then open the Homebrew Launcher. Needs `tools/hw/ftpd.3dsx` (mtheall/ftpd v3.2.1
-release, not committed); the installed ftpd CIA exits to the HOME menu instead. Leave Rosalina's debugger
-off: the 3DS lost its network twice while an earlier version polled the debugger's process list. Never
-connect to TCP 17491 other than through 3dslink (the netloader takes it as an upload and shows an error screen,
-B closes it). No 3dslink within 30 s of ftpd exiting (a run back to back with the previous one sent ftpd ~6 s
-after START: "Failed sending", then the 3DS lost Wi-Fi and the Homebrew Launcher froze): the script waits for
-that itself, across invocations, and stops after one retry of a failed 3dslink. Also `state`, `press <buttons>`,
-`touch x y`, `launch <3dsx>`, `ftp ls|get|put|mv`.
+Unattended hardware runs: `tools/hw_loop.py run --build <3dsx> --name <date>_hw-runNN-<purpose>
+[--put local=/remote] [--mv /a=/b] [--first <s>] [--timeout <s>]` runs a build with nobody at the console through
+cr_agent (`tools/hw/agent`, a small homebrew app on TCP 5001): it puts the flag files and the build on the SD
+(`sdmc:/3ds/<basename>`), starts the build through Luma's 3dsx loader with `--return /3ds/cr_agent.3dsx`, and
+the build hands control back to the agent when its run length ends (`runtime/main.c` hw_return; any other launch
+exits to the Homebrew Launcher as before). The script does not touch the network while the game runs: it looks
+for the agent after `--first` s (default 120), then every ~20 s until `--timeout` (600), fetches
+`/cr_autotest.log` to `logs/cr_autotest_<name>.log` and renames it on the SD to `/cr_autotest_<name>.log`. The
+3DS waits in the agent between runs; `quit` returns it to the Homebrew Launcher at the end of a session. A game
+that hangs never comes back: the script stops and says so. Once per boot, by hand: open the Homebrew Launcher
+and start cr_agent (first install: press Y and `3dslink tools/hw/agent/cr_agent.3dsx`; later updates:
+`agent-install`). Build the agent with `docker run --rm -v "<repo>:/proj" -w /proj/tools/hw/agent
+mkw3ds-build:2026-10-09 make`. Also `ping` (uptime, Wi-Fi strength, SD free; logged to
+`logs/hw_loop_agent.log`), `ls`, `get`, `put`, `mv` (no delete; `/custom-robo/save` is refused).
+Keep Rosalina's InputRedirection and debugger **off**: with both on, the 3DS lost Wi-Fi and froze 4 times in an
+hour on 2026-10-26 (three of them during the old ftpd/netloader/InputRedirection loop, one with only ftpd idle),
+and file reads and GPU work stalled together for 5-6 s at a time before one of them; 8 hours of hardware runs
+earlier that day without them had no network trouble. Both Rosalina features poll the network from the system
+core every 10-50 ms (Luma3DS issues #2248, #2250, #2071 report InputRedirection freezes and lost IPs). The agent
+loop needs neither: SOAK_RESULT
 
 ## How it works
 

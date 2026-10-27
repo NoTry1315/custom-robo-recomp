@@ -445,16 +445,19 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   misses 35.2 -> 33.6/k; campaign -0.13 ms. The 2v2 replay is ~176 s of frames plus boot: hw_loop --wait 230 is enough.
   Details: unknowns "Stores without the hardware check".
 - Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
-  over the network: InputRedirection presses (START leaves ftpd, Y opens the netloader), 3dslink starts the build
-  and `tools/hw/ftpd.3dsx` (mtheall/ftpd v3.2.1; the user's ftpd is a CIA, which exits to the HOME menu), FTP
-  puts flags and fetches the log; every run ends in the Homebrew Launcher (user's rule). Two full cycles in a
-  row on hardware (dry runs, 600-retrace pad script, ~75 s each, logs/cr_autotest_2026-10-26_hwloop-dryrun2/3.log).
-  Do not use Rosalina's debugger in it: the 3DS lost its network twice while an earlier version polled qXfer:osdata processes on TCP 4000 (not proven the cause; no
-  crash without it). Any TCP connect to 17491 breaks the netloader (error screen), and its UDP ping answer does
-  not reach the PC. Git Bash: MSYS_NO_PATHCONV=1 (else /3ds/.. SD paths become Windows paths).
-  Back-to-back runs (3dslink ftpd ~6 s after START in ftpd) crashed the 3DS's Wi-Fi and froze the Homebrew
-  Launcher (19:45, no debugger in use); now >= 30 s from ftpd exit to any 3dslink (temp-file stamp, CR_HW_SETTLE)
-  and one retry after 30 s, then stop and ask the user.
+  through cr_agent (`tools/hw/agent`, TCP 5001: PUT/GET/MV/LS/RUN/QUIT, no delete, /custom-robo/save refused): put
+  flags + build, RUN through Luma's hb:ldr with "--return /3ds/cr_agent.3dsx", the build points hb:ldr back at the
+  agent at exit (runtime/main.c hw_return, only with that argv), GET the log. No button presses, netloader or ftpd;
+  Rosalina InputRedirection and debugger stay OFF. The 3DS waits in the agent between runs (`quit` = Homebrew
+  Launcher). Git Bash: MSYS_NO_PATHCONV=1 (else /3ds/.. SD paths become Windows paths).
+  Why: the first version (InputRedirection presses + 3dslink + ftpd.3dsx, both Rosalina network features on) lost
+  Wi-Fi and froze the 3DS 4 times in ~1 h (19:03 while polling the debugger, 19:45 after a 3dslink "Failed
+  sending", 19:52 after a game run whose boot had 5-6 s FS + GX stalls (run 38b; the game itself finished), 19:58
+  with only ftpd idle ~1 min after one netload). Runs 31-36 that day (10:50-18:40, no InputRedirection/debugger,
+  user-driven ftpd) had none. Rosalina's InputRedirection polls soc every 10 ms and the debugger every 50 ms from
+  the system core (prio 0x20; Luma3DS issues #2248/#2250/#2071: InputRedirection freezes, lost IP). Both on +
+  idle in the Homebrew Launcher with only a ping every 30 s survived 27 min, so traffic or app switches seem to be
+  needed too (not isolated further: one feature on at a time was not tried). SOAK_RESULT
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
