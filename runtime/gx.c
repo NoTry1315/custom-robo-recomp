@@ -236,6 +236,23 @@ static float efb_scale(void) {
 static float efb_x0(void) { return (400 - gx.efb_w * efb_scale()) * 0.5f; }
 static float efb_y0(void) { return (240 - gx.efb_h * efb_scale()) * 0.5f; }
 
+/* Widescreen (sdmc:/cr_widescreen.txt or the bottom-screen button "Widescreen"; off by
+ * default), like Dolphin's widescreen hack: perspective draws fill the 400 px of the top
+ * screen instead of the 4:3 window in its middle. Dolphin scales the projection's x by
+ * (4/3)/(5/3) = 0.8 and widens the viewport by 1.25; here the two cancel, since set_clip
+ * already maps clip space so that the 400 px are ndc -1..1 and PICA clips there: what
+ * the GX frustum would have clipped at the 4:3 edges is only cut off by the scissor.
+ * So the option is the scissor alone: for a perspective draw whose viewport and scissor
+ * reach a left / right EFB border, that edge moves out to the screen border. Orthographic
+ * (2D, HUD) draws and sub-window viewports keep the 4:3 window. Objects the game itself
+ * culls against its 4:3 frustum stay missing at the sides (unknowns "Widescreen"). */
+int recomp_widescreen;
+static int ws_edges(void) {   /* bit 0: left edge opens, bit 1: right edge */
+    if (!recomp_widescreen || gx.proj_ortho) return 0;
+    float sl = (float)gx.sc[0] - gx.sc_off[0], sr = sl + gx.sc[2], vl = gx.vp[0], vr = gx.vp[0] + gx.vp[2];
+    return (sl <= 0.5f && vl <= 0.5f) | (sr >= gx.efb_w - 0.5f && vr >= gx.efb_w - 0.5f) << 1;
+}
+
 /* u16 indices reach 0x10000 vertices: past that, later draws index from a new base */
 static u32 vb_base;
 static const void *cur_buf;   /* PICA attribute buffer: vbuf + vb_base or a vertex cache window */
@@ -1395,8 +1412,9 @@ static void setup_pixel(void) {
     else if (gx.cull == 3) ONCE("cull mode 3 (all) drawn without culling\n");
     SET_IF_CHANGED(C3D_CullFace(cm), cm);
     /* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated) */
-    static s32 sk[8]; static int sk_valid;
-    const s32 cur[8] = {(s32)gx.sc[0], (s32)gx.sc[1], (s32)gx.sc[2], (s32)gx.sc[3], (s32)gx.sc_off[0], (s32)gx.sc_off[1], (s32)gx.efb_w, (s32)gx.efb_h};
+    static s32 sk[9]; static int sk_valid;
+    int ws = ws_edges();
+    const s32 cur[9] = {(s32)gx.sc[0], (s32)gx.sc[1], (s32)gx.sc[2], (s32)gx.sc[3], (s32)gx.sc_off[0], (s32)gx.sc_off[1], (s32)gx.efb_w, (s32)gx.efb_h, ws};
     if (sk_valid && !scissor_lost && !memcmp(sk, cur, sizeof cur)) return;
     memcpy(sk, cur, sizeof cur); sk_valid = 1;
     float s = efb_scale(), x0 = efb_x0(), y0 = efb_y0();
@@ -1405,6 +1423,8 @@ static void setup_pixel(void) {
     l = l < x0 ? x0 : l;
     t = t < y0 ? y0 : t;
     r = r > 400 - x0 ? 400 - x0 : r < l ? l : r;
+    if (ws & 1) l = 0;     /* widescreen: an edge on the EFB border opens up to the screen border */
+    if (ws & 2) r = 400;
     b = b > 240 - y0 ? 240 - y0 : b < t ? t : b;
     u32 s0 = (u32)(240 - b), s1 = (u32)(400 - r), s2 = (u32)(240 - t), s3 = (u32)(400 - l);
     /* GPU test: sdmc:/cr_gpu_quarter.txt clips drawing to the centre quarter of the screen (same vertex
@@ -2795,6 +2815,9 @@ void recomp_gx_start(void) {
     }
     recomp_vtxpack_off = flag_file("cr_vtxpack_off");
     recomp_menu_bind("Vertex pack", &recomp_vtxpack_off, NULL);
+    recomp_widescreen = flag_file("cr_widescreen");
+    recomp_menu_bind("Widescreen", &recomp_widescreen, NULL);
+    recomp_log("# gx: widescreen %s\n", recomp_widescreen ? "on (cr_widescreen.txt): perspective draws use the full 400 px" : "off (4:3 window, 40 px bars)");
     recomp_lazydesc_off = flag_file("cr_lazydesc_off");
     recomp_menu_bind("Lazy vtx desc", &recomp_lazydesc_off, NULL);
     recomp_log("# gx: vertex descriptor %s\n", recomp_lazydesc_off ? "eager (cr_lazydesc_off.txt): a GX-queue record per GXSetVtxDesc/GXClearVtxDesc" : "lazy (one record before a draw, when it changed)");
