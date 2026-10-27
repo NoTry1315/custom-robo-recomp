@@ -1415,7 +1415,16 @@ runs of each variant agree to 0.01 ms), full build with -j20:
   usefully) and grows it 9%; with LTO it grows it 35% for no gain. Not worth it on a 16 KB I-cache.
 - LTO -1.5% (below the 2% bar for a default change) with +2% code: probably cross-file inlining of runtime
   helpers into gen/. Citra does not model the ARM11 caches, so the hardware effect is unknown either way;
-  LTO=1 is the one worth a hardware A/B if battle CPU gets tight. Not yet on hardware.
+  LTO=1 is the one worth a hardware A/B if battle CPU gets tight.
+- Hardware A/B (2026-10-27, runs 54a = main, 54b = `make LTO=1`, back to back on the 2v2 replay, branch
+  task/2026-10-27-lto-hw): 2v2 game 19.49 -> 19.37 ms (-0.11, median -0.10, sd 0.14, faster in 51 of 73 windows),
+  busy cycles -0.034M (fewer in 62 of 73; hot-code order gave -0.114M in 73 of 73), I-cache misses 38.2 -> 37.4 per
+  1000 instructions; campaign 8.3 unchanged; 0 differing log lines. Two runs of one build differ by ~0.13 ms per
+  window, so this is at the noise level: -0.6%, below the 2% bar, LTO stays off. .text 4.42 -> 4.77 MB (+8%).
+  `make LTO=1` had stopped linking since then and is fixed: symbols defined only in top-level asm (cpu.c ram /
+  ram_wr / ram_dirty, mtx.c wa_concat / wa_multvec) were undefined in the LTO link, so cpu.o and mtx.o are built
+  with -fno-lto; and the LTO link gets -ffunction-sections again, else its output has no .text.f_* sections and
+  hot_order.ld places nothing (the hot functions were scattered over .text).
 - -O3 on runtime/ hot files (gx.c) not tried: -O3 on gen/ gave nothing and battle is bound by game code.
 
 ## Vertex packing (2026-10-22, not yet on hardware)
