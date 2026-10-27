@@ -2948,7 +2948,7 @@ two are wrong. Not built: below the 2% bar.
 
 ## Card layout of the bottom screen (2026-10-27)
 
-`make CARDUI=1` (runtime/menu_card.c). consoleInit still sets up the bottom screen (RGB565, single buffer), then
+Default (`CARDUI=1`, release builds; `make CARDUI=0` = the console layout for test builds) (runtime/menu_card.c). consoleInit still sets up the bottom screen (RGB565, single buffer), then
 stdout goes to a devoptab that keeps the last line for the footer, and everything is drawn on the CPU into that
 framebuffer, under one LightLock (printf can come from any thread). Text uses the system font (`fontEnsureMapped`;
 A4 sheets, 8x8 Z-order tiles, low nibble = even texel, first sheet row = glyph top: all confirmed by the Citra

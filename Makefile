@@ -82,9 +82,9 @@ AXWORKER ?= 1
 ifeq ($(AXWORKER),0)
 CFLAGS	+=	-DRECOMP_AX_NO_WORKER
 endif
-# CARDUI=1: the bottom screen as cards (runtime/menu_card.c: title, build id, fps/game/GX/audio tiles, the toggle
-# buttons with an on/off dot, last message) instead of the console layout with every stats row; needs `make clean` too
-CARDUI ?= 0
+# CARDUI: the bottom screen as cards (runtime/menu_card.c: title, build id, fps/game/GX/audio tiles, the toggle
+# buttons with an on/off dot, last message); CARDUI=0 = the console layout with every stats row; needs `make clean` too
+CARDUI ?= 1
 ifeq ($(CARDUI),1)
 CFLAGS	+=	-DRECOMP_CARDUI
 endif
@@ -126,7 +126,7 @@ export _3DSXFLAGS += --smdh=$(CURDIR)/$(TARGET).smdh
 
 .PHONY: all clean
 all: $(BUILD)
-	@sh tools/buildinfo.sh $(BUILD)/buildinfo.h "$(strip $(if $(filter 1,$(LTO)),lto) $(if $(filter 1,$(HWCHECK)),hwcheck) $(if $(filter verify,$(HWCHECK)),hwverify) $(if $(filter 0,$(WRMAP)),wrepoch) $(if $(filter 1,$(STORECHECK)),storecheck) $(if $(filter 0,$(AXFAST)),axref) $(if $(filter 0,$(AXWORKER)),axsync) $(if $(filter 1,$(ALIGNVERIFY)),alignverify) $(if $(filter 1,$(RANGEVERIFY)),rangeverify) $(if $(filter 1,$(CARDUI)),cardui) $(GENOPT))"
+	@sh tools/buildinfo.sh $(BUILD)/buildinfo.h "$(strip $(if $(filter 1,$(LTO)),lto) $(if $(filter 1,$(HWCHECK)),hwcheck) $(if $(filter verify,$(HWCHECK)),hwverify) $(if $(filter 0,$(WRMAP)),wrepoch) $(if $(filter 1,$(STORECHECK)),storecheck) $(if $(filter 0,$(AXFAST)),axref) $(if $(filter 0,$(AXWORKER)),axsync) $(if $(filter 1,$(ALIGNVERIFY)),alignverify) $(if $(filter 1,$(RANGEVERIFY)),rangeverify) $(if $(filter 0,$(CARDUI)),console) $(GENOPT))"
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 	@python3 tools/check_3dsx.py $(TARGET).3dsx
 $(BUILD):

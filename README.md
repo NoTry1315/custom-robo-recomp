@@ -126,7 +126,8 @@ Known problems:
 python tools/extract_disc.py "Custom Robo (USA).iso" data/extracted   # once
 PYTHONUTF8=1 python tools/recomp/recomp.py                            # main.dol -> gen/
 (cd tools/recomp && PYTHONUTF8=1 python gen_sdk_log.py)               # after adding an sdk_* function to runtime/
-make -j20                                                             # -> custom-robo-recomp.3dsx
+make -j20                                                             # -> custom-robo-recomp.3dsx (release: card layout)
+make -j20 CARDUI=0                                                    # test build: console layout with every stats row
 ```
 
 With Docker, from Git Bash on Windows:
@@ -136,7 +137,8 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/proj" -w /proj <devkitarm-image> ma
 ```
 
 Every build runs `tools/check_3dsx.py`, which fails the build on a relocation
-the 3dsx loader would reject. `data/`, `gen/` and the build outputs are
+the 3dsx loader would reject. Release builds use the default card layout of the bottom screen
+(`CARDUI=1`); test builds (Citra runs, hardware A/Bs) use `make CARDUI=0` for the full stats table. `data/`, `gen/` and the build outputs are
 git-ignored; never commit them (they contain the game).
 
 ## Install
@@ -154,8 +156,13 @@ sdmc:/custom-robo/files/...     <- the whole data/extracted/files/ tree
 
 Start it from the Homebrew Launcher. Saves go to `sdmc:/custom-robo/save/`
 (memory card in slot A). Each run writes `sdmc:/cr_autotest.log`, which is
-overwritten at the next start; rename it to keep it. The bottom screen shows
-the build id and any flag files present, then a fixed stats table, one metric per
+overwritten at the next start; rename it to keep it. The bottom screen (default, the release layout) shows
+the title, the build id (plus flag files), four tiles (fps, game ms, GX ms = GX thread busy, audio ms), the
+touch buttons below as rounded cards with an on/off dot, and the last message line at the bottom. It is drawn
+on the CPU with the 3DS system font, only where something changed.
+
+A test build (`make CARDUI=0`) shows the console layout instead: the build id and any flag files present,
+then a fixed stats table, one metric per
 row, updated once a second (the same numbers as the log's `# time` lines, in ms per
 frame), then a 3-row message area. Example values:
 
@@ -170,11 +177,6 @@ audio ms     0.7  dvd wait  0.0
 scene          8  sub 3  r12345
 io  late 0 slow 3 stall 0 lin 17714K
 ```
-
-`make CARDUI=1` builds a tidier bottom screen instead: the title, the build id (plus flag files), four
-tiles (fps, game ms, GX ms = GX thread busy, audio ms) and the same touch buttons as rounded cards with
-an on/off dot, with the last message line at the bottom. It is drawn on the CPU with the 3DS system font,
-only where something changed. The full stats table is only in the default layout.
 
 Touch buttons on the bottom screen switch test features live (the log records each switch,
 and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack",
@@ -244,8 +246,8 @@ every store that reaches a hardware address as `# hwcheck store` lines), `make A
 read call per source sample) and `make AXWORKER=0` (the mix jobs run on the game thread instead of a worker thread on
 core 2; boot line `# AX: mix jobs`), `make ALIGNVERIFY=1` (every misaligned 16/32-bit guest access logged per
 host site as `# align` lines) and `make RANGEVERIFY=1` (the same lines for every guest access outside
-0x80000000-0x81ffffff), and `make CARDUI=1` (the card layout of the bottom screen, see Install; the
-build id ends in `cardui`). Switching any of these needs `make clean` first. `make HOTORDER=0` links .text in plain
+0x80000000-0x81ffffff), and `make CARDUI=0` (the console layout of the bottom screen for test builds, see Install;
+the build id ends in `console`). Switching any of these needs `make clean` first. `make HOTORDER=0` links .text in plain
 link order instead of `tools/recomp/hot_order.ld` (the 2v2's hot functions first; delete the .elf to relink).
 Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
 `RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `RECOMP_INLINE_TSV=0` leaves out the profile sites of
