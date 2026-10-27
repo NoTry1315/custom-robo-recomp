@@ -441,6 +441,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   a compile-time hardware address takes the hardware path). `make STORECHECK=1` = all checked. .text 5.12 -> 4.27 MB,
   2v2 hot set -14.5% instructions; Citra 2v2 game 32.6 -> 32.3 ms, battle/campaign unchanged; logs + fb identical to
   D2. Not yet on hardware. Details: unknowns "Stores without the hardware check".
+- Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
+  over the network: InputRedirection presses (START leaves ftpd, Y opens the netloader), 3dslink starts the build
+  and `tools/hw/ftpd.3dsx` (mtheall/ftpd v3.2.1; the user's ftpd is a CIA, which exits to the HOME menu), FTP
+  puts flags and fetches the log; every run ends in the Homebrew Launcher (user's rule). Two full cycles in a
+  row on hardware (dry runs, 600-retrace pad script, ~75 s each, logs/cr_autotest_2026-10-26_hwloop-dryrun2/3.log).
+  Do not use Rosalina's debugger in it: the 3DS lost its network twice while an earlier version polled qXfer:osdata processes on TCP 4000 (not proven the cause; no
+  crash without it). Any TCP connect to 17491 breaks the netloader (error screen), and its UDP ping answer does
+  not reach the PC. Git Bash: MSYS_NO_PATHCONV=1 (else /3ds/.. SD paths become Windows paths).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
