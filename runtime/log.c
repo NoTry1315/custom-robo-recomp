@@ -139,6 +139,7 @@ static void stats_draw(u32 retrace, const struct stats *v) {
     snprintf(r, sizeof r, "io  late %lu slow %lu stall %lu lin %luK", (unsigned long)recomp_dvd_late_n, (unsigned long)recomp_dvd_slow_n, (unsigned long)stalls,
              (unsigned long)(recomp_gx_stat[3] >> 10));
     recomp_status_row(8, r);
+    recomp_menu_stats(1000.0 / v->frame, v->game, recomp_gx_thread ? v->busy : v->vtx + v->tex + v->st + v->end + v->sync, v->aud);
     gf = f; gd = d; gt = t;
     u64 c = svcGetSystemTick() - t0;   /* inside "game" of the next window */
     cost += c; if (c > cost_max) cost_max = c;
