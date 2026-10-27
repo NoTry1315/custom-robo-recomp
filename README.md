@@ -244,7 +244,10 @@ starts ftpd would reach a game still running. Once per boot, by hand: Rosalina m
 release, not committed); the installed ftpd CIA exits to the HOME menu instead. Leave Rosalina's debugger
 off: the 3DS lost its network twice while an earlier version polled the debugger's process list. Never
 connect to TCP 17491 other than through 3dslink (the netloader takes it as an upload and shows an error screen,
-B closes it). Also `state`, `press <buttons>`, `touch x y`, `launch <3dsx>`, `ftp ls|get|put|mv`.
+B closes it). No 3dslink within 30 s of ftpd exiting (a run back to back with the previous one sent ftpd ~6 s
+after START: "Failed sending", then the 3DS lost Wi-Fi and the Homebrew Launcher froze): the script waits for
+that itself, across invocations, and stops after one retry of a failed 3dslink. Also `state`, `press <buttons>`,
+`touch x y`, `launch <3dsx>`, `ftp ls|get|put|mv`.
 
 ## How it works
 
