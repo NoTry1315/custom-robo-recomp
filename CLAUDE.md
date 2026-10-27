@@ -528,6 +528,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   builds (console layout with every stats row, build id ends in "console"): use 0 for Citra runs and hardware A/Bs
   (user, 2026-10-27). Logs are the same either way. Citra checked by screenshot; touch and hardware not yet checked.
   Details: unknowns "Card layout of the bottom screen".
+- Widescreen (2026-10-27, branch task/2026-10-27-widescreen, off by default): sdmc:/cr_widescreen.txt / button
+  "Widescreen" opens the scissor to the full 400 px for perspective draws whose viewport and scissor reach an EFB side
+  (the 0.8 projection scale and 1.25 viewport of Dolphin's hack cancel: PICA already clips at 400 px); untextured
+  full-screen 2D quads (fades) are stretched to 400 px, other 2D stays 4:3. Citra: flag off = main 62b5181 (boot/title/
+  movie, battle, campaign logs + fb dumps identical); flag on: same SDK/scene lines, middle 320 px of every dump
+  identical to main, title/battle/2v2 fill the screen, movie 4:3. Bar content seen with it off = the EFB clear colour
+  (C3D_RenderTargetClear ignores the scissor: NOISE logo f0f0f0, sky stages c1d1eb), no draw reaches the bars. Not yet
+  on hardware. Details: unknowns "Widescreen".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

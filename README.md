@@ -110,6 +110,10 @@ Known problems:
 - Missing graphics features: EFB-to-texture copies, lines/points, specular
   (COLOR1) lighting, post-transform texture matrices, anti-aliasing. See the GX
   sections of `docs/recomp_unknowns.md`.
+- Widescreen (off by default): 2D the game places in 4:3 screen space ends at the old 4:3 edge (e.g. a white
+  wedge next to a robot at the left edge in the 2v2), textured full-screen 2D (backgrounds, the movie) keeps black
+  sides, and objects the game culls against its 4:3 view may pop in at the sides (not seen so far). Not yet tried
+  on hardware. See `docs/recomp_unknowns.md` "Widescreen".
 - Old 3DS models are untested; the build targets the New 3DS's 804 MHz mode.
 
 ## What you need
@@ -186,7 +190,8 @@ functions it changes) and "Inline sites" (the 5 inlined particle-helper calls), 
 60 retraces with the ARM11 core 0 hardware counters per frame (see Test flags, `cr_perfctr.txt`).
 "Widescreen" (off by default, or `cr_widescreen.txt`) removes the 40 px black bars at the sides of the top
 screen in 3D scenes, like Dolphin's widescreen hack: the 3D view gets a wider field of view, the 4:3 middle
-is unchanged and 2D (HUD, menus, the movie) stays 4:3 (artifacts under Known problems).
+is unchanged, and textured 2D (HUD, menus, backgrounds, the movie) stays 4:3; untextured full-screen 2D (fades)
+is stretched to the full width (artifacts under Known problems).
 "Dump RAM" is an action, not a switch: it writes the
 game's RAM (24 MB), ARAM (16 MB), the disc reads still in flight and the next frame to the SD card
 root as `cr_dump_r<retrace>_*` and `cr_fb_<frame>.bmp` (the game stops for a few seconds).
@@ -223,7 +228,7 @@ can be compared with a feature on and off:
 | `cr_ptrext_off.txt` | old stack-promotion bodies (no pointer-extent promotion; button "Ptr extent") |
 | `cr_inline_off.txt` | plain calls at the 5 particle-helper sites (no inline copies; button "Inline sites") |
 | `cr_perfctr.txt` | ARM11 hardware counters on from boot (button "Perf counters"): a `# perf` line every 60 retraces with core 0's cycles, instructions (IPC), I-cache misses, D-cache reads and read/write misses, stall cycles (instruction fetch, data hazard), branch mispredicts and instruction micro-TLB / main TLB misses per frame; two events count per frame, so the five pairs take turns. `tools/perf_avg.py` averages them per scene. Citra only stubs the counters ("no frame counted") |
-| `cr_widescreen.txt` | widescreen on from boot (button "Widescreen"): 3D draws fill the 400 px top screen instead of the 4:3 window with 40 px bars; 2D stays 4:3 |
+| `cr_widescreen.txt` | widescreen on from boot (button "Widescreen"): 3D draws fill the 400 px top screen instead of the 4:3 window with 40 px bars; textured 2D stays 4:3, untextured full-screen 2D (fades) is stretched |
 | `cr_runfast.txt` | set the VFP's flush-to-zero + default-NaN mode at boot (already on: the boot log's `# fpscr:` line shows the value) |
 | `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
 | `cr_vsync_on.txt` | old pacing: wait for a vblank every frame |
@@ -382,6 +387,8 @@ list in the same change whenever something new is borrowed.
 
 - [mw3ds](https://github.com/3ds-conspiracy/mw3ds): stereo 3D by replaying the left eye's GPU command words for the right eye
   (`runtime/gx.c`, "Stereo 3D"), and small integer vertex formats (vertex packing).
+- [Dolphin](https://dolphin-emu.org/)'s widescreen hack: widen only the perspective (3D) projections and leave 2D as
+  it is; here the "Widescreen" button (`runtime/gx.c`, unknowns "Widescreen").
 - The Simpsons: Hit & Run Old 3DS port and REGTA: dropping and packing normals (vertex
   packing); the Simpsons port and MKW-3DS: cached textures in VRAM.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) (hedge-dev),

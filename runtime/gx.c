@@ -450,7 +450,7 @@ static void frame_begin(void) {
     }
 }
 
-static u32 st_ws_fill;   /* widescreen fills per 300 frames */
+static u32 st_ws_fill, st_ws_ortho, st_ws_narrow;   /* widescreen, per 300 frames: fills, 2D draws, 3D draws kept 4:3 */
 static u32 st_draws, st_tris, st_tex, st_evict, st_upload, st_upbytes, st_split;
 volatile u32 recomp_gx_stat[4];
 static RecursiveLock lin_lock;   /* below, at the linearAlloc wrappers */
@@ -474,8 +474,9 @@ static void frame_end(void) {
         recomp_log("# gx batch frame %lu: draws %lu mergeable %lu (%lu%%) -> %lu DrawElements%s\n", (unsigned long)frames, (unsigned long)st_draws,
             (unsigned long)st_merged, st_draws ? (unsigned long)(st_merged * 100 / st_draws) : 0ul,
             (unsigned long)(batch_off ? st_draws : st_draws - st_merged), batch_off ? " (batching off)" : "");
-        if (recomp_widescreen) recomp_log("# gx widescreen frame %lu: full-screen 2D fills stretched %lu (last 300 frames)\n", (unsigned long)frames, (unsigned long)st_ws_fill);
-        st_ws_fill = 0;
+        if (recomp_widescreen) recomp_log("# gx widescreen frame %lu: last 300 frames: 2D draws %lu (full-screen fills stretched %lu), 3D draws kept 4:3 (viewport or scissor short of an EFB side) %lu\n",
+                                          (unsigned long)frames, (unsigned long)st_ws_ortho, (unsigned long)st_ws_fill, (unsigned long)st_ws_narrow);
+        st_ws_fill = st_ws_ortho = st_ws_narrow = 0;
     }
     if (frames % 300 == 0) {
         u32 tb, te;
@@ -2307,6 +2308,7 @@ static int cmdbuf_room(int prim, int n) {
  * pixel state. Returns the number of units. */
 static int setup_draw_state(int tcoord[3], float tscale[3][2]) {
     int nunits = 0;
+    if (recomp_widescreen) { if (gx.proj_ortho) st_ws_ortho++; else if (ws_full() != 3) st_ws_narrow++; }
     for (int i = 0; i < 8; i++) unit_of_map[i] = -1;
     for (u32 si = 0; si < gx.n_stages; si++) {
         const TevStage *t = &gx.tev[si];
