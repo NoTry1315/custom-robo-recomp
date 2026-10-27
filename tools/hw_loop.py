@@ -8,8 +8,8 @@ No button presses, no netloader, no ftpd, and nothing from Rosalina's network fe
 Why: with Rosalina InputRedirection + debugger on (the old version of this script pressed buttons through
 InputRedirection and started apps with 3dslink + ftpd), the 3DS lost Wi-Fi and froze 4 times in an hour on
 2026-10-26, once with only ftpd idle; before InputRedirection was first turned on, 8 hours of hardware runs had no
-network trouble. With the agent, 10 runs had none, but at 2026-10-27 01:57 the 3DS left the network with only the agent
-running (a GET stopped at 64 KB after 3.4 h idle): not the whole cause, still open.
+network trouble. With the agent, 10 runs had none (on 2026-10-27 01:57 the 3DS powered off
+mid-transfer with an empty battery: not a Wi-Fi crash).
 Both Rosalina threads poll the network every 10-50 ms from the system core (README "Unattended hardware runs").
 
 Once per boot, by hand: Rosalina menu -> InputRedirection and debugger OFF (or simply reboot: both start off);
@@ -32,7 +32,9 @@ every 15 s until --timeout s (default 600) from the start. Then it downloads /cr
 logs/cr_autotest_<name>.log and renames it on the SD to /cr_autotest_<name>.log. The 3DS is left in the agent,
 ready for the next run; `quit` at the end of a session returns it to the Homebrew Launcher. A game that hangs or
 crashes never returns to the agent: the script stops after --timeout and says so (look at the console).
-Every agent PING reply (uptime, Wi-Fi strength 0-3, SD free) is appended to logs/hw_loop_agent.log."""
+Every agent PING reply (uptime, Wi-Fi strength 0-3, SD free, battery level 0-5 and percent, charging, charger
+connected) is appended to logs/hw_loop_agent.log; `run` stops before starting when the battery is at level 2 or
+less without the charger."""
 import argparse, os, socket, sys, time
 
 IP = os.environ.get('CR_3DS_IP', '192.168.1.129')
@@ -71,6 +73,20 @@ class Agent:
         os.makedirs(os.path.dirname(AGENT_LOG), exist_ok=True)
         with open(AGENT_LOG, 'a') as fh: fh.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {r}\n')
         return r
+
+    def power_check(self):
+        """Stops before a run when the battery is low and no charger is connected (agent 2+; older agents say
+        nothing about power). On 2026-10-27 01:57 the 3DS powered off with an empty battery mid-transfer."""
+        r = self.ping()
+        print(now(), r, flush=True)
+        f = r.split()
+        v = {f[i]: f[i + 1] for i in range(len(f) - 1)}
+        if 'adapter' not in v: return
+        if v['adapter'] == '0' and int(v['batt']) <= 2:
+            raise SystemExit(f'3DS battery low (level {v["batt"]} of 5, {v["pct"]} %) and not charging: plug in the '
+                             'charger first')
+        if v['adapter'] == '0':
+            print(now(), f'warning: 3DS not on the charger (battery level {v["batt"]} of 5)', flush=True)
 
     def put(self, local, remote):
         data = open(local, 'rb').read()
@@ -126,7 +142,7 @@ def run(a):
     if os.path.exists(log_local): raise SystemExit(f'{log_local} exists')
     if not os.path.exists(a.build): raise SystemExit(f'{a.build} missing')
     g = agent()
-    print(now(), g.ping(), flush=True)
+    g.power_check()
     for kv in a.put:
         local, remote = kv.split('=', 1)
         g.put(local, remote); print('put', local, '->', remote)

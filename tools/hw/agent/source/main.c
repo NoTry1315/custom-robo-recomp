@@ -1,6 +1,7 @@
 /* cr_agent: what tools/hw_loop.py talks to on the 3DS during unattended hardware runs.
  * One TCP port (5001), one client at a time, one line per command, one line per reply:
- *   PING                 -> OK cr_agent <ver> up <s> wifi <0-3> free <KB>
+ *   PING                 -> OK cr_agent <ver> up <s> wifi <0-3> free <KB> batt <0-5> pct <%|-1> charging <0|1>
+ *                           adapter <0|1>   (battery: the 3DS powered off at 2026-10-27 01:57 with an empty battery)
  *   PUT <size> <path>    -> READY, then <size> raw bytes from the client -> OK <size>   (written to <path>.part,
  *                           then put in place)
  *   GET <path>           -> OK <size>, then <size> raw bytes
@@ -32,13 +33,14 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 
-#define VERSION "1"
+#define VERSION "2"
 #define PORT 5001
 #define SOC_SIZE 0x100000
 #define IDLE_MS 20000      /* a client that sends nothing for this long is dropped */
 #define ARGBUF 0x400       /* hb:ldr argv buffer: u32 argc, then NUL-separated strings */
 
 static u64 t_start;
+static int mcu_ok;   /* mcu::HWC (battery percent) is not in every service list: PING says pct -1 then */
 static char status[16][64];
 static int status_n;
 
@@ -239,8 +241,15 @@ static int session(int fd) {
         if (!strcmp(cmd, "PING")) {
             struct statvfs v;
             unsigned long long kb = statvfs("sdmc:/", &v) == 0 ? (unsigned long long)v.f_bavail * v.f_frsize / 1024 : 0;
-            reply(fd, "OK cr_agent %s up %llu wifi %u free %llu", VERSION, (osGetTime() - t_start) / 1000,
-                  (unsigned)osGetWifiStrength(), kb);
+            u8 level = 0, charging = 0, pct = 0;
+            bool adapter = false;
+            PTMU_GetBatteryLevel(&level);
+            PTMU_GetBatteryChargeState(&charging);
+            PTMU_GetAdapterState(&adapter);
+            int have_pct = mcu_ok && R_SUCCEEDED(MCUHWC_GetBatteryLevel(&pct));
+            reply(fd, "OK cr_agent %s up %llu wifi %u free %llu batt %u pct %d charging %u adapter %u", VERSION,
+                  (osGetTime() - t_start) / 1000, (unsigned)osGetWifiStrength(), kb, level, have_pct ? pct : -1,
+                  charging, adapter);
         } else if (!strcmp(cmd, "PUT") && rest) {
             char *sz = strtok(rest, " "), *path = strtok(NULL, " ");
             do_put(fd, sz ? atol(sz) : -1, path);
@@ -260,6 +269,8 @@ int main(void) {
     gfxInitDefault();
     consoleInit(GFX_TOP, NULL);
     t_start = osGetTime();
+    ptmuInit();
+    mcu_ok = R_SUCCEEDED(mcuHwcInit());
     printf("cr_agent " VERSION " (custom-robo-recomp tools/hw/agent)\nSTART: back to the Homebrew Launcher\n");
     u32 *socbuf = memalign(0x1000, SOC_SIZE);
     if (!socbuf || R_FAILED(socInit(socbuf, SOC_SIZE))) {
@@ -294,6 +305,8 @@ int main(void) {
     close(ls);
     socExit();
     free(socbuf);
+    if (mcu_ok) mcuHwcExit();
+    ptmuExit();
     gfxExit();
     return 0;   /* libctru's aptExit chainloads to the homebrew title again; the loader starts the hb:ldr target */
 }
