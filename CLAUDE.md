@@ -440,7 +440,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   in gen/recomp_hw_*.c, which keep checked stores; the other gen/ files define RECOMP_STORE_FAST (ppc.h STORE_HW: only
   a compile-time hardware address takes the hardware path). `make STORECHECK=1` = all checked. .text 5.12 -> 4.27 MB,
   2v2 hot set -14.5% instructions; Citra 2v2 game 32.6 -> 32.3 ms, battle/campaign unchanged; logs + fb identical to
-  D2. Not yet on hardware. Details: unknowns "Stores without the hardware check".
+  D2. Hardware A/B (runs 37a = STORECHECK=1, 37b = default, back to back on the 2v2 replay, both run by tools/hw_loop.py
+  with nobody at the console): 2v2 game 20.26 -> 19.80 ms (-0.46, 72/73 windows faster), busy cycles -2.2%, I-cache
+  misses 35.2 -> 33.6/k; campaign -0.13 ms. The 2v2 replay is ~176 s of frames plus boot: hw_loop --wait 230 is enough.
+  Details: unknowns "Stores without the hardware check".
 - Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
   over the network: InputRedirection presses (START leaves ftpd, Y opens the netloader), 3dslink starts the build
   and `tools/hw/ftpd.3dsx` (mtheall/ftpd v3.2.1; the user's ftpd is a CIA, which exits to the HOME menu), FTP

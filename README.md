@@ -68,7 +68,8 @@ The first step (guest loads without the hardware-address check, runs 35a/35b, tw
 The second (guest stores mark a byte map instead of loading and storing the write epoch, branch
 `task/2026-10-26-wr-tracking`) cuts the hot code by another 2.5% (code 5.3 -> 5.1 MB): runs 36a/36b, 2v2 game 20.25 -> 20.07 ms (-0.9%).
 The third (stores without the hardware check outside the 33 functions that set a hardware address, branch
-`task/2026-10-26-store-hwcheck`) cuts the hot code by 14.5% (code 5.1 -> 4.3 MB); its hardware A/B is next.
+`task/2026-10-26-store-hwcheck`) cuts the hot code by 14.5% (code 5.1 -> 4.3 MB): runs 37a/37b (the first unattended A/B, tools/hw_loop.py), 2v2 game
+20.26 -> 19.80 ms, 43.5 -> 44.4 fps.
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
