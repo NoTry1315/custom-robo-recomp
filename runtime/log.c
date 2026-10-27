@@ -151,6 +151,7 @@ void recomp_prof_frame(u32 retrace) {
     static u64 sum[PROF_N];
     recomp_perfctr_frame(retrace);   /* "# perf" lines; its SVC time is in "svc us" there */
     recomp_hwcheck_report(retrace);   /* make HWCHECK=verify: "# hwcheck stores" lines */
+    recomp_align_report(retrace);     /* make ALIGNVERIFY=1: "# align" lines */
     u64 now = svcGetSystemTick();
     static u64 fsum[PROF_N];   /* per-frame snapshot, for the stall line */
     u64 cur[PROF_N];
