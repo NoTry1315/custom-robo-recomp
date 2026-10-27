@@ -145,7 +145,18 @@ def run(a):
                          'or the network is down. Look at the console before anything else.')
     print(now(), f'agent back {time.time() - t0:.0f} s after the game started;', g.ping(), flush=True)
     os.makedirs(os.path.dirname(log_local), exist_ok=True)
-    n = g.get('/cr_autotest.log', log_local)
+    # run 39a (2026-10-26): a GET 4 s after the agent restarted stalled for 60 s; the same GET worked a minute
+    # later. Give the freshly started agent's Wi-Fi a moment, and retry a failed download once.
+    g.close(); time.sleep(10)
+    for i in range(2):
+        try:
+            g = agent(); n = g.get('/cr_autotest.log', log_local); break
+        except OSError as e:
+            if i: raise
+            print(now(), f'log download failed ({e}), retrying in 20 s', flush=True)
+            try: g.close()
+            except OSError: pass
+            time.sleep(20)
     g.cmd(f'MV /cr_autotest.log /cr_autotest_{a.name}.log')
     g.close()
     with open(log_local, 'rb') as fh:
