@@ -247,10 +247,14 @@ static float efb_y0(void) { return (240 - gx.efb_h * efb_scale()) * 0.5f; }
  * (2D, HUD) draws and sub-window viewports keep the 4:3 window. Objects the game itself
  * culls against its 4:3 frustum stay missing at the sides (unknowns "Widescreen"). */
 int recomp_widescreen;
-static int ws_edges(void) {   /* bit 0: left edge opens, bit 1: right edge */
-    if (!recomp_widescreen || gx.proj_ortho) return 0;
+static int ws_fill;   /* the current draw is a full-screen 2D fill (draw_inner): stretched to 400 px */
+static int ws_full(void) {   /* bit 0: viewport + scissor reach the left EFB border, bit 1: the right one */
     float sl = (float)gx.sc[0] - gx.sc_off[0], sr = sl + gx.sc[2], vl = gx.vp[0], vr = gx.vp[0] + gx.vp[2];
     return (sl <= 0.5f && vl <= 0.5f) | (sr >= gx.efb_w - 0.5f && vr >= gx.efb_w - 0.5f) << 1;
+}
+static int ws_edges(void) {   /* bit 0: left edge opens, bit 1: right edge */
+    if (!recomp_widescreen || (gx.proj_ortho && !ws_fill)) return 0;
+    return ws_full();
 }
 
 /* u16 indices reach 0x10000 vertices: past that, later draws index from a new base */
@@ -446,6 +450,7 @@ static void frame_begin(void) {
     }
 }
 
+static u32 st_ws_fill;   /* widescreen fills per 300 frames */
 static u32 st_draws, st_tris, st_tex, st_evict, st_upload, st_upbytes, st_split;
 volatile u32 recomp_gx_stat[4];
 static RecursiveLock lin_lock;   /* below, at the linearAlloc wrappers */
@@ -469,6 +474,8 @@ static void frame_end(void) {
         recomp_log("# gx batch frame %lu: draws %lu mergeable %lu (%lu%%) -> %lu DrawElements%s\n", (unsigned long)frames, (unsigned long)st_draws,
             (unsigned long)st_merged, st_draws ? (unsigned long)(st_merged * 100 / st_draws) : 0ul,
             (unsigned long)(batch_off ? st_draws : st_draws - st_merged), batch_off ? " (batching off)" : "");
+        if (recomp_widescreen) recomp_log("# gx widescreen frame %lu: full-screen 2D fills stretched %lu (last 300 frames)\n", (unsigned long)frames, (unsigned long)st_ws_fill);
+        st_ws_fill = 0;
     }
     if (frames % 300 == 0) {
         u32 tb, te;
@@ -1380,6 +1387,7 @@ static GPU_BLENDFACTOR blend_factor(int f, int dst) {
     if (!valid_ || memcmp(last_, cur_, sizeof cur_)) { memcpy(last_, cur_, sizeof cur_); valid_ = 1; pend_flush(); call; } } while (0)
 static u32 fbits(float f) { u32 u; memcpy(&u, &f, 4); return u; }
 
+static void setup_scissor(void);
 static void setup_pixel(void) {
     u32 mask = (gx.color_update ? GPU_WRITE_COLOR : 0) | (gx.alpha_update ? GPU_WRITE_ALPHA : 0);
     int zt = gx.z_enable, zf = zt ? test_func(gx.z_func) : GPU_ALWAYS;
@@ -1411,7 +1419,11 @@ static void setup_pixel(void) {
     else if (gx.cull == 2) cm = GPU_CULL_FRONT_CCW;
     else if (gx.cull == 3) ONCE("cull mode 3 (all) drawn without culling\n");
     SET_IF_CHANGED(C3D_CullFace(cm), cm);
-    /* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated) */
+    setup_scissor();
+}
+
+/* scissor: GX EFB rect -> screen -> framebuffer (240 wide, 400 tall, rotated) */
+static void setup_scissor(void) {
     static s32 sk[9]; static int sk_valid;
     int ws = ws_edges();
     const s32 cur[9] = {(s32)gx.sc[0], (s32)gx.sc[1], (s32)gx.sc[2], (s32)gx.sc[3], (s32)gx.sc_off[0], (s32)gx.sc_off[1], (s32)gx.efb_w, (s32)gx.efb_h, ws};
@@ -2093,10 +2105,10 @@ static int same_inputs(void *last, int *valid, const void *key, size_t n) {
 }
 
 static void set_clip(void) {
-    struct { float proj[6], vp[4]; u32 ortho; s32 sc_off[2], w, h; } key;
+    struct { float proj[6], vp[4]; u32 ortho; s32 sc_off[2], w, h, fill; } key;
     static u8 last[sizeof key]; static int valid;
     memcpy(key.proj, gx.proj, sizeof key.proj); memcpy(key.vp, gx.vp, sizeof key.vp);
-    key.ortho = gx.proj_ortho; key.sc_off[0] = gx.sc_off[0]; key.sc_off[1] = gx.sc_off[1]; key.w = gx.efb_w; key.h = gx.efb_h;
+    key.ortho = gx.proj_ortho; key.sc_off[0] = gx.sc_off[0]; key.sc_off[1] = gx.sc_off[1]; key.w = gx.efb_w; key.h = gx.efb_h; key.fill = ws_fill;
     if (same_inputs(last, &valid, &key, sizeof key)) return;
     const float *p = gx.proj;
     float P[4][4] = {{0}}, m[4][4];
@@ -2104,7 +2116,8 @@ static void set_clip(void) {
     else { P[0][0] = p[0]; P[0][2] = p[1]; P[1][1] = p[2]; P[1][2] = p[3]; P[2][2] = p[4]; P[2][3] = p[5]; P[3][2] = -1; }
     float s = efb_scale();
     float ay = s * gx.vp[3] * 0.5f / 120.0f, by = 1 - (efb_y0() + s * (gx.vp[1] + gx.vp[3] * 0.5f - gx.sc_off[1])) / 120.0f;
-    float ax = s * gx.vp[2] * 0.5f / 200.0f, bx = 1 - (efb_x0() + s * (gx.vp[0] + gx.vp[2] * 0.5f - gx.sc_off[0])) / 200.0f;
+    float sx = ws_fill ? 400.0f / gx.efb_w : s, x0 = ws_fill ? 0 : efb_x0();   /* a widescreen fill: EFB width -> 400 px */
+    float ax = sx * gx.vp[2] * 0.5f / 200.0f, bx = 1 - (x0 + sx * (gx.vp[0] + gx.vp[2] * 0.5f - gx.sc_off[0])) / 200.0f;
     for (int c = 0; c < 4; c++) {
         m[0][c] = ay * P[1][c] + by * P[3][c];
         m[1][c] = -ax * P[0][c] + bx * P[3][c];
@@ -2343,6 +2356,24 @@ static int emit_ix(u16 *ix, int k, int cached) {
     return merge;
 }
 
+/* Widescreen: an untextured 2D draw of a few vertices that spans the whole EFB width
+ * (fades, flat full-screen overlays) is stretched to the 400 px, since in the 4:3 window it
+ * would leave the widened 3D scene showing at the sides. Textured 2D (backgrounds, the THP
+ * movie, HUD) is never stretched. Vertices: decoded PVtx, pos[3] = position matrix row. */
+static void ws_fill_check(const PVtx *v, int n) {
+    float lo = 1e30f, hi = -1e30f;
+    for (int i = 0; i < n; i++) {
+        const float *m = &gx.xf[(int)v[i].pos[3] * 4], *p = v[i].pos;
+        float x = gx.proj[0] * (m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3]) + gx.proj[1];   /* ortho: ndc x */
+        lo = x < lo ? x : lo; hi = x > hi ? x : hi;
+    }
+    if (lo > -0.99f || hi < 0.99f) return;
+    ws_fill = 1;
+    st_ws_fill++;
+    setup_scissor();
+    set_clip();
+}
+
 static void draw_inner(int prim, int fmt, const u8 *data, int n);
 static void draw(int prim, int fmt, const u8 *data, int n) { in_draw++; draw_inner(prim, fmt, data, n); in_draw--; }   /* recomp_first_draw: set when the draw is recorded */
 static void draw_inner(int prim, int fmt, const u8 *data, int n) {
@@ -2394,6 +2425,7 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
         use_buf(vbuf[vb_half] + vb_base, &L);
         decode_run(data, n, vs, pl, np, &tm, &L, (u8 *)(vbuf[vb_half] + vb_used));
         v0 = vb_used - vb_base; vadd = n;
+        if (recomp_widescreen && gx.proj_ortho && !nunits && !L.pk && n <= 8 && ws_full() == 3) ws_fill_check(vbuf[vb_half] + vb_used, n);
     }
     set_vtx_unif(&L);
     t_mark2(PROF_GX_VTX, PROF_VX_DEC);
@@ -2414,6 +2446,7 @@ static void draw_inner(int prim, int fmt, const u8 *data, int n) {
     vb_used += vadd;
     t_mark(PROF_GX_VTX);
     if (in_dl) recomp_prof[PROF_VX_DL] += t_last - tv;
+    ws_fill = 0;   /* the next draw's setup_scissor / set_clip go back (and flush this one first) */
 }
 
 /* ---------------------------------------------------------------- display-list cache
