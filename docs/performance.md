@@ -50,18 +50,18 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
   After the 2026-10-23 2v2 work (branch claude/2v2-perf-2-5cf2f9 @ 40381bd): 2v2 game 36.0 ms (GX thread busy 38.6,
   now longer than the game thread in Citra), battle 14.1, campaign 8.0.
 
-## Where it stands (latest hardware run per scene, 2026-10-26, main@b9642be)
+## Where it stands (latest hardware run per scene, 2026-10-26, main@35e6839)
 
 | Scene | fps | game speed | game CPU ms | GPU ms | bound by | run |
 |---|---|---|---|---|---|---|
-| Campaign 8.3 | 58.8 | 98% | 8.2 | 3.7 | near 60 | 31 (hand-played) |
+| Campaign 8.3 | 59.0 | 98% | 6.4 | 2.9 | near 60 (GX thread 15.5) | 41a (2v2 replay route) |
 | Battle 1v1, mono | 57.3 | 95% | 15.1 | 2.2 | near 60 | 28 |
 | Battle 1v1, stereo 3D | 51.4 | 86% | 14.5 | 9.8 | GPU + CPU | 28 |
-| Battle 2v2 | 40.3 | 67% | 22.2 | 2.1 | **game CPU** (GX thread 15.6) | 32a (Citra 2v2 replay) |
+| Battle 2v2 | 44.7 | 74% | 19.6 | 2.1 | **game CPU** (GX thread 15.8) | 41a (Citra 2v2 replay) |
 | Title, menus | ~60 | 97-100% | | | | 31 |
 
 Game speed is fps / 60: the game runs one logic step per frame. From the first battle on
-hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (run 28) -> 40.3 fps (run 32a).
+hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (run 28) -> 40.3 fps (run 32a) -> 44.7 fps (run 41a, after the density steps D1-D5).
 
 ## Changes that helped (newest first)
 
@@ -109,6 +109,7 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 
 | Date | Change | Result | Why not kept |
 |---|---|---|---|
+| 10-26 | **gen/ without pre-allocation scheduling** (D7: `make GENOPT=-fno-schedule-insns` on main + D5, to cut register pressure and spills) | .text 4.25 -> 4.21 MB (-0.9%). **HW runs 41a -> 41b: 2v2 game 19.66 -> 19.75 ms (+0.09), busy cycles +0.16M (more in 73 of 73), instructions -0.8% but I-cache misses 33.7 -> 35.1 per 1000; campaign +0.23 ms** | The in-order ARM11 needs GCC's pre-RA scheduling to hide load and VFP latency more than it gains from the spills it causes. Stays a GENOPT choice only |
 | 10-26 | **gen/ at -Os** (D6: `make GENOPT=-Os` on main + D5) | .text 4.25 -> 3.95 MB (-7%), 2v2 hot set (185 functions) 76.3k -> 70.2k ARM instructions; Citra logs + fb identical, Citra 2v2 game 32.1 -> 33.4 ms. **HW runs 40a -> 40b: 2v2 game 19.54 -> 20.26 ms (+0.72), busy cycles +0.50M, instructions +1.8%, I-cache misses per 1000 instructions unchanged (33.7 -> 34.0); campaign +0.26 ms** | Smaller code did not miss less: the misses are in loops whose working set -Os does not shrink, while it adds instructions (no if-conversion, more branches). Stays a build option only |
 | 10-26 | **GX pipe stores as a call** (D4, branch task/2026-10-26-fifo-call @16fd3a4: the 1272 inline WGPIPE appends in gen/ became `mov r0, v` + `bl` to tiny asm routines in runtime/fifo_put.c that keep every register but r0-r2/ip/lr; `make FIFOCALL=0` = inline) | .text 4.27 -> 4.18 MB (-2.2%); Citra logs + fb identical, Citra 2v2 game 32.3 -> 32.7 ms (+1.2%). **HW runs 38a -> 38b (2v2 replay): game 20.05 -> 20.40 ms (+0.34, median +0.50), busy cycles +0.37M (more in 66 of 73 windows); campaign +0.15 ms** | Slower on hardware: the call and return, and the routine's loads of the FIFO count and limit at every store, cost more than the 90 KB of code saved; the pipe stores sit in loops that stay in the I-cache anyway. Not merged |
 | 10-26 | **Cold-path partitioning** (`cold` on hw_read/hw_write/recomp_bad/recomp_log.., `-freorder-blocks-and-partition` on gen/, .text.unlikely linked first) | GCC 16.1 for ARM: "-freorder-blocks-and-partition not supported on this architecture", so nothing was split; `cold` alone +1.4% code (recomp_036.c), with a WGPIPE test ahead of the cold hw_write +8.1% (.text 6.82 -> 7.89 MB) | not possible on this target; would only grow the hot code. GCC already places most __builtin_expect'ed hardware paths near the function end. Not built for hardware (unknowns "Cold-path partitioning") |
@@ -153,12 +154,18 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
   tracking through a byte map, branch task/2026-10-26-wr-tracking): -2.5% hot instructions, runs 36a/36b: 2v2 game -0.18 ms
   (-0.9%), busy cycles -1.0%, of which the per-frame sweep gives back ~0.12 ms. D3 (stores
   without the hardware check outside recomp_hw_*.c, branch task/2026-10-26-store-hwcheck): -14.5% hot instructions,
-  runs 37a/37b: 2v2 game -0.46 ms (-2.3%), busy cycles -2.2%. Next, in
-  order: (1) more code density in the translator: fewer ARM instructions per guest memory access and per float op
-  (literal-pool loads 7.0% of the instructions, byte swaps 4.7%, RAM masks 4.4%, hardware checks 2.5% + their
-  calls 3.9%); (2) the data stalls: float-locals (3f77d16) on hardware; function order / PGO only if density work
-  leaves a reason (block order inside hot functions). Layout
-  A/Bs use two builds run back to back on the 2v2 hardware replay (user decision 2026-10-26). GX-thread work
+  runs 37a/37b: 2v2 game -0.46 ms (-2.3%), busy cycles -2.2%. D5 (float locals, runs 39a/39b): -0.13 ms, cycles
+  -1.2%. Not kept: D4 (pipe stores as calls, +0.34 ms), D6 (-Os, +0.72 ms), D7 (-fno-schedule-insns, +0.09 ms).
+  **Density steps done (2026-10-26):** 2v2 game 22.24 (run 35a) -> 19.6 ms (run 41a), 40.0 -> 44.7 fps. What is
+  left in the hot code (2v2 hot set, 185 functions, ~76k ARM instructions = ~300 KB against the 16 KB I-cache):
+  guest-access helpers rd32_b 10% / wr32_b 5.6% / stack 7% (mask + byte swap, about minimal), WGPIPE appends 6%,
+  compares 8%; core 0 still waits ~26% of its cycles for instructions and ~26% on data. Shrinking code with
+  slower instructions loses (D4, D6): the misses are in loops whose working set did not get smaller. Ideas not
+  yet tried: profile-guided per-function choices (hot functions only), keeping guest RAM word-swapped (no `rev`
+  on 32-bit accesses; touches every runtime/ reader of guest memory), a cheaper write-tracking sweep (~0.12 ms),
+  moving work off the game thread (GX recording, audio) onto core 2/3. Layout
+  A/Bs use two builds run back to back on the 2v2 hardware replay (user decision 2026-10-26); `tools/hw_ab.sh`
+  runs one unattended through cr_agent. GX-thread work
   stays second: 15.6 ms, under the 16.7 ms budget.
 - Render skip when a frame runs late (keep game speed at 100% by drawing every other frame),
   needed most with stereo 3D.
@@ -182,6 +189,8 @@ hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (r
 | 39b | 10-26 | branch float-locals @d1d6633 (D5) | cr_autotest_2026-10-26_hw-run39b-replay-2v2-floatlocals.log | B of the D5 A/B, right after 39a: route identical. 2v2 4.2: game 19.68 ms, 44.6 fps, 17.06M busy cycles, 5.93M instructions; paired with 39a -0.13 ms (median -0.20), cycles -0.20M (73 of 73). Campaign 8.3 game 6.40 ms (-0.11) |
 | 40a | 10-26 | branch float-locals @d1d6633 (D5) | cr_autotest_2026-10-26_hw-run40a-replay-2v2-floatlocals.log | A of the D6 A/B (cr_agent): same build as 39b, 2v2 game 19.54 ms (perf_avg; 39b 19.58): repeatable |
 | 40b | 10-26 | D5 + GENOPT=-Os | cr_autotest_2026-10-26_hw-run40b-replay-2v2-os.log | B of the D6 A/B: route identical; 2v2 game 20.26 ms (+0.72), 17.56M busy cycles (+0.50M), 6.03M instructions. -Os not kept |
+| 41a | 10-26 | main @35e6839 (D5 merged) | cr_autotest_2026-10-26_hw-run41a-replay-2v2-floatlocals.log | A of the D7 A/B (cr_agent). 2v2 4.2: 44.7 fps (74%), game 19.6 ms, frame 22.4, GX thread busy 15.8, GPU 2.1; campaign 8.3 59.0 fps, game 6.4 ms: the "Where it stands" numbers |
+| 41b | 10-26 | main + GENOPT=-fno-schedule-insns | cr_autotest_2026-10-26_hw-run41b-replay-2v2-nosched1.log | B of the D7 A/B: route identical; 2v2 game +0.09 ms, cycles +0.16M: not kept |
 | 35a | 10-26 | branch load-hwcheck @1059b28 HWCHECK=1 (checked loads, = main's code) | cr_autotest_2026-10-26_hw-run35a-replay-2v2-hwcheck.log | A of the D1 A/B (2v2 replay, cr_perfctr): route identical to run 34. 2v2 4.2: 40.0 fps, game 22.24 ms, frame 25.0; 19.18M busy cycles, 6.52M instructions, I-miss 37.3/k, stall inst 27.6%, stall data 26.1% (as runs 33-34). Campaign 8.3 game 7.3 ms. A hand-played campaign session on ade9b5e before it is kept as cr_autotest_2026-10-26_hw-play-ade9b5e-campaign-perfctr.log |
 | 34 | 10-26 | branch icache-cold-paths @ade9b5e | cr_autotest_2026-10-26_hw-run34-replay-2v2-tlb.log | run 33 repeated with the TLB counter pair: route identical, game 22.0 ms; I-miss 37.4/k (33: 36.6), stall inst 27.56% (33: 27.56%); instruction micro-TLB 0.15/k, main TLB 0.22/k misses (< 1% of cycles even at 100 cycles each): TLB is not a cost, function order is not a lever |
 | 33 | 10-26 | branch perf-counters @1838462 | cr_autotest_2026-10-26_hw-run33-replay-2v2-perfctr.log | the 2v2 hardware replay (as 32a, all toggles on) with cr_perfctr: route identical to 32a, game 21.9 ms / frame 24.7 (32a by the same tool: 21.9 / 24.6). Core 0 per 2v2 frame: 19.1M busy cycles, 6.65M instructions (IPC 0.35), stall for instructions 27.6% (243k I-cache misses), stall for data 26.6%, D-cache read misses 3%. Campaign 8.3: IPC 0.38, I-stall 20.8%, data stall 27.8% |

@@ -455,6 +455,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   unchanged. Run 39a vs 37b (same code, old netloader loop): +0.01 ms, sd 0.13: the agent loop measures the same.
 - gen/ at -Os (2026-10-26, D6, not kept): .text -7%, hot set -8% static, but hardware runs 40a/40b: 2v2 game +0.72 ms,
   busy cycles +0.50M, I-cache misses per instruction unchanged. -O2 stays.
+- -fno-schedule-insns (2026-10-26, D7, not kept): runs 41a/41b, 2v2 game +0.09 ms, cycles +0.16M. Density steps D1-D7
+  done: 2v2 game 22.24 (35a) -> 19.6 ms (41a), 40.0 -> 44.7 fps; campaign 59.0 fps. `tools/hw_ab.sh <N> <A> <B> <tagA>
+  <tagB>` runs a 2v2 replay A/B unattended through cr_agent (needs the 2v2 save + replay flags on the SD) and
+  `tools/hw_pair.py` pairs two logs by window (two runs of one build: sd ~0.13 ms per window).
 - Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
   through cr_agent (`tools/hw/agent`, TCP 5001: PUT/GET/MV/LS/RUN/QUIT, no delete, /custom-robo/save refused): put
   flags + build, RUN through Luma's hb:ldr with "--return /3ds/cr_agent.3dsx", the build points hb:ldr back at the

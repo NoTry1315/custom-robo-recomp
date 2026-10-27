@@ -15,32 +15,33 @@ with sound, memory card saves, stereoscopic 3D, the attract movie and the HOME b
 Frame rates on hardware (New 3DS, averages of the in-game `# time` windows from
 `tools/time_avg.py`). Each run was played by hand, so the scenes differ from run to run:
 
-| Scene | Run 24 (10-21) | Run 25 (10-22) | Run 27 (10-22) | Run 28 (10-22) | Run 29 (10-23, 2v2 CPU work, now in main) | Game speed now |
-|---|---|---|---|---|---|---|
-| Title, menus (2.x, 5.0) | 49-60 | ~60 | 58-60 | 58-60 | not recorded | 97-100% |
-| Campaign (8.3) | 42.4 | 44.4 | 51.2 | 56.7 (39 windows) | **58.5** | 97% |
-| Battle 1v1 (4.2) | 47.9 | 54.2 | 45.3 (campaign battles) | **57.3** (19 windows) | not played | 95% |
-| Battle 1v1, 3D slider up | - | - | - | 51.4 (20 windows) | not played | 86% |
-| Battle 2v2 (4.2) | - | - | - | 30.5 (72 windows) | **39.6** | 66% |
-| Pause (c.0) | 40.1 | 55.8 | 59.1 | 57.5 (2 windows) | not played | 96% |
-| Attract movie | ~9 | 13.9 | not played | not played | not played | ~46% |
+| Scene | Run 24 (10-21) | Run 25 (10-22) | Run 27 (10-22) | Run 28 (10-22) | Run 29 (10-23, 2v2 CPU work, now in main) | Run 41a (10-26, 2v2 replay, density work) | Game speed now |
+|---|---|---|---|---|---|---|---|
+| Title, menus (2.x, 5.0) | 49-60 | ~60 | 58-60 | 58-60 | not recorded | - | 97-100% |
+| Campaign (8.3) | 42.4 | 44.4 | 51.2 | 56.7 (39 windows) | 58.5 | **59.0** (37 windows) | 98% |
+| Battle 1v1 (4.2) | 47.9 | 54.2 | 45.3 (campaign battles) | **57.3** (19 windows) | not played | - | 95% |
+| Battle 1v1, 3D slider up | - | - | - | 51.4 (20 windows) | not played | - | 86% |
+| Battle 2v2 (4.2) | - | - | - | 30.5 (72 windows) | 39.6 | **44.7** (74 windows) | 74% |
+| Pause (c.0) | 40.1 | 55.8 | 59.1 | 57.5 (2 windows) | not played | - | 96% |
+| Attract movie | ~9 | 13.9 | not played | not played | not played | - | ~46% |
 
 The game runs one logic step per frame, so game speed is fps / 60: at 48 fps a
 battle plays in slow motion at 80% of real time. 100% needs a steady 60 fps.
 The movie is measured against its own 30 fps.
 
-Where the time goes now (run 28; 2v2 from run 29; ms per frame):
+Where the time goes now (run 28; 2v2 from run 41a; ms per frame):
 
 | Scene | frame | game CPU | GX thread busy | GPU | bound by |
 |---|---|---|---|---|---|
 | Campaign 8.3 | 17.6 | 9.9 | 16.1 | 3.7 | near 60 fps |
 | Battle 1v1 | 17.5 | 15.1 | 12.2 | 2.2 | near 60 fps |
 | Battle 1v1, 3D | 19.5 | 14.5 | 16.5 | 9.8 | GPU + CPU |
-| Battle 2v2 (run 29) | 25.3 | 22.2 | 16.6 | 2.6 | **game CPU** |
+| Battle 2v2 (run 41a) | 22.4 | 19.6 | 15.8 | 2.1 | **game CPU** |
 
 Textures in VRAM (2026-10-22) cut GPU time to under a third: campaign 12.2 -> 3.7 ms, battle
 9.3 -> 2.2 ms (runs 27 -> 28; the battles were different fights, so that one is rough). The 2v2 battle is now the heaviest scene, and it is bound by the
-game's own code: 29.8 ms per frame in run 28, 22.2 ms after the 2v2 CPU work (run 29: 30.5 -> 39.6 fps). Every performance change and its measured effect, including
+game's own code: 29.8 ms per frame in run 28, 22.2 ms after the 2v2 CPU work (run 29: 30.5 -> 39.6 fps), 19.6 ms after
+the translator density steps (run 41a: 44.7 fps). Every performance change and its measured effect, including
 the ones that did not help, is listed in `docs/performance.md`.
 
 2v2-perf-3 (merged to main 2026-10-26, from `task/2026-10-26-2v2-perf-3`): lazy vertex descriptor, pointer-extent
@@ -247,6 +248,10 @@ and start cr_agent (first install: press Y and `3dslink tools/hw/agent/cr_agent.
 `agent-install`). Build the agent with `docker run --rm -v "<repo>:/proj" -w /proj/tools/hw/agent
 mkw3ds-build:2026-10-09 make`. Also `ping` (uptime, Wi-Fi strength, SD free; logged to
 `logs/hw_loop_agent.log`), `ls`, `get`, `put`, `mv` (no delete; `/custom-robo/save` is refused).
+A whole A/B on the 2v2 replay: `sh tools/hw_ab.sh <run N> <A.3dsx> <B.3dsx> <A tag> <B tag>` (both builds named
+custom-robo-recomp.3dsx in two folders; the 2v2 save and the replay flags must already be on the SD): checks the
+save, runs A then B, and prints `tools/hw_pair.py`'s per-window comparison (B - A game ms and busy cycles), route
+identity and the perf counters. Two runs of the same build differ by sd ~0.13 ms per window (runs 37b, 39a).
 Keep Rosalina's InputRedirection and debugger **off**: with both on, the 3DS lost Wi-Fi and froze 4 times in an
 hour on 2026-10-26 (three of them during the old ftpd/netloader/InputRedirection loop, one with only ftpd idle),
 and file reads and GPU work stalled together for 5-6 s at a time before one of them; 8 hours of hardware runs
