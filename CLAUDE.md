@@ -513,7 +513,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 - Hot-code order (2026-10-27, branch task/2026-10-27-hot-order): `tools/recomp/hot_order.py` -> `hot_order.ld` (561 hot
   2v2 functions first in .text, C3-clustered; ld `--section-ordering-file`, crt0 must stay first; `make HOTORDER=0` =
   link order). Citra identical; hw runs 53a/53b: 2v2 game -0.09 ms, cycles fewer 73/73, 47.3 fps; I-cache misses
-  barely change (capacity misses). Item 1 of the 2026-10-27 plan (items: hot order, GX native path, DSP voices (needs
+  barely change (capacity misses). Item 2 (GX register records inline) measured only, ~0.1 ms, not built (unknowns "GX natives
+  on the game thread"). Item 1 of the 2026-10-27 plan (items: hot order, GX native path, DSP voices (needs
   the user's OK: not bit-identical to Dolphin), BE8; native HSD particles cancelled by the user, rule stands).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
