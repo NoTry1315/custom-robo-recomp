@@ -2622,6 +2622,16 @@ What is left, per static count in gen/ (all at the `cpu.fpr` boundary, which sta
 - General psq_ld/psq_st (GQR != 0) are out of line and take doubles; they appear only in the THP
   decoders (not in these replays).
 
+**On main since 2026-10-26 (D5 of the density plan):** cherry-picked onto main@db5f1ac (D3) as 103f9af; only the
+docs conflicted, and its `call_args(x, i)` helper was renamed `fl_call_args` (main had gained another
+`call_args`). On that base: .text 4,270,832 -> 4,252,072 bytes, static vcvt.f64.f32 / vcvt.f32.f64 14285 ->
+10621. Replays (boot, battle, campaign, 2v2) vs D3: 0 differing key lines, fb dumps identical. Citra game ms: 2v2
+4.2 32.3 -> 32.1, battle 13.1 -> 13.0, campaign 7.6 -> 7.5. **Hardware A/B** (runs 39a = main@9e688b9, 39b = this,
+back to back on the 2v2 replay through cr_agent): 2v2 game 19.81 -> 19.68 ms (-0.13, median -0.20, sd 0.40, B
+faster in 61 of 73), busy cycles 17.26 -> 17.06M (-1.2%, fewer in 73 of 73), instructions 5.95 -> 5.93M, I-cache
+misses 34.2 -> 33.7 per 1000 instructions; campaign 8.3 -0.11 ms (cycles fewer in 37 of 37). The stall-for-data
+share did not move (26.0% -> 25.9%), so the VFP conversions removed were not where the data stalls are.
+
 ## Wi-Fi crashes during unattended hardware runs (2026-10-26)
 
 Not a translator or runtime question, but it decides how hardware runs are made. The first `tools/hw_loop.py`

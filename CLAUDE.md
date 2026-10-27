@@ -449,6 +449,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   38a/38b: 2v2 game +0.34 ms, busy cycles +0.37M. Dropped (performance.md "Tried and not kept"). Runs 38a/38b also hit
   two 3DS freezes with Wi-Fi loss (after ~10 netloads since boot, and after a run whose boot already had 5-6 s SD stalls);
   not the game (38b reached its run length): Rosalina InputRedirection + debugger, see "Unattended hardware runs".
+- Float locals (2026-10-26, D5, branch task/2026-10-26-float-locals): the 10-22 single-precision FPR halves branch
+  (3f77d16) cherry-picked onto main (fl_call_args rename). Static vcvt -26%, Citra 2v2 32.3 -> 32.1 ms, logs + fb
+  identical to D3. Hardware runs 39a/39b (cr_agent loop): 2v2 game 19.81 -> 19.68 ms, busy cycles -1.2%; stall-data share
+  unchanged. Run 39a vs 37b (same code, old netloader loop): +0.01 ms, sd 0.13: the agent loop measures the same.
 - Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
   through cr_agent (`tools/hw/agent`, TCP 5001: PUT/GET/MV/LS/RUN/QUIT, no delete, /custom-robo/save refused): put
   flags + build, RUN through Luma's hb:ldr with "--return /3ds/cr_agent.3dsx", the build points hb:ldr back at the

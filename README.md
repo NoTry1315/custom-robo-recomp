@@ -69,7 +69,8 @@ The second (guest stores mark a byte map instead of loading and storing the writ
 `task/2026-10-26-wr-tracking`) cuts the hot code by another 2.5% (code 5.3 -> 5.1 MB): runs 36a/36b, 2v2 game 20.25 -> 20.07 ms (-0.9%).
 The third (stores without the hardware check outside the 33 functions that set a hardware address, branch
 `task/2026-10-26-store-hwcheck`) cuts the hot code by 14.5% (code 5.1 -> 4.3 MB): runs 37a/37b (the first unattended A/B, tools/hw_loop.py), 2v2 game
-20.26 -> 19.80 ms, 43.5 -> 44.4 fps.
+20.26 -> 19.80 ms, 43.5 -> 44.4 fps. The fourth (single-precision float registers kept as float locals in the translated
+code, runs 39a/39b through the new cr_agent loop): 19.81 -> 19.68 ms.
 
 Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real one first), `cr_pad_script.txt`
 ("8600 0 0" plus the numeric lines of tools/citra/pad_2v2.txt), `cr_pad_replay.txt` (the "# pad r" lines of
