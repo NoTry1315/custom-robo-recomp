@@ -90,6 +90,12 @@ LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=svcB
 ifeq ($(LTO),1)
 LDFLAGS	+=	-flto=20
 endif
+# HOTORDER: the 2v2's hot functions first in .text, clustered with their callers (tools/recomp/hot_order.py ->
+# hot_order.ld); HOTORDER=0 = link order. make does not relink when only this changes: delete the .elf
+HOTORDER ?= 1
+ifeq ($(HOTORDER),1)
+LDFLAGS	+=	-Wl,--section-ordering-file,$(TOPDIR)/tools/recomp/hot_order.ld
+endif
 LIBS	:= -lcitro3d -lctru -lm
 LIBDIRS	:= $(CTRULIB)
 

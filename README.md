@@ -42,7 +42,8 @@ Textures in VRAM (2026-10-22) cut GPU time to under a third: campaign 12.2 -> 3.
 9.3 -> 2.2 ms (runs 27 -> 28; the battles were different fights, so that one is rough). The 2v2 battle is now the heaviest scene, and it is bound by the
 game's own code: 29.8 ms per frame in run 28, 22.2 ms after the 2v2 CPU work (run 29: 30.5 -> 39.6 fps), 19.6 ms after
 the translator density steps (run 41a: 44.7 fps), 21.4 ms per frame after the audio mixer work (run 43b: 46.7 fps), 21.3 ms with profile-guided inlining (run 46b: 47.0 fps), 21.1 ms with PSMTXConcat / PSMTXMultVec in hand-scheduled ARM
-(runs 50a/50b: game -0.27 ms, 47.3 fps). Every performance change and its measured effect, including
+(runs 50a/50b: game -0.27 ms, 47.3 fps), 21.2 ms with the hot functions placed together in .text (runs 53a/53b: game
+-0.09 ms, busy cycles fewer in 73 of 73, 47.3 fps). Every performance change and its measured effect, including
 the ones that did not help, is listed in `docs/performance.md`.
 
 2v2-perf-3 (merged to main 2026-10-26, from `task/2026-10-26-2v2-perf-3`): lazy vertex descriptor, pointer-extent
@@ -236,7 +237,8 @@ every store that reaches a hardware address as `# hwcheck store` lines), `make A
 read call per source sample) and `make AXWORKER=0` (the mix jobs run on the game thread instead of a worker thread on
 core 2; boot line `# AX: mix jobs`), `make ALIGNVERIFY=1` (every misaligned 16/32-bit guest access logged per
 host site as `# align` lines) and `make RANGEVERIFY=1` (the same lines for every guest access outside
-0x80000000-0x81ffffff). Switching any of these needs `make clean` first.
+0x80000000-0x81ffffff). Switching any of these needs `make clean` first. `make HOTORDER=0` links .text in plain
+link order instead of `tools/recomp/hot_order.ld` (the 2v2's hot functions first; delete the .elf to relink).
 Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
 `RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `RECOMP_INLINE_TSV=0` leaves out the profile sites of
 `tools/recomp/inline_sites.tsv`; `dual`, the default, builds both variants into the one
@@ -252,7 +254,8 @@ hardware log's pad lines from a save (how the run 30 story event was replayed).
 Profiling tools: `tools/time_avg.py` (per-scene `# time` averages, split by toggle), `tools/perf_avg.py` (per-scene
 `# perf` hardware counter averages next to game ms), `tools/callcost.py` (the call-boundary instructions of every
 translated function in a build, weighted by a `RECOMP_SITEPROF=1` replay's call counts; workflow in its docstring),
-`tools/recomp/inline_sites.py` (the hot call sites of a `RECOMP_SITEPROF=1` replay -> `tools/recomp/inline_sites.tsv`).
+`tools/recomp/inline_sites.py` (the hot call sites of a `RECOMP_SITEPROF=1` replay -> `tools/recomp/inline_sites.tsv`),
+`tools/recomp/hot_order.py` (the same replay + a build's map -> `tools/recomp/hot_order.ld`, the hot-code order).
 
 With the 3DS on Wi-Fi and Rosalina's debugger enabled (never during unattended runs: see below), `tools/hw_dump.sh [ip]` attaches gdb
 to the running game and saves thread registers, backtraces and memory to `logs/hwdump/`.
