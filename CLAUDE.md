@@ -528,7 +528,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   builds (console layout with every stats row, build id ends in "console"): use 0 for Citra runs and hardware A/Bs
   (user, 2026-10-27). Logs are the same either way. Citra checked by screenshot; touch and hardware not yet checked.
   Details: unknowns "Card layout of the bottom screen".
-- Widescreen (2026-10-27, branch task/2026-10-27-widescreen, off by default): sdmc:/cr_widescreen.txt / button
+- Widescreen (2026-10-27, branch task/2026-10-27-widescreen; on by default since 2026-10-27, sdmc:/cr_widescreen_off.txt turns
+  it off, was cr_widescreen.txt to turn it on): button
   "Widescreen" opens the scissor to the full 400 px for perspective draws whose viewport and scissor reach an EFB side
   (the 0.8 projection scale and 1.25 viewport of Dolphin's hack cancel: PICA already clips at 400 px); untextured
   full-screen 2D quads (fades) are stretched to 400 px, other 2D stays 4:3. Citra: flag off = main 62b5181 (boot/title/
@@ -544,6 +545,13 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   = slow motion, no skipped frames). Left: ~13 ms SD read wait per movie frame, decode on one core. opening_b.thp
   is never referenced by main.dol. autotest.ps1 -Root/-Exe = a private Citra copy (renamed exe) when other
   sessions use Citra. Details: unknowns "Native THP decode".
+- Release 2026-10-27 (branch task/2026-10-27-widescreen-default): widescreen on by default (cr_widescreen_off.txt / button
+  turn it off); Citra title run fine. On the SD as 3ds/custom-robo-recomp.3dsx (release, CARDUI=1); previous build kept as
+  ..._2026-10-28_pre-widescreen-default-9dc44db.3dsx.bak. SD root replay/test flags (cr_pad_script, cr_pad_replay,
+  cr_dvdasync_off, cr_perfctr, cr_bench) renamed to *_2026-10-27_replay-setup.txt.off: interactive play again. The SD save is
+  still the 2v2 test save (= data/saves/2026-10-22_pre-2v2); the user's own save is in custom-robo/save-backup-2026-10-26
+  (= data/saves/2026-10-26_sd-backup-before-hw-replay), not restored (needs the user's OK). ftpd cannot RNTO inside /3ds
+  (550): back up a build by uploading a copy.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

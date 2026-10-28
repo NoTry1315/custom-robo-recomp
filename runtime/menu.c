@@ -48,7 +48,7 @@ static struct btn {
     { "Inline sites",  "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_inline_sites, cr_inline_off (main.c binds it) */
     { "Dump RAM",      "",   0,  recomp_memdump_request, 0, 0, 0, 0, -2, &recomp_memdump_n },   /* memdump.c: guest RAM + ARAM to SD */
     { "Perf counters", "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_perfctr_on, cr_perfctr (perfctr.c binds it) */
-    { "Widescreen",    "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_widescreen, cr_widescreen (gx.c binds it) */
+    { "Widescreen",    "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_widescreen, cr_widescreen_off (gx.c binds it) */
     { "Native THP",    "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_thpnative_off (thp.c binds it) */
 };
 #define NBTN (int)(sizeof btn / sizeof btn[0])

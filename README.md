@@ -113,7 +113,7 @@ Known problems:
 - Missing graphics features: EFB-to-texture copies, lines/points, specular
   (COLOR1) lighting, post-transform texture matrices, anti-aliasing. See the GX
   sections of `docs/recomp_unknowns.md`.
-- Widescreen (off by default): 2D the game places in 4:3 screen space ends at the old 4:3 edge (e.g. a white
+- Widescreen (on by default since 2026-10-27): 2D the game places in 4:3 screen space ends at the old 4:3 edge (e.g. a white
   wedge next to a robot at the left edge in the 2v2), textured full-screen 2D (backgrounds, the movie) keeps black
   sides, and objects the game culls against its 4:3 view may pop in at the sides (not seen so far). Not yet tried
   on hardware. See `docs/recomp_unknowns.md` "Widescreen".
@@ -191,7 +191,7 @@ and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "
 functions it changes) and "Inline sites" (the 5 inlined particle-helper calls), all on by default.
 "Perf counters" (off by default) is a measurement, not a feature: while on, the log gets a `# perf` line every
 60 retraces with the ARM11 core 0 hardware counters per frame (see Test flags, `cr_perfctr.txt`).
-"Widescreen" (off by default, or `cr_widescreen.txt`) removes the 40 px black bars at the sides of the top
+"Widescreen" (on by default; off with the button or `cr_widescreen_off.txt`) removes the 40 px black bars at the sides of the top
 screen in 3D scenes, like Dolphin's widescreen hack: the 3D view gets a wider field of view, the 4:3 middle
 is unchanged, and textured 2D (HUD, menus, backgrounds, the movie) stays 4:3; untextured full-screen 2D (fades)
 is stretched to the full width (artifacts under Known problems).
@@ -234,7 +234,7 @@ can be compared with a feature on and off:
 | `cr_ptrext_off.txt` | old stack-promotion bodies (no pointer-extent promotion; button "Ptr extent") |
 | `cr_inline_off.txt` | plain calls at the 5 particle-helper sites (no inline copies; button "Inline sites") |
 | `cr_perfctr.txt` | ARM11 hardware counters on from boot (button "Perf counters"): a `# perf` line every 60 retraces with core 0's cycles, instructions (IPC), I-cache misses, D-cache reads and read/write misses, stall cycles (instruction fetch, data hazard), branch mispredicts and instruction micro-TLB / main TLB misses per frame; two events count per frame, so the five pairs take turns. `tools/perf_avg.py` averages them per scene. Citra only stubs the counters ("no frame counted") |
-| `cr_widescreen.txt` | widescreen on from boot (button "Widescreen"): 3D draws fill the 400 px top screen instead of the 4:3 window with 40 px bars; textured 2D stays 4:3, untextured full-screen 2D (fades) is stretched |
+| `cr_widescreen_off.txt` | widescreen off from boot (button "Widescreen"): 3D draws back in the 4:3 window with 40 px bars. Widescreen is on by default: 3D draws fill the 400 px top screen; textured 2D stays 4:3, untextured full-screen 2D (fades) is stretched |
 | `cr_runfast.txt` | set the VFP's flush-to-zero + default-NaN mode at boot (already on: the boot log's `# fpscr:` line shows the value) |
 | `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
 | `cr_vsync_on.txt` | old pacing: wait for a vblank every frame |

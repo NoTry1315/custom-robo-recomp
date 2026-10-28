@@ -236,8 +236,8 @@ static float efb_scale(void) {
 static float efb_x0(void) { return (400 - gx.efb_w * efb_scale()) * 0.5f; }
 static float efb_y0(void) { return (240 - gx.efb_h * efb_scale()) * 0.5f; }
 
-/* Widescreen (sdmc:/cr_widescreen.txt or the bottom-screen button "Widescreen"; off by
- * default), like Dolphin's widescreen hack: perspective draws fill the 400 px of the top
+/* Widescreen (on by default; sdmc:/cr_widescreen_off.txt or the bottom-screen button
+ * "Widescreen" turns it off), like Dolphin's widescreen hack: perspective draws fill the 400 px of the top
  * screen instead of the 4:3 window in its middle. Dolphin scales the projection's x by
  * (4/3)/(5/3) = 0.8 and widens the viewport by 1.25; here the two cancel, since set_clip
  * already maps clip space so that the 400 px are ndc -1..1 and PICA clips there: what
@@ -2850,9 +2850,9 @@ void recomp_gx_start(void) {
     }
     recomp_vtxpack_off = flag_file("cr_vtxpack_off");
     recomp_menu_bind("Vertex pack", &recomp_vtxpack_off, NULL);
-    recomp_widescreen = flag_file("cr_widescreen");
+    recomp_widescreen = !flag_file("cr_widescreen_off");
     recomp_menu_bind("Widescreen", &recomp_widescreen, NULL);
-    recomp_log("# gx: widescreen %s\n", recomp_widescreen ? "on (cr_widescreen.txt): perspective draws use the full 400 px" : "off (4:3 window, 40 px bars)");
+    recomp_log("# gx: widescreen %s\n", recomp_widescreen ? "on: perspective draws use the full 400 px" : "off (cr_widescreen_off.txt): 4:3 window, 40 px bars");
     recomp_lazydesc_off = flag_file("cr_lazydesc_off");
     recomp_menu_bind("Lazy vtx desc", &recomp_lazydesc_off, NULL);
     recomp_log("# gx: vertex descriptor %s\n", recomp_lazydesc_off ? "eager (cr_lazydesc_off.txt): a GX-queue record per GXSetVtxDesc/GXClearVtxDesc" : "lazy (one record before a draw, when it changed)");
