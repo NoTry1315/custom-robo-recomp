@@ -12,3 +12,4 @@ build.log
 /side-session-notes/
 /tools/hw/agent/source/main.c
 /tools/hw_loop.py
+/tools/hw_ab.sh

@@ -15,10 +15,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   summary, what you need, build, credits; keep it in step when those change), docs/performance.md (perf
   changes, hardware run index), docs/recomp_unknowns.md and the Status list below. A new flag file or button
   is not done until it is in README.detailed.md. Check the README diffs before pushing.
-- **Security:** docs/security-review.md is the record. Never re-add `tools/hw_loop.py` or
-  `tools/hw/agent/source/main.c` to git (ignored; the agent is unauthenticated). Do not use the local cr_agent
-  for unattended runs until a secure replacement exists (auth, protected transport, file allowlist, no
-  arbitrary RUN). Hardware runs are started by the user; Claude may upload builds via ftpd.
+- **Security:** docs/security-review.md is the record. `tools/hw_loop.py`, `tools/hw_ab.sh` and
+  `tools/hw/agent/source/main.c` are maintainer-local (gitignored): the agent is unauthenticated, so it is not
+  shared. Using them here on the home LAN is fine (user, 2026-10-28); never re-add them to git or describe them
+  in the READMEs as something others can run.
 - **No large binaries in git** (videos, builds, dumps): `media/project-overview.mp4` (9.3 MB) is the one
   exception; replace it only after asking, since every version stays in history.
 - **Progress number:** boot stage reached (main loop -> logo -> title -> menu

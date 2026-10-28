@@ -201,8 +201,8 @@ cell below that names a removed flag is history.
   on 32-bit accesses; touches every runtime/ reader of guest memory), a cheaper write-tracking sweep (~0.12 ms),
   moving work off the game thread (GX recording, audio) onto core 2/3. Layout
   A/Bs use two builds run back to back on the 2v2 hardware replay (user decision 2026-10-26); `tools/hw_ab.sh`
-  ran one unattended through cr_agent (disabled since 2026-10-28, docs/security-review.md finding 1: A/Bs are
-  now run by the user). GX-thread work
+  runs one unattended through cr_agent (maintainer-local since 2026-10-28, not in git: docs/security-review.md
+  finding 1). GX-thread work
   stays second: 15.6 ms, under the 16.7 ms budget.
 - **BE8 big-endian data mode** (2026-10-27, feasibility study; unknowns "BE8 big-endian data mode"): gen/ run with
   `setend be`, so guest loads/stores need no `rev` and floats load with `vldr`. Measured: `setend` costs 1 cycle on the
