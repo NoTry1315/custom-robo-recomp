@@ -31,20 +31,26 @@ explicit opt-in. Authenticate and authorize each command, protect the
 connection, restrict file operations to a narrow allowlist, and remove
 arbitrary `RUN` or require a separate trusted physical confirmation.
 
-**Status:** The agent source and client are maintainer-local and excluded from
-Git, so a fresh checkout does not contain this network service. The local
-copies retain the unauthenticated protocol described above; excluding them
-from Git does not fix the finding. Do not run the local agent on an untrusted
-network or use an older binary. The unattended hardware-run workflow is
-unavailable from a fresh checkout until a secure replacement is designed.
+**Status:** Mitigated in the shared repository, but not fixed for existing
+local copies or deployed binaries. The vulnerable agent source
+(`tools/hw/agent/source/main.c`) and client (`tools/hw_loop.py`) were removed
+from the tracked tree, and `.gitignore` now prevents those maintainer-local
+files from being accidentally added again. The unattended-run documentation
+was replaced with a warning and manual-test instructions. A fresh checkout
+therefore cannot build or run this service. Existing local copies and SD-card
+binaries still use the unauthenticated protocol and remain vulnerable; do not
+run them on an untrusted network. The unattended workflow remains unavailable
+until a secure replacement is designed.
 
 #### Remediation plan
 
-1. Keep the agent source and client out of the shared repository and prevent
-   them from being re-added accidentally. **Done in this branch; this is a
-   repository-scope decision, not a vulnerability fix.**
+1. Remove the agent source and client from the shared repository, ignore the
+   local copies, and document the limitation. **Done; this contains the issue
+   in shared checkouts but does not secure existing copies.**
 2. Replace the unauthenticated protocol before using an agent on a network.
-   **Pending.**
+   **Pending; authentication, protected transport, least-privilege file
+   access, and removal or trusted confirmation for arbitrary `RUN` are still
+   required.**
 
 ### 2. Disc extractor permits Windows path traversal from FST names
 
@@ -64,10 +70,14 @@ overwrite files that the current user is permitted to modify.
 and drive-qualified names. Resolve each destination and verify it remains
 within the extraction root before creating or writing the file.
 
-**Status:** Fixed in this branch. FST components reject both separator styles
-and Windows rooted/drive-qualified names; resolved output paths are checked for
-containment before directory creation or file writes. Focused unit tests cover
-crafted names, valid nested paths, and symlink escapes.
+**Status:** Fixed and regression-tested. `walk_fst` rejects path separators,
+empty/dot components, and Windows rooted or drive-qualified FST names.
+`output_path` rejects rooted, drive-qualified, and traversal paths, resolves
+the destination, and verifies it remains under the resolved extraction root
+before directory creation or file writes. This containment check also blocks
+symlink escapes. Focused tests cover crafted Windows names, valid nested
+paths, traversal, and symlink escapes; `python -m unittest discover -s
+tools/tests -p test_extract_disc.py` passed all four tests.
 
 #### Remediation plan
 
@@ -85,5 +95,7 @@ vulnerabilities. Generated game code and data were not reviewed as source;
 the bundled `ftpd.3dsx` is binary-only and could not receive a source-level
 review.
 
-These findings describe existing repository code and are not necessarily
-introduced by the current worktree changes.
+Finding 1 remains applicable to maintainer-local copies and previously built
+agent binaries, which are outside the shared repository. Finding 2 describes
+the pre-fix extractor; the current tracked extractor includes the remediation
+described above.

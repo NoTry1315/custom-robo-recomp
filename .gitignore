@@ -9,5 +9,6 @@ __pycache__/
 gen/
 build.log
 *.map
+/side-session-notes/
 /tools/hw/agent/source/main.c
 /tools/hw_loop.py
