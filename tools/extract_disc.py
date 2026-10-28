@@ -7,7 +7,26 @@ GameCube discs are unencrypted: header at 0, FST offset/size at 0x424/0x428.
 Nothing from the disc is committed; data/ is ignored by git.
 """
 import argparse, json, struct
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+
+def validate_fst_name(name):
+    win_name = PureWindowsPath(name)
+    if (not name or '/' in name or '\\' in name or name in ('.', '..')
+            or win_name.drive or win_name.root or ':' in name):
+        raise ValueError('unsafe FST name: ' + name)
+
+def output_path(root, relative):
+    win_path = PureWindowsPath(relative)
+    if (win_path.is_absolute() or win_path.drive
+            or any(part in ('.', '..') for part in win_path.parts)):
+        raise ValueError('unsafe output path: ' + str(relative))
+    root = root.resolve()
+    dest = (root / relative).resolve()
+    try:
+        dest.relative_to(root)
+    except ValueError:
+        raise ValueError('output path escapes extraction root: ' + str(relative))
+    return dest
 
 def walk_fst(fst):
     count = struct.unpack_from('>I', fst, 8)[0]
@@ -19,8 +38,7 @@ def walk_fst(fst):
         info, offset, size = struct.unpack_from('>III', fst, i * 12)
         at = names + (info & 0xFFFFFF)
         name = fst[at:fst.index(0, at)].decode('shift_jis')
-        if '/' in name or name in ('.', '..'):
-            raise ValueError('unsafe FST name: ' + name)
+        validate_fst_name(name)
         name = stack[-1][0] + name
         if info >> 24:
             stack.append((name + '/', size))
@@ -57,7 +75,7 @@ def main():
         if args.sys_only:
             return
         for name, offset, size in files:
-            dest = out / 'files' / name
+            dest = output_path(out / 'files', name)
             dest.parent.mkdir(parents=True, exist_ok=True)
             f.seek(offset)
             dest.write_bytes(f.read(size))

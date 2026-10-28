@@ -273,39 +273,19 @@ translated function in a build, weighted by a `RECOMP_SITEPROF=1` replay's call 
 With the 3DS on Wi-Fi and Rosalina's debugger enabled (never during unattended runs: see below), `tools/hw_dump.sh [ip]` attaches gdb
 to the running game and saves thread registers, backtraces and memory to `logs/hwdump/`.
 
-Unattended hardware runs: `tools/hw_loop.py run --build <3dsx> --name <date>_hw-runNN-<purpose>
-[--put local=/remote] [--mv /a=/b] [--first <s>] [--timeout <s>]` runs a build with nobody at the console through
-cr_agent (`tools/hw/agent`, a small homebrew app on TCP 5001): it puts the flag files and the build on the SD
-(`sdmc:/3ds/<basename>`), starts the build through Luma's 3dsx loader with `--return /3ds/cr_agent.3dsx`, and
-the build hands control back to the agent when its run length ends (`runtime/main.c` hw_return; any other launch
-exits to the Homebrew Launcher as before). The script does not touch the network while the game runs: it looks
-for the agent after `--first` s (default 120), then every ~20 s until `--timeout` (600), fetches
-`/cr_autotest.log` to `logs/cr_autotest_<name>.log` and renames it on the SD to `/cr_autotest_<name>.log`. The
-3DS waits in the agent between runs; `quit` returns it to the Homebrew Launcher at the end of a session. A game
-that hangs never comes back: the script stops and says so. Once per boot, by hand: open the Homebrew Launcher
-and start cr_agent (first install: press Y and `3dslink tools/hw/agent/cr_agent.3dsx`; later updates:
-`agent-install`). Build the agent with `docker run --rm -v "<repo>:/proj" -w /proj/tools/hw/agent
-mkw3ds-build:2026-10-09 make`. Also `ping` (uptime, Wi-Fi strength, SD free, battery and charger; logged to
-`logs/hw_loop_agent.log`), `ls`, `get`, `put`, `mv` (no delete; `/custom-robo/save` is refused).
-A whole A/B on the 2v2 replay: `sh tools/hw_ab.sh <run N> <A.3dsx> <B.3dsx> <A tag> <B tag>` (both builds named
-custom-robo-recomp.3dsx in two folders; the 2v2 save and the replay flags must already be on the SD): checks the
-save, runs A then B, and prints `tools/hw_pair.py`'s per-window comparison (B - A game ms and busy cycles), route
-identity and the perf counters. Two runs of the same build differ by sd ~0.13 ms per window (runs 37b, 39a).
-Several sessions can share the 3DS: every `hw_loop.py` command takes an exclusive lock on `~/.custom-robo-hw.lock`
-and waits while another session holds it ("waiting for the 3DS"); `hw_ab.sh` holds it for the whole A/B, so another
-session's run never lands between A and B (Citra has the same in `tools/citra/replay.ps1`).
-Keep Rosalina's InputRedirection and debugger **off**: with both on, the 3DS lost Wi-Fi and froze 4 times in an
-hour on 2026-10-26 (three of them during the old ftpd/netloader/InputRedirection loop, one with only ftpd idle),
-and file reads and GPU work stalled together for 5-6 s at a time before one of them; 8 hours of hardware runs
-earlier that day, before InputRedirection was first turned on, had no network trouble (whether the debugger
-was on then is not recorded). Both Rosalina features poll the network from the system
-core every 10-50 ms (Luma3DS issues #2248, #2250, #2071 report InputRedirection freezes and lost IPs). The agent
-loop needs neither: 4 full cycles back to back on 2026-10-26 (20:34-20:55, ~5.3 min each: 4.5 MB build put, 2v2 replay, return,
-log fetched; logs `cr_autotest_2026-10-26_hwagent-soak-01..04.log`) had no stall over 0.6 s and no network
-trouble, and gave the same 2v2 game ms as run 37b (19.6-19.7); runs 39a-41b followed through it the same evening.
-On 2026-10-27 01:57 the 3DS powered off mid-transfer because its battery ran out (it was not on the charger):
-keep it charging. Agent 2's `ping` reports battery level, percent and the charger, and `run` stops before starting
-when the battery is at level 2 of 5 or less without the charger.
+## Unattended hardware runs (temporarily disabled)
+
+`tools/hw/agent/source/main.c` and `tools/hw_loop.py` are maintainer-local files
+and are intentionally excluded from Git; they are not available in a fresh
+checkout. The local-only agent/client still use an unauthenticated network
+protocol that allows clients to read and modify SD files and launch homebrew.
+Do not run the local agent on an untrusted network; these local files are not a
+security fix. The unattended `tools/hw_ab.sh` workflow is unavailable from a
+fresh checkout until a secure replacement is designed.
+
+Run hardware tests manually: copy the build and required test files to the SD
+card, launch the build from the Homebrew Launcher, and retrieve its log locally.
+Exit any running old agent and remove its SD-card copy.
 
 ## How it works
 
@@ -333,6 +313,8 @@ when the battery is at level 2 of 5 or less without the charger.
   and the full write-up of each performance change.
 - `docs/sdk_functions.md`: the SDK functions in `main.dol` (address, name,
   module) and which ones are hand-written.
+- `docs/security-review.md`: security findings, remediation status, and
+  follow-up validation requirements.
 - `CLAUDE.md`: project rules and the development status log.
 
 ## Credits
