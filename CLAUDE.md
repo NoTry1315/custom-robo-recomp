@@ -571,6 +571,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   AX hashes identical on/off; 2v2 6 s stall mid-song: off late + audio diverges, on identical to no stall. Hw run 57
   (title): hashes = Citra. Open: a stall at a song's first read; cause of the 6 s stalls (log writes not ruled out).
   The widescreen "camera too low" report (same play) went away on relaunch; not reproduced, no cause found.
+  Release main@35d8a04 on the SD as 3ds/custom-robo-recomp.3dsx (previous kept as
+  ..._2026-10-28_pre-stream-prefetch-4c4f218.3dsx.bak); not yet played on hardware.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
