@@ -2959,9 +2959,9 @@ left. Flat background: a 240-row gradient banded visibly in RGB565. Open: the Ni
 glyphs; same code path), touch hit areas (geometry shared with the drawing, not tapped in Citra), the cost of a
 redraw (stats once a second: four 60x13 areas; not measured).
 
-## Widescreen (2026-10-27, off by default, not yet on hardware)
+## Widescreen (2026-10-27, on by default since 2026-10-27, not yet checked on hardware)
 
-sdmc:/cr_widescreen.txt or the bottom-screen button "Widescreen" (`recomp_widescreen`, gx.c). Like Dolphin's widescreen
+On by default since 2026-10-27 (user decision); sdmc:/cr_widescreen_off.txt (was cr_widescreen.txt to turn it on) or the bottom-screen button "Widescreen" (`recomp_widescreen`, gx.c). Like Dolphin's widescreen
 hack: perspective draws fill the 400 px of the top screen instead of the 320 px 4:3 window (EFB 640 x 0.5, x0 = 40).
 
 **Only the scissor changes.** Dolphin scales the projection's x by (4/3)/(5/3) = 0.8 and widens the viewport by 1.25;
