@@ -1,6 +1,6 @@
 /* Bottom screen (320x240, 40x30 console cells of 8x8): build id + sdmc flags, a fixed stats
  * table (log.c, once per 60-retrace window), a 3-row message area (printf), and a grid of
- * touch buttons, one per live A/B toggle. Game thread only (consoleSelect is not
+ * touch buttons (player options and the RAM dump). Game thread only (consoleSelect is not
  * thread-safe); a cell is redrawn only when its text changed (the console draws on the CPU).
  *
  *   row  0     build <id>
@@ -28,8 +28,6 @@ static int menu_up;   /* recomp_menu_init ran */
 #define BTN_ROW0 18
 #define BTN_W 19
 
-static int vt_get(void) { return recomp_vt_on; }
-
 static struct btn {
     const char *name, *hint;      /* label, second line before the state */
     int (*get)(void);             /* 1 on, 0 off, -1 unavailable */
@@ -40,16 +38,8 @@ static struct btn {
     int req, shown;
     u32 *count;                   /* action button (no on/off): shows TAP and how often it ran */
 } btn[] = {
-    { "VRAM textures", "",   vt_get,   recomp_vt_toggle, 0, 0, 0, 0, -2 },   /* cr_vramtex_off */
-    { "Vertex pack",   "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_vtxpack_off, bound by gx.c (plans/cache entries are keyed by the mode) */
-    { "Lazy vtx desc", "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_lazydesc_off, bound by gx.c */
-    { "Native sin/cos", "",  0,        0,                1, 0, 0, 0, -2 },   /* cr_libm_off (libm.c binds it) */
-    { "Ptr extent",    "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_ptr_extent, cr_ptrext_off (main.c binds it) */
-    { "Inline sites",  "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_inline_sites, cr_inline_off (main.c binds it) */
-    { "Dump RAM",      "",   0,  recomp_memdump_request, 0, 0, 0, 0, -2, &recomp_memdump_n },   /* memdump.c: guest RAM + ARAM to SD */
-    { "Perf counters", "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_perfctr_on, cr_perfctr (perfctr.c binds it) */
     { "Widescreen",    "",   0,        0,                0, 0, 0, 0, -2 },   /* recomp_widescreen, cr_widescreen_off (gx.c binds it) */
-    { "Native THP",    "",   0,        0,                1, 0, 0, 0, -2 },   /* cr_thpnative_off (thp.c binds it) */
+    { "Dump RAM",      "",   0,  recomp_memdump_request, 0, 0, 0, 0, -2, &recomp_memdump_n },   /* memdump.c: guest RAM + ARAM to SD */
 };
 #define NBTN (int)(sizeof btn / sizeof btn[0])
 #define BTN_PITCH (NBTN <= 8 ? 3 : 2)   /* rows per button row: 12 rows (18-29) hold 4 with gaps, 6 without */

@@ -219,28 +219,17 @@ void recomp_prof_frame(u32 retrace) {
     const char *audio = recomp_ax_flips != aflips ? "mixed" : recomp_ax_rt ? "rt" : "retrace";
     u32 und = recomp_ax_underruns - aund, skip = recomp_ax_skipped - askip;
     aflips = recomp_ax_flips; aund = recomp_ax_underruns; askip = recomp_ax_skipped;
-    static u32 vflips, vmoves, vfull;   /* VRAM textures: same */
-    const char *vram = recomp_vt_flips != vflips ? "mixed" : recomp_vt_on ? "on" : "off";
+    static u32 vmoves, vfull;   /* VRAM textures */
     u32 moves = recomp_vt_stat[4] - vmoves, full = recomp_vt_stat[5] - vfull;
-    vflips = recomp_vt_flips; vmoves = recomp_vt_stat[4]; vfull = recomp_vt_stat[5];
-    static u32 lflips;   /* native sin/cos: same */
-    const char *libm = recomp_libm_flips != lflips ? "mixed" : recomp_libm_off ? "off" : "on";
-    lflips = recomp_libm_flips;
-    static u32 cflips;   /* translator variants (main.c): same */
-    const char *ptrx = recomp_codegen_flips != cflips ? "mixed" : recomp_ptr_extent ? "on" : "off";
-    const char *inls = recomp_codegen_flips != cflips ? "mixed" : recomp_inline_sites ? "on" : "off";
-    cflips = recomp_codegen_flips;
-    static u32 pflips;   /* perf counters: same */
-    const char *perf = recomp_perfctr_flips != pflips ? "mixed" : recomp_perfctr_on ? "on" : "off";
-    pflips = recomp_perfctr_flips;
+    vmoves = recomp_vt_stat[4]; vfull = recomp_vt_stat[5];
     double vix = cur[PROF_GPU_IDX] - sum[PROF_GPU_IDX], vby = cur[PROF_GPU_VBYTES] - sum[PROF_GPU_VBYTES];   /* vertex fetch: indices x vertex size (no post-transform cache) */
-    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s, gx thread %s; %.0f draw calls, %.0f indices per frame; audio %s (underruns %lu, skipped %lu, mix %.2f, callback %.2f ms); vram tex %s (VRAM %lu tex %lu KB, linear %lu tex %lu KB, moves %lu, VRAM full %lu); vtx pack %s (%.1f B per index, %.0f KB vertex fetch per frame); libm %s; lazy desc %s; ptr extent %s; inline sites %s; perfctr %s\n",
+    recomp_log("# time r%lu split: before first draw %.1f, from first draw %.1f; gpu %.1f (tail: C3D_FrameEnd -> queue done), gpu span %.1f (first submit -> queue done, incl. idle gaps); gpukick %s, gx thread %s; %.0f draw calls, %.0f indices per frame; audio %s (underruns %lu, skipped %lu, mix %.2f, callback %.2f ms); vram tex %s (VRAM %lu tex %lu KB, linear %lu tex %lu KB, moves %lu, VRAM full %lu); vtx pack %s (%.1f B per index, %.0f KB vertex fetch per frame); perfctr %s\n",
                (unsigned long)retrace, pre, frame - pre, gpu, span, kick, gxt,
                (cur[PROF_GPU_DRAWS] - sum[PROF_GPU_DRAWS]) / 60.0, (cur[PROF_GPU_IDX] - sum[PROF_GPU_IDX]) / 60.0, audio, (unsigned long)und, (unsigned long)skip,
                aud - (cur[PROF_AUDIO_CB] - sum[PROF_AUDIO_CB]) * ms / 60, (cur[PROF_AUDIO_CB] - sum[PROF_AUDIO_CB]) * ms / 60,
-               vram, (unsigned long)recomp_vt_stat[0], (unsigned long)recomp_vt_stat[1], (unsigned long)recomp_vt_stat[2], (unsigned long)recomp_vt_stat[3],
-               (unsigned long)moves, (unsigned long)full, recomp_vtxpack_off ? "off" : "on", vix ? vby / vix : 0.0, vby / 60.0 / 1024, libm,
-               recomp_lazydesc_off ? "off" : "on", ptrx, inls, perf);
+               recomp_vt_on ? "on" : "off", (unsigned long)recomp_vt_stat[0], (unsigned long)recomp_vt_stat[1], (unsigned long)recomp_vt_stat[2], (unsigned long)recomp_vt_stat[3],
+               (unsigned long)moves, (unsigned long)full, recomp_vtxpack_off ? "off" : "on", vix ? vby / vix : 0.0, vby / 60.0 / 1024,
+               recomp_perfctr_on ? "on" : "off");
     if (retrace % 300 == 0) {
         double un = (cur[PROF_VX_UNIF] - sum[PROF_VX_UNIF]) * ms / 60, dec = (cur[PROF_VX_DEC] - sum[PROF_VX_DEC]) * ms / 60;
         double dl = (cur[PROF_VX_DL] - sum[PROF_VX_DL]) * ms / 60;

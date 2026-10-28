@@ -1,7 +1,7 @@
 /* MTX library (mtx.c, mtxvec.c, vec.c; 0x801394c4-0x8013a2c0) replaced natively.
  * recomp.py MTX_NATIVE sends the game's calls to these sdk_ functions; the translated
- * bodies (f_8013xxxx) are still built: sdmc:/cr_mtx_off.txt routes every call back to
- * them, and the weak gen/ stubs call them for anything not overridden here.
+ * bodies (f_8013xxxx) are still built: the bench compares against them, and the weak gen/
+ * stubs call them for anything not overridden here.
  * Arithmetic: ppc.h SADD/SMUL/SMADD.. in the guest's paired-single order (mtx_impl.h),
  * so results are bit-identical to the translated code in each FLOATOPS mode.
  * Assumes GQR0 = 0 (plain floats), as the SDK keeps it. Copies move raw words.
@@ -206,7 +206,6 @@ static inline double E_MSUB(double a, double c, double b) { return fsgl(fmadd_s(
 #undef LDK
 #endif
 
-static int mtx_off;
 
 void f_801394c4(void); void f_801394f0(void); void f_80139524(void); void f_801395f0(void);
 void f_80139640(void); void f_80139738(void); void f_80139a40(void); void f_80139a74(void);
@@ -256,7 +255,7 @@ void recomp_fnprof_native(const char *name);
 #else
 #define NATIVE_PROF(name) ((void)0)
 #endif
-#define WRAP(name, fn, body) void sdk_##name(void) { NATIVE_PROF(#name); if (mtx_off) { fn(); return; } body; }
+#define WRAP(name, fn, body) void sdk_##name(void) { NATIVE_PROF(#name); (void)fn; body; }
 WRAP(PSMTXIdentity, f_801394c4, nat_identity(R[3]))
 WRAP(PSMTXCopy, f_801394f0, nat_copy(R[3], R[4]))
 WRAP(PSMTXConcat, f_80139524, d_concat(R[3], R[4], R[5]); R[6] = MTX_K01)  /* r6 as the guest leaves it (SDK logs) */
@@ -424,12 +423,11 @@ static void bench(void) {
 static int exists(const char *p) { FILE *f = fopen(p, "rb"); if (f) fclose(f); return f != NULL; }
 
 void recomp_mtx_init(void) {
-    mtx_off = exists("sdmc:/cr_mtx_off.txt");
 #ifdef RECOMP_FLOATOPS
     const char *fp = "float (FLOATOPS)";
 #else
     const char *fp = "double + fsgl/f25";
 #endif
-    recomp_log("# mtx: %s (sdmc:/cr_mtx_off.txt), single ops: %s\n", mtx_off ? "translated" : "native", fp);
+    recomp_log("# mtx: native, single ops: %s\n", fp);
     if (exists("sdmc:/cr_bench.txt")) bench();
 }

@@ -524,17 +524,10 @@ void recomp_menu_touch(int px, int py); /* PADRead: a new touch, in pixels */
 void recomp_menu_retrace(void);        /* recomp_gx_retrace after the sync: apply bound-flag toggles, redraw buttons */
 void recomp_menu_bind(const char *name, int *var, void (*changed)(void));   /* live-toggle a flag variable from its button (menu.c btn[]) */
 extern u32 recomp_menu_flips;          /* bound-flag toggles so far */
-extern int recomp_libm_off;            /* libm.c: sin/cos/sinf/cosf run the translated bodies (sdmc:/cr_libm_off.txt) */
-extern u32 recomp_libm_flips;
 extern int recomp_vt_on;               /* gx.c: cached textures move to VRAM (sdmc:/cr_vramtex_off.txt = 0) */
 extern int recomp_vtxpack_off;          /* gx.c: display-list vertices packed per draw (sdmc:/cr_vtxpack_off.txt = 1) */
-extern int recomp_lazydesc_off;         /* gx.c: a GX-queue record per vertex descriptor call (sdmc:/cr_lazydesc_off.txt = 1) */
-extern int recomp_ptr_extent;           /* main.c: gen/ f_X with a second body runs fp_X (pointer-extent stack promotion; sdmc:/cr_ptrext_off.txt = 0) */
-extern int recomp_inline_sites;         /* main.c: the INLINE_SITES bl sites run their inline copy (sdmc:/cr_inline_off.txt = 0) */
-extern u32 recomp_codegen_flips;        /* main.c: toggles of the two above (# time split: "mixed") */
-extern int recomp_perfctr_on;           /* perfctr.c: ARM11 counters per frame, "# perf" lines (sdmc:/cr_perfctr.txt = 1, button "Perf counters") */
-extern u32 recomp_perfctr_flips;        /* perfctr.c: toggles so far (# time split: "mixed") */
-void recomp_perfctr_init(void);         /* main.c at boot: flag file, button, enable */
+extern int recomp_perfctr_on;           /* perfctr.c: ARM11 counters per frame, "# perf" lines (sdmc:/cr_perfctr.txt = 1) */
+void recomp_perfctr_init(void);         /* main.c at boot: flag file, enable */
 void recomp_perfctr_frame(u32 retrace); /* recomp_prof_frame (game thread): read, rotate, log every 60 retraces */
 void recomp_hwcheck_report(u32 retrace); /* cpu.c, make HWCHECK=verify: stores that reached hw_write, per host site */
 void recomp_perfctr_exit(void);         /* main.c at exit: release the counters */
@@ -544,8 +537,6 @@ extern u32 recomp_memdump_n;           /* dumps written */
 const u8 *recomp_aram(void);           /* ar.c: ARAM (16 MB), NULL before ARInit */
 void recomp_dvd_describe(void *file);  /* dvd.c: reads in flight to a FILE *, for a memory dump */
 void recomp_gx_fb_dump_next(void);     /* gx.c: write the next GX frame to sdmc:/cr_fb_<frame>.bmp */
-void recomp_vt_toggle(void);           /* bottom-screen button: flip it at the next frame start (texture cache invalidated) */
-extern u32 recomp_vt_flips;            /* VRAM texture toggles so far */
 extern volatile u32 recomp_vt_stat[6]; /* textures in VRAM, KB; in linear, KB (every 30 GX frames); moves, fallbacks (running totals) */
 extern int recomp_gx_kick_on;          /* mid-frame GPU submit mode now (for the # time lines) */
 extern u32 recomp_gx_kick_flips;       /* ZL toggles so far */

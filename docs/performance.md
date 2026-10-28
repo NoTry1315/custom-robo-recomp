@@ -11,7 +11,7 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
 ## How performance is measured
 
 - **One test build.** The SD card holds one build (`sdmc:/3ds/custom-robo-recomp.3dsx`). Features are
-  compared with bottom-screen buttons / flag files within that build. Build-time options (LTO, GENOPT,
+  compared with flag files within that build (the A/B buttons were removed on 2026-10-27, see below). Build-time options (LTO, GENOPT,
   FLOATOPS) are decided on or off in main, not shipped as a second build.
 
 - **Hardware runs** (New 3DS, played by hand): the game writes `sdmc:/cr_autotest.log` with a
@@ -29,7 +29,7 @@ the scene, and the commit or branch. "Not yet on hardware" until a hardware run 
   glue at 21.8% of the frame, while the instruction count of that glue is ~5% of the hardware game
   thread (unknowns "Call-boundary cost on the ARM side"). Use Citra to rank and check identity, not
   to decide where hardware time goes.
-- **Hardware counters** (`sdmc:/cr_perfctr.txt` or the button "Perf counters", off by default): a
+- **Hardware counters** (`sdmc:/cr_perfctr.txt`, off by default): a
   `# perf` line every 60 retraces with the ARM11 core 0 counters per frame (cycles, instructions,
   I-cache misses, D-cache reads and misses, stall cycles, branch mispredicts; `runtime/perfctr.c`).
   `tools/perf_avg.py <log> [--from N]` averages them per scene next to the `# time` game ms. Citra
@@ -65,6 +65,18 @@ Game speed is fps / 60: the game runs one logic step per frame. From the first b
 hardware (run 4, 6 fps) to run 28, battle went 6 -> 57 fps; the 2v2 went 30.5 (run 28) -> 40.3 fps (run 32a) -> 44.7 fps (run 41a, after the density steps D1-D5) -> 46.7 fps (run 43b, audio mixer) -> 47.0 fps (run 46b, profile-guided inlining) -> 47.3 fps (run 50b, MTX asm).
 
 ## Changes that helped (newest first)
+
+Flag cleanup (2026-10-27, user decision): the features below that were measured and kept are now always on,
+and their switches are gone: bottom-screen buttons "VRAM textures", "Vertex pack", "Lazy vtx desc", "Native
+sin/cos", "Native THP", "Ptr extent", "Inline sites", "Perf counters" and flag files `cr_batch_off`,
+`cr_gpukick_off`, `cr_vsync_on`, `cr_gxthread_fliptest`, `cr_mtx_off`, `cr_libm_off`, `cr_lazydesc_off`,
+`cr_thpnative_off`, `cr_thp_islow`, `cr_thpverify`, `cr_ptrext_off`, `cr_inline_off`, `cr_vcache_small`,
+`cr_dvd_stalltest`, `cr_gpu_quarter`, `cr_runfast`. Pointer-extent promotion is now in all 142 functions it
+changes (RECOMP_PTR_EXTENT=1, no second bodies) and the 95 inline sites are plain inline copies. Still flag
+files (for chasing a rendering difference): `cr_gxthread_off`, `cr_dlcache_off`, `cr_dlclean_off`,
+`cr_vramtex_off`, `cr_vtxpack_off`; `cr_perfctr` for measurements. Citra boot/battle/campaign/2v2 replays: logs
+and fb dumps identical to main@0d54bd2, 2v2 game 36.9 -> 36.8 ms; .3dsx +0.65%. Not yet on hardware. A "Status"
+cell below that names a removed flag is history.
 
 | Date | Change | Measured effect | Status | Details (unknowns) |
 |---|---|---|---|---|

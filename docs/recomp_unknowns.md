@@ -2258,6 +2258,10 @@ drops below it.
 
 ## Run-time translator toggles (2026-10-26, hardware test build 2v2-perf-3)
 
+Removed 2026-10-27 (flag cleanup, docs/performance.md): recomp.py has no `dual` mode any more; RECOMP_PTR_EXTENT
+and RECOMP_INLINE_SITES default to 1 (extent bodies in every function they change, plain inline copies), the
+buttons and cr_ptrext_off / cr_inline_off are gone. Citra replays identical to the dual build with both on.
+
 Task: one hardware build that A/Bs pointer-extent promotion and the selective inline sites live, as the other
 test flags do. Both were generation-time switches (RECOMP_PTR_EXTENT=1, RECOMP_INLINE_SITES=1, off by default).
 

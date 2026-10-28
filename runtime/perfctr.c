@@ -1,5 +1,4 @@
-/* ARM11 hardware performance counters per frame (sdmc:/cr_perfctr.txt at boot, or the bottom-screen
- * button "Perf counters", live): the core's CP15 counters through svcControlPerformanceCounter.
+/* ARM11 hardware performance counters per frame (sdmc:/cr_perfctr.txt at boot): the core's CP15 counters through svcControlPerformanceCounter.
  *
  * A core has one cycle counter (CCNT) and two event counters (PMN0, PMN1), so the five event pairs in
  * pairs[] rotate one per frame and each event is averaged over the frames its pair counted. The
@@ -14,8 +13,7 @@
 #include <stdio.h>
 #include "ppc.h"
 
-int recomp_perfctr_on;     /* ppc.h; sdmc:/cr_perfctr.txt, button "Perf counters" */
-u32 recomp_perfctr_flips;
+int recomp_perfctr_on;     /* ppc.h; sdmc:/cr_perfctr.txt */
 
 static const struct { PerfCounterEvent ev[2]; } pairs[] = {   /* PMN0, PMN1 */
     { { PERFCOUNTEREVT_CORE_INST_EXECUTED, PERFCOUNTEREVT_CORE_INST_CACHE_MISS } },
@@ -75,18 +73,11 @@ static void stop(void) {
     cur = -1;
 }
 
-static void changed(void) {   /* menu.c, game thread, after the button flipped recomp_perfctr_on */
-    recomp_perfctr_flips++;
-    if (state < 0) { recomp_perfctr_on = 0; return; }
-    if (recomp_perfctr_on) start(); else stop();
-}
-
 void recomp_perfctr_init(void) {
     FILE *f = fopen("sdmc:/cr_perfctr.txt", "rb");
     if (f) { fclose(f); recomp_perfctr_on = 1; }
-    recomp_menu_bind("Perf counters", &recomp_perfctr_on, changed);
     if (recomp_perfctr_on) start();
-    else recomp_log("# perfctr: off (sdmc:/cr_perfctr.txt or the button \"Perf counters\" turn it on)\n");
+    else recomp_log("# perfctr: off (sdmc:/cr_perfctr.txt turns it on)\n");
 }
 
 void recomp_perfctr_exit(void) { stop(); }

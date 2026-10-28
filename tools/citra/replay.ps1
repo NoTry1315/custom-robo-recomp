@@ -1,6 +1,6 @@
 # One deterministic Citra replay of this checkout's custom-robo-recomp.3dsx, for before/after checks:
 #   powershell -ExecutionPolicy Bypass -File tools\citra\replay.ps1 -Name battle -Tag base -Out logs\perf
-#   ... -Name campaign -Tag new -Out logs\perf -Flags cr_gxthread_off,cr_mtx_off
+#   ... -Name campaign -Tag new -Out logs\perf -Flags cr_gxthread_off,cr_vramtex_off
 #   ... -Name boot -Tag look -Shots 4      (no replay: 4 window screenshots, 2 s apart, to <Out>\<Tag>-shots)
 # battle   = cr_autotest_2026-10-18_rec-to-battle.log: Vs. battle from r1920 (scene 4.2 r2400-3600, idle robots)
 # campaign = cr_autotest_2026-10-18_pause-ok.log: campaign scene 8.3 from r1470 to r2400

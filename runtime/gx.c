@@ -105,8 +105,7 @@ static void t_mark2(int b, int part) { u64 t = recomp_ticks(); recomp_prof[b] +=
 #define IB_INDICES 0x30000   /* per frame half (immediate draws; cached lists are drawn from vc_ixa) */
 #define VC_VERTS 0x14000     /* vertex cache arena (5.4 MB) */
 typedef struct { float pos[4]; u8 mat[4]; float nrm[3], tc[3][3]; } PVtx;   /* vshader.v.pica inputs */
-/* Vertex packing (sdmc:/cr_vtxpack_off.txt = every vertex a PVtx; bottom-screen button "Vertex
- * pack"). Display-list draws (the vertex / display-list caches) store only the shader inputs the
+/* Vertex packing (sdmc:/cr_vtxpack_off.txt = every vertex a PVtx). Display-list draws (the vertex / display-list caches) store only the shader inputs the
  * draw reads, in the GX source format where the PICA has one (s16 -> GPU_SHORT, s8 -> GPU_BYTE,
  * u8 -> GPU_UNSIGNED_BYTE, f32 -> GPU_FLOAT; u16 is converted to float): the position scale 2^-frac
  * goes to the vscale uniform (exact: the PICA converts the integer to float24 exactly and the
@@ -161,12 +160,10 @@ static int scissor_lost = 1;   /* C3D_FrameDrawOn -> C3D_SetViewport disables th
 /* Draw batching: a draw's indices are appended to the pending C3D_DrawElements
  * while no PICA state changed since the previous draw (same vertex buffer,
  * indices contiguous in ibuf). Every citro3d state call is preceded by
- * pend_flush(), since citro3d applies state when the draw is issued.
- * sdmc:/cr_batch_off.txt = one C3D_DrawElements per draw (draws are still
- * counted as mergeable). */
+ * pend_flush(), since citro3d applies state when the draw is issued. */
 static u16 *pend_ix;
 static u16 *last_end;   /* end of the previous draw's indices; NULL after a state change */
-static u32 pend_n, st_merged, batch_off;   /* batch_off: read in recomp_gx_start */
+static u32 pend_n, st_merged;
 static void pend_issue(void) {
     if (!pend_n) return;
     C3D_DrawElements(GPU_TRIANGLES, pend_n, C3D_UNSIGNED_SHORT, pend_ix);
@@ -378,11 +375,9 @@ static void stereo_end(void) {
  * the CPU builds the rest. libctru has no getter for the queue: it is the first
  * member (gxQueue) of citro3d's non-static global C3D_Context __C3D_Context
  * (source/base.c, source/internal.h). Each submit takes one of the queue's 32
- * entries (C3D_Init), so at most KICK_MAX per frame. sdmc:/cr_gpukick_off.txt =
- * start with the old one submit at C3D_FrameEnd; pressing ZL toggles it. */
+ * entries (C3D_Init), so at most KICK_MAX per frame. */
 #define KICK_WORDS 2048
 #define KICK_MAX 12
-static int kick_off;   /* sdmc:/cr_gpukick_off.txt, read in recomp_gx_start */
 int recomp_gx_kick_on;
 u32 recomp_gx_kick_flips;
 static u32 vb_fl, ib_fl, kicks, st_kick_cap;   /* vb_fl/ib_fl: vbuf/ibuf flushed up to here this frame */
@@ -412,19 +407,17 @@ static u64 fe_t;   /* ticks at the previous C3D_FrameEnd */
  * next vblank: every frame idled up to 16.7 ms at its first draw, counted as game
  * time (hw run 13 battle: ~14 of 53.6 ms). Now a frame waits for a vblank only when
  * none has passed since the previous frame began (a 60 Hz cap), then only for the
- * GPU to finish the previous frame. sdmc:/cr_vsync_on.txt = the old wait. With the GX
+ * GPU to finish the previous frame. With the GX
  * thread this wait is on that thread; the game thread meets it at GXDrawDone. */
-static int vsync_on;   /* read in recomp_gx_start */
 static u32 last_vbl;
 
 static u8 tex_gen;
 static void vt_frame(void);
 static void frame_begin(void) {
     if (frame_open) return;
-    recomp_gx_kick_on = !kick_off;
     u64 ts = recomp_ticks();
-    if (!vsync_on && C3D_FrameCounter(0) == last_vbl) C3D_FrameSync();
-    if (!C3D_FrameBegin(vsync_on ? C3D_FRAME_SYNCDRAW : 0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
+    if (C3D_FrameCounter(0) == last_vbl) C3D_FrameSync();
+    if (!C3D_FrameBegin(0)) recomp_log("# gx: C3D_FrameBegin failed at frame %lu\n", (unsigned long)frames);
     last_vbl = C3D_FrameCounter(0);
     recomp_prof[PROF_GX_SYNC] += recomp_ticks() - ts;
     vt_frame();
@@ -471,9 +464,9 @@ static void frame_end(void) {
             (unsigned long)st_draws, (unsigned long)st_tris, (unsigned long)st_tex, (unsigned long)st_evict, (unsigned long)st_upload, (unsigned long)(st_upbytes >> 10), gx.efb_w, gx.efb_h,
             gx.clear_color[0], gx.clear_color[1], gx.clear_color[2], gx.clear_color[3],
             (unsigned long)st_split, (int)(C3D_GetCmdBufUsage() * 100), (unsigned long)kicks, (unsigned long)st_kick_cap);
-        recomp_log("# gx batch frame %lu: draws %lu mergeable %lu (%lu%%) -> %lu DrawElements%s\n", (unsigned long)frames, (unsigned long)st_draws,
+        recomp_log("# gx batch frame %lu: draws %lu mergeable %lu (%lu%%) -> %lu DrawElements\n", (unsigned long)frames, (unsigned long)st_draws,
             (unsigned long)st_merged, st_draws ? (unsigned long)(st_merged * 100 / st_draws) : 0ul,
-            (unsigned long)(batch_off ? st_draws : st_draws - st_merged), batch_off ? " (batching off)" : "");
+            (unsigned long)(st_draws - st_merged));
         if (recomp_widescreen) recomp_log("# gx widescreen frame %lu: last 300 frames: 2D draws %lu (full-screen fills stretched %lu), 3D draws kept 4:3 (viewport or scissor short of an EFB side) %lu\n",
                                           (unsigned long)frames, (unsigned long)st_ws_ortho, (unsigned long)st_ws_fill, (unsigned long)st_ws_narrow);
         st_ws_fill = st_ws_ortho = st_ws_narrow = 0;
@@ -842,15 +835,11 @@ static void tex_unlink(TexEntry *e) {
  * decode them all again in one 337 ms frame in Citra); their new linear block is the copy's target
  * until the queue runs, so that frame (dmf) it is not reused, rewritten or freed. With no stale
  * VRAM entry the texture stays linear (a fallback). VRAM entries are never rewritten in
- * place: changed contents go to a new linear allocation. sdmc:/cr_vramtex_off.txt = linear only;
- * the bottom-screen button toggles it between frames (texture cache invalidated). */
+ * place: changed contents go to a new linear allocation. sdmc:/cr_vramtex_off.txt = linear only. */
 #define VT_COPIES 8
 #define VT_RESERVE (256u << 10)
 #define VT_STALE 60
-static volatile int vt_req;   /* recomp_vt_toggle (bottom-screen button), applied by frame_begin */
-void recomp_vt_toggle(void) { vt_req = 1; }
 int recomp_vt_on;
-u32 recomp_vt_flips;
 volatile u32 recomp_vt_stat[6];   /* VRAM textures, KB; linear textures, KB; moves, fallbacks (running totals) */
 static void *vt_free[VT_COPIES];
 static int vt_nfree;
@@ -884,15 +873,10 @@ static void tex_to_vram(TexEntry *e) {
     e->tex.data = v;
     st_vt_moves++; st_vt_kb += size >> 10; recomp_vt_stat[4]++;
 }
-/* frame_begin, after C3D_FrameBegin: the copies queued last frame are done; a button toggle */
+/* frame_begin, after C3D_FrameBegin: the copies queued last frame are done */
 static void vt_frame(void) {
     for (int i = 0; i < vt_nfree; i++) if (vt_free[i]) linearFree(vt_free[i]);
     vt_nfree = 0;
-    if (vt_req) {
-        vt_req = 0; vramtex_off ^= 1; recomp_vt_on = !vramtex_off; recomp_vt_flips++;
-        tex_gen++; memset(fidx, 0, sizeof fidx);   /* every texture decodes again (into linear memory first) */
-        recomp_log("# gx r%lu: VRAM textures %s (bottom-screen tap)\n", (unsigned long)recomp_retrace_count(), vramtex_off ? "off" : "on");
-    }
 }
 /* resident textures per pool, for the # time lines (log.c) and the 300-frame line */
 static void vt_count(void) {
@@ -1440,16 +1424,6 @@ static void setup_scissor(void) {
     if (ws & 2) r = 400;
     b = b > 240 - y0 ? 240 - y0 : b < t ? t : b;
     u32 s0 = (u32)(240 - b), s1 = (u32)(400 - r), s2 = (u32)(240 - t), s3 = (u32)(400 - l);
-    /* GPU test: sdmc:/cr_gpu_quarter.txt clips drawing to the centre quarter of the screen (same vertex
-     * work, 1/4 of the pixels); if gpu ms drops ~4x the frame is fill-bound, if not, vertex-bound */
-    static int quarter = 2;
-    if (quarter == 2) { FILE *f = fopen("sdmc:/cr_gpu_quarter.txt", "rb"); quarter = f != NULL; if (f) fclose(f);
-        recomp_log("# gx: gpu quarter-screen test %s\n", quarter ? "on (cr_gpu_quarter.txt)" : "off"); }
-    if (quarter) {
-        s0 = s0 < 60 ? 60 : s0; s2 = s2 > 180 ? 180 : s2; s1 = s1 < 100 ? 100 : s1; s3 = s3 > 300 ? 300 : s3;
-        if (s2 < s0) s2 = s0;
-        if (s3 < s1) s3 = s1;
-    }
     pend_flush();
     C3D_SetScissor(GPU_SCISSOR_NORMAL, s0, s1, s2, s3);
     scissor_lost = 0;
@@ -2294,7 +2268,7 @@ static int in_dl;   /* inside GXCallDisplayList */
 static int cmdbuf_room(int prim, int n) {
     u32 *cb_addr, cb_size, cb_off;
     GPUCMD_GetBuffer(&cb_addr, &cb_size, &cb_off);   /* words; C3D_GetCmdBufUsage is only updated per frame */
-    if (!kick_off && cb_off >= KICK_WORDS) { gpu_kick(); GPUCMD_GetBuffer(&cb_addr, &cb_size, &cb_off); }   /* offset restarts after a split */
+    if (cb_off >= KICK_WORDS) { gpu_kick(); GPUCMD_GetBuffer(&cb_addr, &cb_size, &cb_off); }   /* offset restarts after a split */
     recomp_gx_dbg[0] = cb_off; recomp_gx_dbg[1] = prim; recomp_gx_dbg[2] = n;
     if (cb_off + 1024 > cb_size) {
         cb_full = 1;
@@ -2352,7 +2326,6 @@ static int emit_ix(u16 *ix, int k, int cached) {
     int merge = last_end == ix && pend_n + k <= 0xfff0;
     if (merge && pend_n) pend_n += k;
     else { pend_issue(); pend_ix = ix; pend_n = k; }
-    if (batch_off) pend_issue();
     last_end = ix + k;
     if (!cached) ib_used += k;
     return merge;
@@ -2785,7 +2758,6 @@ void recomp_gx_sync(void) { if (recomp_gx_thread) gq_wait(gq_wl); }
  * the other thread carries on with the same gx and citro3d state. */
 static int gq_ok;              /* the GX thread exists (core 2) */
 static volatile int gq_req;    /* a tap since the last retrace */
-static int gq_fliptest;        /* sdmc:/cr_gxthread_fliptest.txt: a switch every 300 retraces (tests the switch) */
 u32 recomp_gx_thread_flips;    /* switches so far */
 void recomp_gx_thread_toggle(void) { gq_req = 1; }
 
@@ -2793,9 +2765,8 @@ int recomp_gx_thread_ok(void) { return gq_ok; }
 
 void recomp_gx_retrace(void) {
     recomp_gx_sync();
-    if (gq_fliptest && recomp_retrace_count() % 300 == 150) gq_req = 2;
     if (gq_req) {
-        const char *why = gq_req == 2 ? "cr_gxthread_fliptest.txt" : "bottom-screen tap";
+        const char *why = "bottom-screen tap";
         gq_req = 0;
         if (!gq_ok) recomp_log("# gx r%lu: GX thread toggle ignored (no core 2)\n", (unsigned long)recomp_retrace_count());
         else {
@@ -2837,25 +2808,15 @@ static int flag_file(const char *name) {
     return f != NULL;
 }
 void recomp_gx_start(void) {
-    vsync_on = flag_file("cr_vsync_on");
-    kick_off = flag_file("cr_gpukick_off");
-    batch_off = flag_file("cr_batch_off");
     dl_off = flag_file("cr_dlcache_off");
     dl_clean_off = flag_file("cr_dlclean_off");
     vramtex_off = flag_file("cr_vramtex_off");   /* sdmc:/cr_vramtex_off.txt: textures stay in linear memory */
     recomp_vt_on = !vramtex_off;
-    if (flag_file("cr_vcache_small")) {   /* test: rings at 5/8 so that replays evict (ring_alloc) */
-        vring.size = vring.size / 8 * 5; iring.size = VC_IXN / 8 * 5;
-        recomp_log("# gx: vertex cache rings at 5/8 (cr_vcache_small.txt): %lu KB of vertices, %lu indices\n", (unsigned long)(vring.size * 4 >> 10), (unsigned long)iring.size);
-    }
     recomp_vtxpack_off = flag_file("cr_vtxpack_off");
-    recomp_menu_bind("Vertex pack", &recomp_vtxpack_off, NULL);
     recomp_widescreen = !flag_file("cr_widescreen_off");
     recomp_menu_bind("Widescreen", &recomp_widescreen, NULL);
     recomp_log("# gx: widescreen %s\n", recomp_widescreen ? "on: perspective draws use the full 400 px" : "off (cr_widescreen_off.txt): 4:3 window, 40 px bars");
-    recomp_lazydesc_off = flag_file("cr_lazydesc_off");
-    recomp_menu_bind("Lazy vtx desc", &recomp_lazydesc_off, NULL);
-    recomp_log("# gx: vertex descriptor %s\n", recomp_lazydesc_off ? "eager (cr_lazydesc_off.txt): a GX-queue record per GXSetVtxDesc/GXClearVtxDesc" : "lazy (one record before a draw, when it changed)");
+    recomp_log("# gx: vertex descriptor lazy (one record before a draw, when it changed)\n");
     recomp_log("# gx: vertex packing %s\n", recomp_vtxpack_off ? "off (cr_vtxpack_off.txt): every vertex 68 bytes" : "on (display-list draws: per-draw layout)");
     FILE *sf = fopen("sdmc:/cr_stereo_force.txt", "rb");
     if (sf) {
@@ -2868,19 +2829,16 @@ void recomp_gx_start(void) {
     FILE *f = fopen("sdmc:/cr_fbdump.txt", "rb");
     int fbd = f != NULL;
     if (f) { unsigned long v; while (nwant < 64 && fscanf(f, "%lu", &v) == 1) want[nwant++] = v; fclose(f); }
-    recomp_log("# gx: frame pacing %s\n", vsync_on ? "vblank wait every frame (cr_vsync_on.txt)" : "60 Hz cap only");
-    if (kick_off) recomp_log("# gx: mid-frame GPU submit off (cr_gpukick_off.txt)\n");
-    else recomp_log("# gx: mid-frame GPU submit on (every %d command words, at most %d per frame)\n", KICK_WORDS, KICK_MAX);
-    recomp_gx_kick_on = !kick_off;   /* frame_begin keeps it; set here for the status line */
-    recomp_log("# gx: draw batching %s\n", batch_off ? "off (cr_batch_off.txt)" : "on");
+    recomp_log("# gx: frame pacing 60 Hz cap only\n");
+    recomp_log("# gx: mid-frame GPU submit on (every %d command words, at most %d per frame)\n", KICK_WORDS, KICK_MAX);
+    recomp_gx_kick_on = 1;   /* for the status line */
+    recomp_log("# gx: draw batching on\n");
     recomp_log("# gx: display-list cache %s\n", dl_off ? "off (cr_dlcache_off.txt)" : "on");
     recomp_log("# gx: display-list write tracking %s\n", dl_clean_off ? "off (cr_dlclean_off.txt)" : "on");
     recomp_log("# gx: VRAM textures %s (VRAM free %lu KB after the render target, reserve %u KB, at most %d moves per frame)\n",
                vramtex_off ? "off (cr_vramtex_off.txt): linear only" : "on", (unsigned long)(vramSpaceFree() >> 10), VT_RESERVE >> 10, VT_COPIES);
     if (fbd) recomp_log("# gx: framebuffer dump at %lu frames\n", (unsigned long)nwant);
     int off = flag_file("cr_gxthread_off");   /* only the starting mode: the thread exists either way */
-    gq_fliptest = flag_file("cr_gxthread_fliptest");
-    if (gq_fliptest) recomp_log("# gx: GX thread switch test: on/off every 300 retraces (cr_gxthread_fliptest.txt)\n");
     if (recomp_aux_core() == 2) {
         LightEvent_Init(&gq_ev, RESET_ONESHOT);
         LightEvent_Init(&gq_done_ev, RESET_ONESHOT);
@@ -3052,14 +3010,11 @@ void sdk_GXBegin(void) {
     else fifo_need = 3 + (R[5] & 0xffff) * vs;
     fifo_lim();
 }
-/* Lazy vertex descriptor (sdmc:/cr_lazydesc_off.txt = a record per call; bottom-screen button
- * "Lazy vtx desc"). Only the draw records (x_fifo, x_call_dl) read gx.desc, so the setters only
+/* Lazy vertex descriptor. Only the draw records (x_fifo, x_call_dl) read gx.desc, so the setters only
  * change gs.desc; before a draw record is queued (and when the game thread needs a vertex size),
  * desc_sync sends the whole descriptor as one record if it differs from the last one sent. The
  * particle code clears and sets the same descriptor before every quad (docs/recomp_unknowns.md
- * "Lazy vertex descriptor"). desc_sent is what gx.desc holds once the queued records have run, in
- * both modes, so the button can switch at any call. */
-int recomp_lazydesc_off;
+ * "Lazy vertex descriptor"). desc_sent is what gx.desc holds once the queued records have run. */
 static u8 desc_sent[A_MAX];
 static void x_set_desc(const u32 *p) { memcpy(gx.desc, p, A_MAX); }
 static void desc_sync(void) {
@@ -3076,21 +3031,16 @@ static void x_GXSetVtxDesc(const u32 *r) { if (r[3] < A_MAX) gx.desc[r[3]] = r[4
 void sdk_GXSetVtxDesc(void) {
     LOG();
     st_desc_calls++;
-    if (!recomp_lazydesc_off && R[3] < A_MAX) { gs.desc[R[3]] = R[4] & 3; desc_dirty = 1; return; }
+    if (R[3] < A_MAX) { gs.desc[R[3]] = R[4] & 3; desc_dirty = 1; return; }
     if (desc_dirty) desc_sync();
-    if (R[3] < A_MAX) gs.desc[R[3]] = desc_sent[R[3]] = R[4] & 3;
     vsz_g_ok = 0; st_desc_recs++;
-    gq_regs(x_GXSetVtxDesc, 2);
+    gq_regs(x_GXSetVtxDesc, 2);   /* out of range: the GX thread logs it once */
 }
-static void x_GXClearVtxDesc(const u32 *r) { (void)r; memset(gx.desc, 0, sizeof gx.desc); gx.desc[A_POS] = 1; }
 void sdk_GXClearVtxDesc(void) {
     LOG();
     st_desc_calls++;
     memset(gs.desc, 0, sizeof gs.desc); gs.desc[A_POS] = 1;
-    if (!recomp_lazydesc_off) { desc_dirty = 1; return; }
-    desc_dirty = 0; memcpy(desc_sent, gs.desc, A_MAX);
-    vsz_g_ok = 0; st_desc_recs++;
-    gq_regs(x_GXClearVtxDesc, 0);
+    desc_dirty = 1;
 }
 static void x_GXSetVtxAttrFmt(const u32 *r) { if ((r[3] & 7) == r[3] && r[4] < A_MAX) gx.vat[r[3]][r[4]] = (VtxFmt){(u8)r[5], (u8)r[6], (u8)r[7]}; }
 void sdk_GXSetVtxAttrFmt(void) {
@@ -3435,7 +3385,7 @@ void sdk_GXCopyDisp(void) {
         extern u32 recomp_wr_sweep_pages; extern u64 recomp_wr_sweep_ticks;   /* cpu.c */
         recomp_log("# gx queue frame %lu: per frame %lu records, %lu words; vertex descriptor %s: %lu setter calls, %lu records; "
                    "write sweep %lu pages, %.1f us\n", (unsigned long)game_frames,
-                   (unsigned long)(st_gq_recs / 300), (unsigned long)(st_gq_words / 300), recomp_lazydesc_off ? "eager" : "lazy",
+                   (unsigned long)(st_gq_recs / 300), (unsigned long)(st_gq_words / 300), "lazy",
                    (unsigned long)(st_desc_calls / 300), (unsigned long)(st_desc_recs / 300),
                    (unsigned long)(recomp_wr_sweep_pages / 300), recomp_wr_sweep_ticks * 1e6 / SYSCLOCK_ARM11 / 300);
         st_gq_recs = st_gq_words = st_desc_calls = st_desc_recs = 0;
