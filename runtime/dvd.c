@@ -12,6 +12,7 @@
 #include <3ds.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <strings.h>
 #include "ppc.h"
 
@@ -26,6 +27,7 @@ static u32 fst, nentries, strings, curdir;
 static char **paths;    /* host path per entry (files only) */
 u32 recomp_dvd_slow_n, recomp_dvd_late_n;   /* "# DVD slow" / "# DVD late" lines so far (bottom-screen stats) */
 static void reader_start(void);
+static int file_exists(const char *path);
 
 static int  e_isdir(u32 e) { return rd8(fst + 12 * e) != 0; }
 static u32  e_name(u32 e) { return strings + (rd32(fst + 12 * e) & 0xffffff); }
@@ -180,6 +182,195 @@ static int reader_ok, async_off;
 /* 50 ms + 2.5 MB/s, about a GameCube drive's seek and transfer */
 static u64 read_budget(u32 len) { return SYSCLOCK_ARM11 / 20 + (u64)len * (SYSCLOCK_ARM11 / 2500000); }
 
+/* sdmc:/cr_sd_stall.txt "<retrace> <ms>" (test flag): from that retrace on, the SD is unavailable
+ * for ms to the reader and the prefetcher (each read starting in the window waits for its end), like
+ * the ~6 s stalls of the hardware runs. Logged by the game thread (recomp_dvd_service). */
+static u32 sd_stall_r, sd_stall_ms;
+static volatile u64 sd_stall_until;
+static volatile int sd_stall_fired;
+static void sd_gate(void) {
+    if (!sd_stall_ms) return;
+    u64 now = recomp_ticks();
+    if (!sd_stall_until && recomp_retrace_count() >= sd_stall_r) {
+        __sync_bool_compare_and_swap(&sd_stall_until, 0, now + (u64)sd_stall_ms * (SYSCLOCK_ARM11 / 1000));
+        sd_stall_fired = 1;
+    }
+    u64 until = sd_stall_until;
+    if (until && now < until) svcSleepThread((s64)((until - now) * 1000000000ULL / SYSCLOCK_ARM11));
+}
+
+/* HPS stream prefetch. Hw runs 23, 24, 30 and the 2026-10-28 play: the SD is sometimes busy for
+ * ~6 s (every read and log write in the window waits), and a music refill read in it lands seconds
+ * late while the voice loops its old ~2 s ARAM buffer: the repeated segment. An HPS block is the
+ * 0x20 header (u32 data size, u32 nibble count, u32 ABSOLUTE next block offset, 0xffffffff = end)
+ * plus <= 64 KB of data, ~1.2 s of 48 kHz stereo (tools/sound.py). A prefetch thread follows the
+ * chain from the block the game last read and keeps the next PF_AHEAD blocks (~12 s, loop included)
+ * in host memory; the reader copies a read that lies inside a loaded block or the 0x80-byte file
+ * header instead of going to the SD. The files are read-only, so a hit gives the same bytes; the
+ * chain only steers what is loaded. sdmc:/cr_streamcache_off.txt = every read from the SD. */
+enum { PF_STREAMS = 3, PF_SLOTS = 12, PF_AHEAD = 10, PF_BLOCK = 0x10020, PF_HDR = 0x80 };
+static struct pf_stream {
+    u32 e, used, gen;     /* entry (~0u = free), LRU clock, bumped when the stream is reused */
+    u32 anchor, fsize;    /* offset of the block the game read last (0 = none yet), file length */
+    int hdr;              /* header: 0 not loaded, 1 loading, 2 loaded, 3 unreadable */
+    FILE *f; u32 f_e;     /* prefetcher's own handle and its entry */
+    u8 hbuf[PF_HDR];
+    struct { u32 at, len; int state; u8 *data; } s[PF_SLOTS];   /* state: 0 free, 1 loading, 2 loaded */
+} pf[PF_STREAMS];
+static int pf_on;
+static LightLock pf_lock;
+static LightEvent pf_ev;
+static u32 pf_clock;
+static volatile u32 pf_hits, pf_misses, pf_loads, pf_lead_min = ~0u;
+static volatile u64 pf_worst;   /* longest prefetch read (ticks) */
+
+static u32 be32(const u8 *p) { return (u32)p[0] << 24 | (u32)p[1] << 16 | (u32)p[2] << 8 | p[3]; }
+static int is_hps(u32 e) { const char *p = paths[e]; size_t n = strlen(p); return n > 4 && !strcasecmp(p + n - 4, ".hps"); }
+
+/* a loaded block's successor, or 0 when the header does not chain */
+static u32 pf_next(const struct pf_stream *st, int i) {
+    const u8 *d = st->s[i].data;
+    u32 size = be32(d), nxt = be32(d + 8);
+    if (st->s[i].len < 0x20 || size > PF_BLOCK - 0x20 || nxt == 0xffffffffu || nxt < PF_HDR || nxt >= st->fsize) return 0;
+    return nxt;
+}
+static int pf_find(const struct pf_stream *st, u32 at) {
+    for (int i = 0; i < PF_SLOTS; i++) if (st->s[i].state && st->s[i].at == at) return i;
+    return -1;
+}
+
+/* reader thread: serves r from the cache if it can; 1 = done */
+static int pf_serve(struct req *r) {
+    if (!is_hps(r->e)) return 0;
+    LightLock_Lock(&pf_lock);
+    struct pf_stream *st = NULL;
+    for (int i = 0; i < PF_STREAMS; i++) if (pf[i].e == r->e) st = &pf[i];
+    if (!st) {   /* a new stream takes the least recently read one's place */
+        st = &pf[0];
+        for (int i = 1; i < PF_STREAMS; i++) if (pf[i].used < st->used) st = &pf[i];
+        st->e = r->e; st->gen++; st->anchor = 0; st->fsize = e_w2(r->e); st->hdr = 0;
+        for (int i = 0; i < PF_SLOTS; i++) st->s[i].state = 0;
+    }
+    st->used = ++pf_clock;
+    const u8 *src = NULL;
+    /* a miss moves the anchor unless it lies in the anchor's own block (its data after its header);
+     * the first header read starts the chain at the first block */
+    u32 anchor = r->off >= PF_HDR && !(st->anchor && r->off - st->anchor < PF_BLOCK) ? r->off : st->anchor;
+    if (!anchor && r->off < PF_HDR) anchor = PF_HDR;
+    if (r->off + r->len <= PF_HDR && st->hdr == 2) src = st->hbuf + r->off;
+    else for (int i = 0; i < PF_SLOTS; i++)
+        if (st->s[i].state == 2 && r->off >= st->s[i].at && r->off + r->len <= st->s[i].at + st->s[i].len) {
+            src = st->s[i].data + (r->off - st->s[i].at);
+            anchor = st->s[i].at;
+            break;
+        }
+    if (src) {
+        memcpy(ram + (r->addr & RAM_MASK), src, r->len);
+        u32 lead = 0;   /* loaded blocks chained after the anchor */
+        for (int i = pf_find(st, anchor); i >= 0 && st->s[i].state == 2 && lead < PF_AHEAD; lead++) {
+            u32 n = pf_next(st, i);
+            i = n ? pf_find(st, n) : -1;
+        }
+        if (r->off >= PF_HDR && lead < pf_lead_min) pf_lead_min = lead;
+        pf_hits++;
+    } else pf_misses++;
+    int moved = anchor != st->anchor;
+    st->anchor = anchor;
+    LightLock_Unlock(&pf_lock);
+    if (moved || !src) LightEvent_Signal(&pf_ev);
+    if (!src) return 0;
+    r->result = (s32)r->len;
+    return 1;
+}
+
+/* prefetcher: one load (a header, or the first block missing on a stream's chain from its anchor,
+ * most recently read stream first); 0 = nothing to do */
+static int pf_step(void) {
+    LightLock_Lock(&pf_lock);
+    struct pf_stream *ord[PF_STREAMS];
+    int n = 0;
+    for (int i = 0; i < PF_STREAMS; i++) {
+        if (pf[i].e == ~0u) continue;
+        int j = n++;
+        while (j > 0 && ord[j - 1]->used < pf[i].used) { ord[j] = ord[j - 1]; j--; }
+        ord[j] = &pf[i];
+    }
+    struct pf_stream *st = NULL;
+    int slot = -1;
+    u32 at = 0;
+    for (int k = 0; k < n && !st; k++) {
+        struct pf_stream *c = ord[k];
+        if (!c->hdr) { c->hdr = 1; st = c; break; }
+        if (!c->anchor) continue;
+        u8 want[PF_SLOTS] = {0};
+        u32 a = c->anchor, miss = 0;
+        for (int m = 0; m <= PF_AHEAD && a; m++) {
+            int i = pf_find(c, a);
+            if (i < 0) { miss = a; break; }
+            want[i] = 1;
+            if (c->s[i].state != 2) break;   /* still loading: its successor is not known yet */
+            a = pf_next(c, i);
+        }
+        if (!miss) continue;
+        for (int i = 0; i < PF_SLOTS; i++)   /* a free slot, else one off the chain */
+            if (!want[i] && c->s[i].state != 1 && (slot < 0 || !c->s[i].state)) slot = i;
+        if (slot < 0) continue;
+        c->s[slot].state = 1; c->s[slot].at = at = miss; c->s[slot].len = 0;
+        st = c;
+    }
+    if (!st) { LightLock_Unlock(&pf_lock); return 0; }
+    u32 e = st->e, gen = st->gen, fsize = st->fsize;
+    int header = slot < 0;
+    LightLock_Unlock(&pf_lock);
+
+    /* only this thread touches st->f, and a slot's data while the slot is loading */
+    static u8 tmp[PF_HDR];
+    u8 *dst = header ? tmp : st->s[slot].data;
+    u32 off = header ? 0 : at, len = header ? PF_HDR : PF_BLOCK;
+    if (off + len > fsize) len = off < fsize ? fsize - off : 0;
+    u64 t0 = recomp_ticks();
+    if (st->f_e != e) {
+        if (st->f) fclose(st->f);
+        st->f = fopen(paths[e], "rb"); st->f_e = e;
+        if (st->f) setvbuf(st->f, NULL, _IONBF, 0);
+    }
+    size_t got = 0;
+    if (st->f && len) { sd_gate(); fseek(st->f, off, SEEK_SET); got = fread(dst, 1, len, st->f); }
+    u64 dt = recomp_ticks() - t0;
+    if (dt > pf_worst) pf_worst = dt;
+
+    LightLock_Lock(&pf_lock);
+    if (st->gen != gen) { if (!header) st->s[slot].state = 0; }   /* the stream was replaced meanwhile */
+    else if (header) { if (got == PF_HDR) memcpy(st->hbuf, tmp, PF_HDR); st->hdr = got == PF_HDR ? 2 : 3; }
+    else if (got) { st->s[slot].len = got; st->s[slot].state = 2; pf_loads++; }
+    else { st->s[slot].state = 0; st->anchor = 0; }   /* unreadable: wait until the game reads again */
+    LightLock_Unlock(&pf_lock);
+    return 1;
+}
+
+static void prefetcher(void *arg) {
+    (void)arg;
+    for (;;) {
+        LightEvent_Wait(&pf_ev);
+        while (pf_step()) ;
+    }
+}
+
+static void pf_start(int prio) {
+    if (file_exists("sdmc:/cr_streamcache_off.txt")) { recomp_log("# DVD: stream prefetch off (cr_streamcache_off.txt)\n"); return; }
+    u8 *mem = malloc((size_t)PF_STREAMS * PF_SLOTS * PF_BLOCK);
+    if (!mem) { recomp_log("# DVD: stream prefetch off (no memory)\n"); return; }
+    for (int i = 0; i < PF_STREAMS; i++) {
+        pf[i].e = pf[i].f_e = ~0u;
+        for (int j = 0; j < PF_SLOTS; j++) pf[i].s[j].data = mem + ((size_t)i * PF_SLOTS + j) * PF_BLOCK;
+    }
+    LightLock_Init(&pf_lock);
+    LightEvent_Init(&pf_ev, RESET_ONESHOT);
+    pf_on = recomp_aux_thread(prefetcher, 0x4000, prio) != NULL;
+    recomp_log("# DVD: stream prefetch %s (.hps: %d streams, %d blocks ahead, %lu KB)\n", pf_on ? "on" : "off (no thread)",
+               PF_STREAMS, PF_AHEAD, (unsigned long)(PF_STREAMS * PF_SLOTS * PF_BLOCK / 1024));
+}
+
 /* host read of [off, off+len) of the request's file, straight into guest RAM */
 static void do_read(struct req *r) {
     u64 t0 = recomp_ticks();
@@ -188,6 +379,12 @@ static void do_read(struct req *r) {
     r->t_start = t0;
     __sync_synchronize();
     r->started = 1;
+    if (pf_on && pf_serve(r)) {
+        r->t_read = recomp_ticks() - t0;
+        r->logw_n = recomp_logw_n - ln;
+        r->logw_end = recomp_logw_since != 0;
+        return;
+    }
     /* hw run 15: fopen per read cost ~54 ms even for 0x80 bytes; keep the last few files open (LRU) */
     enum { NHANDLES = 8 };
     static struct { u32 e; FILE *f; u32 used; } h[NHANDLES];
@@ -208,6 +405,7 @@ static void do_read(struct req *r) {
     h[slot].used = ++use_clock;
     FILE *f = h[slot].f;
     u64 t1 = recomp_ticks();
+    sd_gate();
     fseek(f, r->off, SEEK_SET);
     u64 t2 = recomp_ticks();
     size_t got = fread(ram + (r->addr & RAM_MASK), 1, r->len, f);
@@ -241,6 +439,14 @@ static void reader_start(void) {
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     reader_ok = recomp_aux_thread(reader, 0x4000, prio - 1) != NULL;
+    FILE *f = fopen("sdmc:/cr_sd_stall.txt", "rb");
+    if (f) {
+        unsigned long r = 0, ms = 0;
+        if (fscanf(f, "%lu %lu", &r, &ms) == 2) { sd_stall_r = r; sd_stall_ms = ms; }
+        fclose(f);
+        recomp_log("# DVD: SD stall test: %lu ms at r%lu (cr_sd_stall.txt)\n", ms, r);
+    }
+    if (reader_ok) pf_start(prio);
     recomp_log("# DVD: %s\n", !reader_ok ? "no reader thread, reads on the game thread at issue"
                : async_off ? "reader thread, game waits for each read at issue (cr_dvdasync_off.txt)"
                : "reader thread, game waits up to 50 ms + 2.5 MB/s per read, then goes on");
@@ -353,7 +559,24 @@ static void dvd_deliver(int force) {
     busy = 0;
 }
 
-void recomp_dvd_service(void) { if (q_tail != q_head) dvd_deliver(0); }
+/* game thread: the stall test's line, and every 1800 retraces the prefetch counts (only when they changed) */
+static void pf_report(void) {
+    if (sd_stall_fired == 1) { sd_stall_fired = 2; recomp_log("# DVD r%lu: SD stall test: SD unavailable for %lu ms\n", (unsigned long)recomp_retrace_count(), (unsigned long)sd_stall_ms); }
+    static u32 next = 1800, last_hits, last_misses;
+    u32 rt = recomp_retrace_count();
+    if (!pf_on || rt < next) return;
+    next = rt - rt % 1800 + 1800;
+    u32 h = pf_hits, m = pf_misses;
+    if (h == last_hits && m == last_misses) return;
+    u32 lead = pf_lead_min;
+    pf_lead_min = ~0u;
+    recomp_log("# DVD stream r%lu: last window hits %lu misses %lu (.hps reads), blocks loaded %lu so far, fewest blocks ahead at a hit %ld, longest prefetch read %.0f ms\n",
+               (unsigned long)rt, (unsigned long)(h - last_hits), (unsigned long)(m - last_misses), (unsigned long)pf_loads,
+               lead == ~0u ? -1L : (long)lead, pf_worst * 1000.0 / SYSCLOCK_ARM11);
+    last_hits = h; last_misses = m;
+}
+
+void recomp_dvd_service(void) { pf_report(); if (q_tail != q_head) dvd_deliver(0); }
 
 /* memory dump (memdump.c): the reads issued and not yet delivered; a late one may still be writing */
 void recomp_dvd_describe(void *file) {
