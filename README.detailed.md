@@ -270,22 +270,8 @@ translated function in a build, weighted by a `RECOMP_SITEPROF=1` replay's call 
 `tools/recomp/inline_sites.py` (the hot call sites of a `RECOMP_SITEPROF=1` replay -> `tools/recomp/inline_sites.tsv`),
 `tools/recomp/hot_order.py` (the same replay + a build's map -> `tools/recomp/hot_order.ld`, the hot-code order).
 
-With the 3DS on Wi-Fi and Rosalina's debugger enabled (never during unattended runs: see below), `tools/hw_dump.sh [ip]` attaches gdb
+With the 3DS on Wi-Fi and Rosalina's debugger enabled, `tools/hw_dump.sh [ip]` attaches gdb
 to the running game and saves thread registers, backtraces and memory to `logs/hwdump/`.
-
-## Unattended hardware runs (temporarily disabled)
-
-`tools/hw/agent/source/main.c` and `tools/hw_loop.py` are maintainer-local files
-and are intentionally excluded from Git; they are not available in a fresh
-checkout. The local-only agent/client still use an unauthenticated network
-protocol that allows clients to read and modify SD files and launch homebrew.
-Do not run the local agent on an untrusted network; these local files are not a
-security fix. The unattended `tools/hw_ab.sh` workflow is unavailable from a
-fresh checkout until a secure replacement is designed.
-
-Run hardware tests manually: copy the build and required test files to the SD
-card, launch the build from the Homebrew Launcher, and retrieve its log locally.
-Exit any running old agent and remove its SD-card copy.
 
 ## How it works
 
@@ -390,8 +376,7 @@ list in the same change whenever something new is borrowed.
   [EmuDeck](https://www.emudeck.com/)): every change is tested in Citra first
   (`tools/citra/`), with recorded pad input replayed.
 - [Dolphin](https://dolphin-emu.org/): the reference runs, logs and dumps (see above).
-- [Luma3DS](https://github.com/LumaTeam/Luma3DS) and Rosalina (the 3dsx loader the
-  unattended runs start builds through, and the GDB stub used by `tools/hw_dump.sh`), the
+- [Luma3DS](https://github.com/LumaTeam/Luma3DS) and Rosalina (the GDB stub used by `tools/hw_dump.sh`), the
   Homebrew Launcher, [ftpd](https://github.com/mtheall/ftpd) for SD card transfers, and
   [DSP1](https://github.com/zoogie/DSP1) to dump the DSP firmware the sound needs.
 - [Ghidra](https://ghidra-sre.org/) (NSA): headless decompiles of `main.dol` functions

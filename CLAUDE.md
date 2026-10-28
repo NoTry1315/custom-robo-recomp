@@ -9,11 +9,18 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   VI) is written by hand, in `runtime/`. If a fix means rewriting game
   behaviour, stop and ask: it means the runtime is wrong.
 - **Oracle: Dolphin** running the same disc. A difference is a runtime bug.
-- **Every merge to main updates the docs in the same change:** README.md (Status table and date, Known
-  problems, bottom-screen buttons, Test flags table, Citra tests / tools, Credits for anything borrowed:
-  code, an idea, a format description or a new tool), docs/performance.md (perf changes,
-  hardware run index), docs/recomp_unknowns.md and the Status list below. A new flag file or button is not
-  done until it is in the README. Check the README diff before pushing.
+- **Every merge to main updates the docs in the same change:** README.detailed.md (Status table and date,
+  Known problems, bottom-screen buttons, Test flags table, Citra tests / tools, Credits for anything
+  borrowed: code, an idea, a format description or a new tool), README.md (short public overview: status
+  summary, what you need, build, credits; keep it in step when those change), docs/performance.md (perf
+  changes, hardware run index), docs/recomp_unknowns.md and the Status list below. A new flag file or button
+  is not done until it is in README.detailed.md. Check the README diffs before pushing.
+- **Security:** docs/security-review.md is the record. Never re-add `tools/hw_loop.py` or
+  `tools/hw/agent/source/main.c` to git (ignored; the agent is unauthenticated). Do not use the local cr_agent
+  for unattended runs until a secure replacement exists (auth, protected transport, file allowlist, no
+  arbitrary RUN). Hardware runs are started by the user; Claude may upload builds via ftpd.
+- **No large binaries in git** (videos, builds, dumps): `media/project-overview.mp4` (9.3 MB) is the one
+  exception; replace it only after asking, since every version stays in history.
 - **Progress number:** boot stage reached (main loop -> logo -> title -> menu
   -> battle) and SDK functions replaced / total (`docs/sdk_functions.md`).
 
@@ -460,7 +467,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   done: 2v2 game 22.24 (35a) -> 19.6 ms (41a), 40.0 -> 44.7 fps; campaign 59.0 fps. `tools/hw_ab.sh <N> <A> <B> <tagA>
   <tagB>` runs a 2v2 replay A/B unattended through cr_agent (needs the 2v2 save + replay flags on the SD) and
   `tools/hw_pair.py` pairs two logs by window (two runs of one build: sd ~0.13 ms per window).
-- Unattended hardware runs (2026-10-26): `tools/hw_loop.py` (README "Unattended hardware runs") drives the 3DS
+- Unattended hardware runs (2026-10-26; DISABLED since 2026-10-28, security review finding 1: the agent and
+  client are no longer in git and must not be used on the network until replaced; the notes below are history):
+  `tools/hw_loop.py` drove the 3DS
   through cr_agent (`tools/hw/agent`, TCP 5001: PUT/GET/MV/LS/RUN/QUIT, no delete, /custom-robo/save refused): put
   flags + build, RUN through Luma's hb:ldr with "--return /3ds/cr_agent.3dsx", the build points hb:ldr back at the
   agent at exit (runtime/main.c hw_return, only with that argv), GET the log. No button presses, netloader or ftpd;
@@ -573,6 +582,15 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   The widescreen "camera too low" report (same play) went away on relaunch; not reproduced, no cause found.
   Release main@35d8a04 on the SD as 3ds/custom-robo-recomp.3dsx (previous kept as
   ..._2026-10-28_pre-stream-prefetch-4c4f218.3dsx.bak); not yet played on hardware.
+- Citra background mode (2026-10-28, merged): `tools/citra/background.ps1 on|off` (flag file next to Citra's
+  config): on = every autotest/replay run starts Citra minimized and returns focus; `-Background` / `-Watch` per run.
+- Release prep (2026-10-28, main@594f75f; branch release-prep-2026-10-28): README.md is now a short public overview
+  (with the project video media/project-overview.mp4, 9.3 MB), the old full README is README.detailed.md. Security
+  review (docs/security-review.md): (1) unauthenticated cr_agent: source + hw_loop.py removed from git and ignored,
+  unattended runs disabled until a secure replacement; local copies and SD binaries stay vulnerable, do not run them
+  on an untrusted network; (2) extract_disc.py path traversal fixed (tools/tests/test_extract_disc.py:
+  `python -m unittest discover -s tools/tests -p test_extract_disc.py`). side-session-notes/ is ignored (local only).
+  No code change for the game; the SD build is still main@35d8a04.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
