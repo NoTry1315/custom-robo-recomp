@@ -7,7 +7,9 @@ game download.
 
 ## Project overview
 
-[▶ Watch the project overview (MP4)](./media/project-overview.mp4)
+[▶ Watch the project overview (MP4)](
+https://github.com/user-attachments/assets/a8ba9f9a-421b-475a-82e8-414a922148c8
+)
 
 The translator preserves the original game code; the project does not hand-port game
 logic. The runtime implements the GameCube SDK and hardware services needed by the
