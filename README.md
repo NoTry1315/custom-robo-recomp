@@ -7,7 +7,7 @@ translator in `tools/recomp/`. The GameCube SDK layer (graphics, disc, pad, OS,
 audio, memory card, video) is rewritten by hand for the 3DS in `runtime/`, on
 libctru and citro3d. No game files are included: bring your own disc.
 
-## Status (2026-10-27)
+## Status (2026-10-28)
 
 Playable on a New 3DS from boot to the title, menus, campaign and Vs. battle,
 with sound, memory card saves, stereoscopic 3D, the attract movie and the HOME button.
@@ -104,8 +104,10 @@ Known problems:
   (seen once, hardware run 30 in event `snr_t_06`; not reproduced in Citra, cause unknown, see
   `docs/recomp_unknowns.md` "Run 30 text hang"). If it happens, tap "Dump RAM" on the bottom
   screen before quitting.
-- Music can repeat a 1-2 s segment when the SD card stalls for several seconds
-  (under investigation).
+- The SD card sometimes stalls for ~6 s (cause unknown: our log writes are not ruled out). Music no
+  longer repeats in a stall in the middle of a song: the next ~12 s of each music stream are read
+  ahead into memory (`docs/recomp_unknowns.md` "Music stream prefetch"). A stall exactly when a new
+  song starts can still delay or repeat its first second.
 - The attract movie plays in slow motion (~74% of real time on hardware): each 640x480 JPEG
   frame still costs ~20 ms to decode (libjpeg-turbo, no SIMD on the ARM11) and the game waits
   ~13 ms per frame for its SD read (`docs/recomp_unknowns.md` "Native THP decode").
@@ -220,6 +222,8 @@ can be compared with a feature on and off:
 | `cr_widescreen_off.txt` | widescreen off from boot (button "Widescreen"): 3D draws back in the 4:3 window with 40 px bars. Widescreen is on by default: 3D draws fill the 400 px top screen; textured 2D stays 4:3, untextured full-screen 2D (fades) is stretched |
 | `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
 | `cr_dvdasync_off.txt` | wait for every disc read to finish (old timing) |
+| `cr_streamcache_off.txt` | no music stream prefetch: every `.hps` read goes to the SD |
+| `cr_sd_stall.txt` | "retrace ms": from that retrace on, disc reads find the SD unavailable for ms (like the hardware SD stalls; tests) |
 | `cr_card_off.txt` | no memory card |
 | `cr_bench.txt` | MTX benchmark lines in the log at startup |
 | `cr_fbdump.txt` | frame numbers, one per line: the framebuffer is saved as `cr_fb_<frame>.bmp` |
