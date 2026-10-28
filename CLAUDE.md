@@ -548,9 +548,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 - Release 2026-10-27 (branch task/2026-10-27-widescreen-default): widescreen on by default (cr_widescreen_off.txt / button
   turn it off); Citra title run fine. On the SD as 3ds/custom-robo-recomp.3dsx (release, CARDUI=1); previous build kept as
   ..._2026-10-28_pre-widescreen-default-9dc44db.3dsx.bak. SD root replay/test flags (cr_pad_script, cr_pad_replay,
-  cr_dvdasync_off, cr_perfctr, cr_bench) renamed to *_2026-10-27_replay-setup.txt.off: interactive play again. The SD save is
-  still the 2v2 test save (= data/saves/2026-10-22_pre-2v2); the user's own save is in custom-robo/save-backup-2026-10-26
-  (= data/saves/2026-10-26_sd-backup-before-hw-replay), not restored (needs the user's OK). ftpd cannot RNTO inside /3ds
+  cr_dvdasync_off, cr_perfctr, cr_bench) renamed to *_2026-10-27_replay-setup.txt.off: interactive play again. The user's own
+  save (= data/saves/2026-10-26_sd-backup-before-hw-replay) is back in custom-robo/save/ (the 2v2 test save it replaced is
+  data/saves/2026-10-22_pre-2v2): hardware 2v2 replays need that save put back first. ftpd cannot RNTO inside /3ds
   (550): back up a build by uploading a copy.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
