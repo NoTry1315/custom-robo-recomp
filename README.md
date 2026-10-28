@@ -83,7 +83,8 @@ extract and translate the disc. The high-level steps are:
    card in the paths documented in the detailed instructions.
 
 The generated game data and build products are local-only and are not committed.
-There is not yet a packaged, official release download; see the full
+Releases are source-only: a built `.3dsx` contains code translated from the game, so
+none is published, and you build your own from your own disc. See the full
 [build and installation guide](./README.detailed.md#build) before attempting a build.
 
 ## Testing
@@ -123,6 +124,15 @@ from the user's disc and is translated by this project's recompilation tools.
   FFmpeg, fdlibm, and the earlier `custom-robo-3ds` project. Specific borrowed
   techniques, tools, formats, and references are documented in the
   [full credits](./README.detailed.md#credits).
+
+## License
+
+This project's own code (the translator, runtime and tools) is licensed under the GNU
+General Public License, version 2 or (at your option) any later version; see
+[LICENSE](./LICENSE). The license does not cover the game, its code translated into
+`gen/`, or game footage in the project video. Libraries linked into a build and their
+notices are listed in [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md); anyone who
+distributes a build must include it, and must not include the game's code.
 
 ## Further reading
 

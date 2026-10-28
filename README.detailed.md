@@ -301,7 +301,12 @@ to the running game and saves thread registers, backtraces and memory to `logs/h
   module) and which ones are hand-written.
 - `docs/security-review.md`: security findings, remediation status, and
   follow-up validation requirements.
-- `CLAUDE.md`: project rules and the development status log.
+- `CLAUDE.md`: project rules and the development status log, as used with the AI
+  development tools.
+- `LICENSE` (GPL-2.0-or-later, this project's own code) and `THIRD_PARTY_NOTICES.md`
+  (libraries linked into a build, fdlibm). Releases are source-only: a built `.3dsx`
+  contains code translated from the game, so none is published.
+- `docs/releases/`: release notes.
 
 ## Credits
 
@@ -338,7 +343,8 @@ list in the same change whenever something new is borrowed.
   HSDLib: the sysdolphin object layouts read by `tools/hsd.py`, `HSD_JObjSetupMatrixSub`'s
   effector case, and the particle system's function names in `tools/decomp_names.tsv`.
 - fdlibm (Sun Microsystems), the code behind MSL's `sin`/`cos`: `runtime/libm.c` reproduces
-  the game's copy of it operation for operation.
+  the game's copy of it operation for operation (its notice is kept there and in
+  `THIRD_PARTY_NOTICES.md`).
 - [3dbrew](https://3dbrew.org/): New 3DS hardware (cores, clock, L2 cache).
 - FFmpeg's ARM VFP code and Siarhei Siamashka's ffmpeg-devel notes on VFP11 timings, used for
   the ARM11 FPU latencies behind the float and matrix work.
@@ -386,3 +392,13 @@ list in the same change whenever something new is borrowed.
   [Pillow](https://python-pillow.org/) (asset decoders and contact sheets).
 - [Git](https://git-scm.com/) and Git for Windows (Git Bash), and Windows PowerShell for
   the Citra scripts.
+
+## License
+
+This project's own code is licensed under the GNU General Public License, version 2 or (at
+your option) any later version ([LICENSE](./LICENSE)). It does not cover the game, the code
+translated from it into `gen/`, or the game footage in `media/project-overview.mp4`.
+Libraries linked into a build and their notices: [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md).
+Anyone who distributes a build must include that file, and must not include the game's code
+(which a build made with this repository always contains), so in practice builds are not
+shared: each user builds from their own disc.

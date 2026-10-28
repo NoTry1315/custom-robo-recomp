@@ -13,3 +13,6 @@ build.log
 /tools/hw/agent/source/main.c
 /tools/hw_loop.py
 /tools/hw_ab.sh
+/logs/
+/logs_keep/
+/build_releasecheck/

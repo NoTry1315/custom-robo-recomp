@@ -14,7 +14,14 @@
  * |x| > 2^19 * pi/2 (0x413921fb), inf and NaN run the translated body (rem_pio2's large path
  * calls __kernel_rem_pio2).
  * sdmc:/cr_bench.txt adds
- * startup "# bench libm" lines (native vs translated on random inputs, all those registers). */
+ * startup "# bench libm" lines (native vs translated on random inputs, all those registers).
+ *
+ * The algorithm and constants are fdlibm's:
+ *   Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+ *   Developed at SunPro, a Sun Microsystems, Inc. business.
+ *   Permission to use, copy, modify, and distribute this
+ *   software is freely granted, provided that this notice
+ *   is preserved. */
 #include <3ds.h>
 #include <stdio.h>
 #include "ppc.h"

@@ -1,5 +1,9 @@
 # custom-robo-recomp
 
+> Note for readers: this file holds the working rules and the development log used with the
+> AI development tools (Claude Code). For setup, status and credits, read
+> [README.detailed.md](./README.detailed.md).
+
 Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 
 ## Rules
@@ -591,6 +595,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   on an untrusted network; (2) extract_disc.py path traversal fixed (tools/tests/test_extract_disc.py:
   `python -m unittest discover -s tools/tests -p test_extract_disc.py`). side-session-notes/ is ignored (local only).
   No code change for the game; the SD build is still main@35d8a04.
+- License + v0.1 (2026-10-28, branch task/2026-10-28-release-v0.1): GPL-2.0-or-later (user; Dolphin's terms, since
+  the runtime follows Dolphin closely), THIRD_PARTY_NOTICES.md (libjpeg-turbo, libctru/citro3d, fdlibm; notice also
+  in runtime/libm.c). Releases are source-only: never attach a .3dsx/.elf or gen/ to a GitHub release (a build holds
+  the translated game code). Release notes in docs/releases/. /logs/, /logs_keep/, /build_releasecheck/ ignored
+  (session checkpoint refs had captured a guest RAM dump from untracked logs/).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
