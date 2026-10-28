@@ -563,6 +563,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   stereo_force, ax_stall, widescreen_off). Citra boot/battle/campaign/2v2 logs + fb dumps identical to main@0d54bd2,
   2v2 game 36.9 -> 36.8 ms; .3dsx +0.65%. New A/B switches: flag files only, no buttons (user). Release main@4c4f218 on
   the SD (previous kept as ..._2026-10-28_pre-flag-cleanup-6538484.3dsx.bak); not yet played on hardware.
+- Music stream prefetch (2026-10-28, branch task/2026-10-28-stream-prefetch): the release's "audio repeats" were the ~6 s
+  SD stalls again (3 .hps refills late 4.8-5.7 s, log writes 5.95-6.01 s; log
+  logs/cr_autotest_2026-10-28_hw-play-widescreen-camera.log). dvd.c prefetch thread keeps the next 10 HPS blocks (~12 s,
+  chain + loop) of up to 3 streams in host memory (2.3 MB); reads inside a loaded block skip the SD.
+  cr_streamcache_off = old path; cr_sd_stall.txt "<retrace> <ms>" = injected SD stall. Citra: campaign/2v2 logs + fb +
+  AX hashes identical on/off; 2v2 6 s stall mid-song: off late + audio diverges, on identical to no stall. Hw run 57
+  (title): hashes = Citra. Open: a stall at a song's first read; cause of the 6 s stalls (log writes not ruled out).
+  The widescreen "camera too low" report (same play) went away on relaunch; not reproduced, no cause found.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
