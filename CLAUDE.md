@@ -522,7 +522,21 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   -0.11 ms (sd 0.14, 51/73), cycles -0.034M: noise level, LTO stays off. `make LTO=1` links again (cpu.o / mtx.o
   -fno-lto for their top-level-asm symbols; -ffunction-sections at the LTO link, else hot_order.ld places nothing).
   Details: unknowns "-O3 and LTO".
-- Native THP (2026-10-27, branch task/2026-10-27-thp-native, not merged): THPVideoDecode native in runtime/thp.c
+- Card UI (2026-10-27, merged to main): the bottom screen as cards (runtime/menu_card.c: title, build id + flags,
+  fps / game / GX / audio tiles, every btn[] toggle as a card with an on/off dot, last printf line), drawn on the CPU
+  with the system font, glyphs spaced by their ink. Default `CARDUI=1` = release builds; `make CARDUI=0` = test
+  builds (console layout with every stats row, build id ends in "console"): use 0 for Citra runs and hardware A/Bs
+  (user, 2026-10-27). Logs are the same either way. Citra checked by screenshot; touch and hardware not yet checked.
+  Details: unknowns "Card layout of the bottom screen".
+- Widescreen (2026-10-27, branch task/2026-10-27-widescreen, off by default): sdmc:/cr_widescreen.txt / button
+  "Widescreen" opens the scissor to the full 400 px for perspective draws whose viewport and scissor reach an EFB side
+  (the 0.8 projection scale and 1.25 viewport of Dolphin's hack cancel: PICA already clips at 400 px); untextured
+  full-screen 2D quads (fades) are stretched to 400 px, other 2D stays 4:3. Citra: flag off = main 62b5181 (boot/title/
+  movie, battle, campaign logs + fb dumps identical); flag on: same SDK/scene lines, middle 320 px of every dump
+  identical to main, title/battle/2v2 fill the screen, movie 4:3. Bar content seen with it off = the EFB clear colour
+  (C3D_RenderTargetClear ignores the scissor: NOISE logo f0f0f0, sky stages c1d1eb), no draw reaches the bars. Not yet
+  on hardware. Details: unknowns "Widescreen".
+- Native THP (2026-10-27, branch task/2026-10-27-thp-native, merged to main 2026-10-27): THPVideoDecode native in runtime/thp.c
   (re-stuffs THP's unstuffed scan data, libjpeg-turbo FASTDCT to GX I8 tiles; recomp.py THP_NATIVE keeps the body
   for cr_thpnative_off / button "Native THP"; cr_thp_islow = accurate IDCT; cr_thpverify = both decoders compared
   per frame). Citra: all 3436 frames within mean abs diff 0.17 per plane of the translated decoder. HW runs 55-56
@@ -539,8 +553,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
 python tools/extract_disc.py "<disc>.iso" data/extracted   # once (--sys-only: sys/ only)
 PYTHONUTF8=1 python tools/recomp/recomp.py                   # -> gen/
 (cd tools/recomp && PYTHONUTF8=1 python gen_sdk_log.py)      # after adding an sdk_* to runtime/
-docker run --rm -v "C:/Users/Alexander/source/repos/custom-robo-recomp:/proj" -w /proj mkw3ds-build:2026-10-09 make -j20
+docker run --rm -v "C:/Users/Alexander/source/repos/custom-robo-recomp:/proj" -w /proj mkw3ds-build:2026-10-09 make -j20 CARDUI=0
 ```
+Test builds use `CARDUI=0` (console bottom screen with every stats row); plain `make` (CARDUI=1, card layout) is the
+release build.
 Full rebuild ~36 s with -j20 (gen/ is ~46 files of 60 functions; recomp.py rewrites only files whose
 content changed, so an unchanged regen rebuilds nothing). Was 5-7 min serial with 11 large files.
 Citra: `tools/citra/autotest.ps1 -Fast -Shots 0` (title: add `-Pad '360 366 100; 450 456 100; 540 546 100; 630 636 100'`), never take desktop focus; log in

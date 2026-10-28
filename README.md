@@ -113,6 +113,10 @@ Known problems:
 - Missing graphics features: EFB-to-texture copies, lines/points, specular
   (COLOR1) lighting, post-transform texture matrices, anti-aliasing. See the GX
   sections of `docs/recomp_unknowns.md`.
+- Widescreen (off by default): 2D the game places in 4:3 screen space ends at the old 4:3 edge (e.g. a white
+  wedge next to a robot at the left edge in the 2v2), textured full-screen 2D (backgrounds, the movie) keeps black
+  sides, and objects the game culls against its 4:3 view may pop in at the sides (not seen so far). Not yet tried
+  on hardware. See `docs/recomp_unknowns.md` "Widescreen".
 - Old 3DS models are untested; the build targets the New 3DS's 804 MHz mode.
 
 ## What you need
@@ -129,7 +133,8 @@ Known problems:
 python tools/extract_disc.py "Custom Robo (USA).iso" data/extracted   # once
 PYTHONUTF8=1 python tools/recomp/recomp.py                            # main.dol -> gen/
 (cd tools/recomp && PYTHONUTF8=1 python gen_sdk_log.py)               # after adding an sdk_* function to runtime/
-make -j20                                                             # -> custom-robo-recomp.3dsx
+make -j20                                                             # -> custom-robo-recomp.3dsx (release: card layout)
+make -j20 CARDUI=0                                                    # test build: console layout with every stats row
 ```
 
 With Docker, from Git Bash on Windows:
@@ -139,7 +144,8 @@ MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/proj" -w /proj <devkitarm-image> ma
 ```
 
 Every build runs `tools/check_3dsx.py`, which fails the build on a relocation
-the 3dsx loader would reject. `data/`, `gen/` and the build outputs are
+the 3dsx loader would reject. Release builds use the default card layout of the bottom screen
+(`CARDUI=1`); test builds (Citra runs, hardware A/Bs) use `make CARDUI=0` for the full stats table. `data/`, `gen/` and the build outputs are
 git-ignored; never commit them (they contain the game).
 
 ## Install
@@ -157,8 +163,13 @@ sdmc:/custom-robo/files/...     <- the whole data/extracted/files/ tree
 
 Start it from the Homebrew Launcher. Saves go to `sdmc:/custom-robo/save/`
 (memory card in slot A). Each run writes `sdmc:/cr_autotest.log`, which is
-overwritten at the next start; rename it to keep it. The bottom screen shows
-the build id and any flag files present, then a fixed stats table, one metric per
+overwritten at the next start; rename it to keep it. The bottom screen (default, the release layout) shows
+the title, the build id (plus flag files), four tiles (fps, game ms, GX ms = GX thread busy, audio ms), the
+touch buttons below as rounded cards with an on/off dot, and the last message line at the bottom. It is drawn
+on the CPU with the 3DS system font, only where something changed.
+
+A test build (`make CARDUI=0`) shows the console layout instead: the build id and any flag files present,
+then a fixed stats table, one metric per
 row, updated once a second (the same numbers as the log's `# time` lines, in ms per
 frame), then a 3-row message area. Example values:
 
@@ -180,6 +191,10 @@ and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "
 functions it changes) and "Inline sites" (the 5 inlined particle-helper calls), all on by default.
 "Perf counters" (off by default) is a measurement, not a feature: while on, the log gets a `# perf` line every
 60 retraces with the ARM11 core 0 hardware counters per frame (see Test flags, `cr_perfctr.txt`).
+"Widescreen" (off by default, or `cr_widescreen.txt`) removes the 40 px black bars at the sides of the top
+screen in 3D scenes, like Dolphin's widescreen hack: the 3D view gets a wider field of view, the 4:3 middle
+is unchanged, and textured 2D (HUD, menus, backgrounds, the movie) stays 4:3; untextured full-screen 2D (fades)
+is stretched to the full width (artifacts under Known problems).
 "Dump RAM" is an action, not a switch: it writes the
 game's RAM (24 MB), ARAM (16 MB), the disc reads still in flight and the next frame to the SD card
 root as `cr_dump_r<retrace>_*` and `cr_fb_<frame>.bmp` (the game stops for a few seconds).
@@ -219,6 +234,7 @@ can be compared with a feature on and off:
 | `cr_ptrext_off.txt` | old stack-promotion bodies (no pointer-extent promotion; button "Ptr extent") |
 | `cr_inline_off.txt` | plain calls at the 5 particle-helper sites (no inline copies; button "Inline sites") |
 | `cr_perfctr.txt` | ARM11 hardware counters on from boot (button "Perf counters"): a `# perf` line every 60 retraces with core 0's cycles, instructions (IPC), I-cache misses, D-cache reads and read/write misses, stall cycles (instruction fetch, data hazard), branch mispredicts and instruction micro-TLB / main TLB misses per frame; two events count per frame, so the five pairs take turns. `tools/perf_avg.py` averages them per scene. Citra only stubs the counters ("no frame counted") |
+| `cr_widescreen.txt` | widescreen on from boot (button "Widescreen"): 3D draws fill the 400 px top screen instead of the 4:3 window with 40 px bars; textured 2D stays 4:3, untextured full-screen 2D (fades) is stretched |
 | `cr_runfast.txt` | set the VFP's flush-to-zero + default-NaN mode at boot (already on: the boot log's `# fpscr:` line shows the value) |
 | `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
 | `cr_vsync_on.txt` | old pacing: wait for a vblank every frame |
@@ -245,7 +261,8 @@ every store that reaches a hardware address as `# hwcheck store` lines), `make A
 read call per source sample) and `make AXWORKER=0` (the mix jobs run on the game thread instead of a worker thread on
 core 2; boot line `# AX: mix jobs`), `make ALIGNVERIFY=1` (every misaligned 16/32-bit guest access logged per
 host site as `# align` lines) and `make RANGEVERIFY=1` (the same lines for every guest access outside
-0x80000000-0x81ffffff). Switching any of these needs `make clean` first. `make HOTORDER=0` links .text in plain
+0x80000000-0x81ffffff), and `make CARDUI=0` (the console layout of the bottom screen for test builds, see Install;
+the build id ends in `console`). Switching any of these needs `make clean` first. `make HOTORDER=0` links .text in plain
 link order instead of `tools/recomp/hot_order.ld` (the 2v2's hot functions first; delete the .elf to relink).
 Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
 `RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `RECOMP_INLINE_TSV=0` leaves out the profile sites of
@@ -378,6 +395,8 @@ list in the same change whenever something new is borrowed.
 
 - [mw3ds](https://github.com/3ds-conspiracy/mw3ds): stereo 3D by replaying the left eye's GPU command words for the right eye
   (`runtime/gx.c`, "Stereo 3D"), and small integer vertex formats (vertex packing).
+- [Dolphin](https://dolphin-emu.org/)'s widescreen hack: widen only the perspective (3D) projections and leave 2D as
+  it is; here the "Widescreen" button (`runtime/gx.c`, unknowns "Widescreen").
 - The Simpsons: Hit & Run Old 3DS port and REGTA: dropping and packing normals (vertex
   packing); the Simpsons port and MKW-3DS: cached textures in VRAM.
 - [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) (hedge-dev),
