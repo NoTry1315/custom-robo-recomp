@@ -13,8 +13,7 @@
  * f5-f7, cr0 (no translated return stores them) and the guest stack frames below r1.
  * |x| > 2^19 * pi/2 (0x413921fb), inf and NaN run the translated body (rem_pio2's large path
  * calls __kernel_rem_pio2).
- * sdmc:/cr_libm_off.txt (or the bottom-screen button "Native sin/cos", live) routes every call to
- * the translated bodies; sdmc:/cr_bench.txt adds
+ * sdmc:/cr_bench.txt adds
  * startup "# bench libm" lines (native vs translated on random inputs, all those registers). */
 #include <3ds.h>
 #include <stdio.h>
@@ -220,20 +219,16 @@ static int nat_sincos(int c) {
     return 0;
 }
 
-int recomp_libm_off;   /* ppc.h; sdmc:/cr_libm_off.txt, bottom-screen button "Native sin/cos" */
-u32 recomp_libm_flips;
-static void libm_changed(void) { recomp_libm_flips++; }
-#define libm_off recomp_libm_off
 static void nat_sin(void) { if (nat_sincos(0)) f_80168f38(); }
 static void nat_cos(void) { if (nat_sincos(1)) f_801689d0(); }
 /* sinf/cosf: frsp of the double result into ps0 and ps1 */
 static void nat_sinf(void) { if (nat_sincos(0)) { f_801693dc(); return; } double v = fsgl(F[1].ps0); F[1].ps0 = v; F[1].ps1 = v; }
 static void nat_cosf(void) { if (nat_sincos(1)) { f_80169400(); return; } double v = fsgl(F[1].ps0); F[1].ps0 = v; F[1].ps1 = v; }
 
-void sdk_sin(void) { NATIVE_PROF("sin"); if (libm_off) f_80168f38(); else nat_sin(); }
-void sdk_cos(void) { NATIVE_PROF("cos"); if (libm_off) f_801689d0(); else nat_cos(); }
-void sdk_sinf(void) { NATIVE_PROF("sinf"); if (libm_off) f_801693dc(); else nat_sinf(); }
-void sdk_cosf(void) { NATIVE_PROF("cosf"); if (libm_off) f_80169400(); else nat_cosf(); }
+void sdk_sin(void) { NATIVE_PROF("sin"); nat_sin(); }
+void sdk_cos(void) { NATIVE_PROF("cos"); nat_cos(); }
+void sdk_sinf(void) { NATIVE_PROF("sinf"); nat_sinf(); }
+void sdk_cosf(void) { NATIVE_PROF("cosf"); nat_cosf(); }
 
 /* ---- sdmc:/cr_bench.txt: native vs translated ---- */
 #define B_STACK 0x8170f000u   /* scratch stack (mtx.c's bench area), saved and restored */
@@ -313,11 +308,7 @@ void recomp_libm_bench(void) {
 }
 
 void recomp_libm_init(void) {
-    FILE *f = fopen("sdmc:/cr_libm_off.txt", "rb");
-    if (f) fclose(f);
-    libm_off = f != NULL;
-    recomp_log("# libm: sin/cos/sinf/cosf %s (sdmc:/cr_libm_off.txt)\n", libm_off ? "translated" : "native");
-    recomp_menu_bind("Native sin/cos", &recomp_libm_off, libm_changed);
-    f = fopen("sdmc:/cr_bench.txt", "rb");
+    recomp_log("# libm: sin/cos/sinf/cosf native\n");
+    FILE *f = fopen("sdmc:/cr_bench.txt", "rb");
     if (f) { fclose(f); recomp_libm_bench(); }
 }

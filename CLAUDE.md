@@ -552,6 +552,16 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   save (= data/saves/2026-10-26_sd-backup-before-hw-replay) is back in custom-robo/save/ (the 2v2 test save it replaced is
   data/saves/2026-10-22_pre-2v2): hardware 2v2 replays need that save put back first. ftpd cannot RNTO inside /3ds
   (550): back up a build by uploading a copy.
+- Flag cleanup (2026-10-27, branch task/2026-10-27-flag-cleanup, user decision): bottom screen has only "Widescreen" and
+  "Dump RAM". Removed (feature always on, switch gone): buttons VRAM textures / Vertex pack / Lazy vtx desc / Native sin/cos /
+  Native THP / Ptr extent / Inline sites / Perf counters; flags cr_batch_off, cr_gpukick_off, cr_vsync_on,
+  cr_gxthread_fliptest, cr_mtx_off, cr_libm_off, cr_lazydesc_off, cr_thpnative_off, cr_thp_islow, cr_thpverify,
+  cr_ptrext_off, cr_inline_off, cr_vcache_small, cr_dvd_stalltest, cr_gpu_quarter, cr_runfast. recomp.py has no `dual`
+  mode any more: RECOMP_PTR_EXTENT / RECOMP_INLINE_SITES default 1 (extent bodies in all 142 functions, 95 inline
+  copies), 0 = plain. Kept flag files: cr_gxthread_off, cr_dlcache_off, cr_dlclean_off, cr_vramtex_off, cr_vtxpack_off,
+  cr_perfctr + test tools (pad script/replay, dvdasync_off, audio_rt_*, card_off, fbdump, memdump, audio_dump, bench,
+  stereo_force, ax_stall, widescreen_off). Citra boot/battle/campaign/2v2 logs + fb dumps identical to main@0d54bd2,
+  2v2 game 36.9 -> 36.8 ms; .3dsx +0.65%. Not yet on hardware. New A/B switches: flag files only, no buttons (user).
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

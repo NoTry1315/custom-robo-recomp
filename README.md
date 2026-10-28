@@ -60,7 +60,7 @@ call boundaries (register stores to `cpu` around each call, reloads at entry, re
 ~725k ARM instructions per 2v2 frame (`tools/callcost.py`: main's ELF weighted by the replay's call counts),
 estimated ~1.1 ms, about 5% of the 22.2 ms hardware game thread. Citra's FNPROF had put it at 21.8%, so the
 other ~95% (function bodies, memory access helpers, C-stack spills, SDK code) is where the time is, and Citra
-cannot say how it splits. The "Perf counters" button (or `cr_perfctr.txt`) logs the ARM11's own counters per
+cannot say how it splits. `cr_perfctr.txt` logs the ARM11's own counters per
 frame (cycles, instructions, I-cache and D-cache misses, stall cycles, branch mispredicts; `tools/perf_avg.py`
 averages them per scene). Citra only stubs the counters. Hardware run 33 (the 2v2 replay with the counters on,
 same route and timing as run 32a): per 2v2 frame the core is busy 19.1M cycles at 0.35 instructions per cycle;
@@ -83,8 +83,7 @@ output run as a job on a worker thread on core 2 while the game goes on (runs 43
 1.06 -> 0.59 ms, frame 21.68 -> 21.42 ms). 2v2 44.7 -> 46.7 fps; the mixed audio is bit-identical (a hash of the
 output in the `# AX: frame` lines matches in Citra and on hardware). Profile-guided inlining (branch
 `task/2026-10-27-hot-inline`: the 90 hottest calls to small translated functions in the Citra 2v2 replay, listed in
-`tools/recomp/inline_sites.tsv` by `tools/recomp/inline_sites.py`, get an inline copy; covered by the "Inline sites"
-button): runs 46a/46b, game thread -0.12 ms, 47.0 fps. A hardware profile (run 44, `make FNPROF=1`) and a count of
+`tools/recomp/inline_sites.tsv` by `tools/recomp/inline_sites.py`, get an inline copy): runs 46a/46b, game thread -0.12 ms, 47.0 fps. A hardware profile (run 44, `make FNPROF=1`) and a count of
 misaligned guest accesses (`make ALIGNVERIFY=1`: ~2M per 2v2 replay, many in the particle code) ruled out keeping
 guest RAM as native-endian words. Tried and not kept on 2026-10-27: AX decode predictions on the mix worker (runs
 49a/49b: 0.2 ms of audio off the game thread, but the game thread got 0.27 ms slower, likely L2 cache pressure from
@@ -185,12 +184,7 @@ scene          8  sub 3  r12345
 io  late 0 slow 3 stall 0 lin 17714K
 ```
 
-Touch buttons on the bottom screen switch test features live (the log records each switch,
-and `tools/time_avg.py` splits the `# time` windows by mode): "VRAM textures", "Vertex pack",
-"Lazy vtx desc", "Native sin/cos", "Native THP" (the attract movie's JPEG decoder), "Ptr extent" (pointer-extent stack promotion in the 16 hottest
-functions it changes) and "Inline sites" (the 5 inlined particle-helper calls), all on by default.
-"Perf counters" (off by default) is a measurement, not a feature: while on, the log gets a `# perf` line every
-60 retraces with the ARM11 core 0 hardware counters per frame (see Test flags, `cr_perfctr.txt`).
+The bottom screen has two touch buttons (the log records each tap).
 "Widescreen" (on by default; off with the button or `cr_widescreen_off.txt`) removes the 40 px black bars at the sides of the top
 screen in 3D scenes, like Dolphin's widescreen hack: the 3D view gets a wider field of view, the 4:3 middle
 is unchanged, and textured 2D (HUD, menus, backgrounds, the movie) stays 4:3; untextured full-screen 2D (fades)
@@ -218,28 +212,14 @@ can be compared with a feature on and off:
 | File | Effect |
 |---|---|
 | `cr_gxthread_off.txt` | GX thread off: GX work on the game thread |
-| `cr_gxthread_fliptest.txt` | switch the GX thread on/off every 300 retraces (tests the switch) |
-| `cr_gpukick_off.txt` | mid-frame GPU submit off |
-| `cr_batch_off.txt` | no draw batching |
 | `cr_dlcache_off.txt` | no display-list cache |
 | `cr_dlclean_off.txt` | always re-hash display lists and textures (no write tracking) |
-| `cr_mtx_off.txt` | translated MTX functions instead of the native ones |
 | `cr_vramtex_off.txt` | textures stay in linear memory (no VRAM textures) |
 | `cr_vtxpack_off.txt` | every vertex in the full 68-byte layout (no vertex packing) |
-| `cr_lazydesc_off.txt` | a GX-queue record for every GXSetVtxDesc/GXClearVtxDesc call (no lazy vertex descriptor) |
-| `cr_libm_off.txt` | translated sin/cos/sinf/cosf/sqrtf instead of the native ones |
-| `cr_thpnative_off.txt` | the translated THP video decoder instead of libjpeg-turbo (button "Native THP") |
-| `cr_thp_islow.txt` | native THP decode with libjpeg-turbo's accurate integer IDCT instead of FASTDCT (the default, which is also closer to the game's own decoder) |
-| `cr_thpverify.txt` | every movie frame decoded both ways (translated, then native) and compared: `# thp verify` lines per frame (mean/max difference, correlation per plane), frame 100 and any frame with a luma mean difference over 10 dumped as `cr_thp_*` files. Slow: for checks only |
-| `cr_ptrext_off.txt` | old stack-promotion bodies (no pointer-extent promotion; button "Ptr extent") |
-| `cr_inline_off.txt` | plain calls at the 5 particle-helper sites (no inline copies; button "Inline sites") |
-| `cr_perfctr.txt` | ARM11 hardware counters on from boot (button "Perf counters"): a `# perf` line every 60 retraces with core 0's cycles, instructions (IPC), I-cache misses, D-cache reads and read/write misses, stall cycles (instruction fetch, data hazard), branch mispredicts and instruction micro-TLB / main TLB misses per frame; two events count per frame, so the five pairs take turns. `tools/perf_avg.py` averages them per scene. Citra only stubs the counters ("no frame counted") |
+| `cr_perfctr.txt` | ARM11 hardware counters on: a `# perf` line every 60 retraces with core 0's cycles, instructions (IPC), I-cache misses, D-cache reads and read/write misses, stall cycles (instruction fetch, data hazard), branch mispredicts and instruction micro-TLB / main TLB misses per frame; two events count per frame, so the five pairs take turns. `tools/perf_avg.py` averages them per scene. Citra only stubs the counters ("no frame counted") |
 | `cr_widescreen_off.txt` | widescreen off from boot (button "Widescreen"): 3D draws back in the 4:3 window with 40 px bars. Widescreen is on by default: 3D draws fill the 400 px top screen; textured 2D stays 4:3, untextured full-screen 2D (fades) is stretched |
-| `cr_runfast.txt` | set the VFP's flush-to-zero + default-NaN mode at boot (already on: the boot log's `# fpscr:` line shows the value) |
 | `cr_stereo_force.txt` | "slider [sep] [conv]": force stereo 3D (Citra, whose slider cannot be scripted) |
-| `cr_vsync_on.txt` | old pacing: wait for a vblank every frame |
 | `cr_dvdasync_off.txt` | wait for every disc read to finish (old timing) |
-| `cr_dvd_stalltest.txt` | every 64th music read sleeps 3 s (tests late reads) |
 | `cr_card_off.txt` | no memory card |
 | `cr_bench.txt` | MTX benchmark lines in the log at startup |
 | `cr_fbdump.txt` | frame numbers, one per line: the framebuffer is saved as `cr_fb_<frame>.bmp` |
@@ -264,10 +244,9 @@ host site as `# align` lines) and `make RANGEVERIFY=1` (the same lines for every
 0x80000000-0x81ffffff), and `make CARDUI=0` (the console layout of the bottom screen for test builds, see Install;
 the build id ends in `console`). Switching any of these needs `make clean` first. `make HOTORDER=0` links .text in plain
 link order instead of `tools/recomp/hot_order.ld` (the 2v2's hot functions first; delete the .elf to relink).
-Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=dual|1|0` and
-`RECOMP_INLINE_SITES=dual|1|0` (recomp.py; `RECOMP_INLINE_TSV=0` leaves out the profile sites of
-`tools/recomp/inline_sites.tsv`; `dual`, the default, builds both variants into the one
-`.3dsx` behind the "Ptr extent" / "Inline sites" buttons; `0` is the plain main code).
+Translator variants are chosen when gen/ is generated: `RECOMP_PTR_EXTENT=1|0` and
+`RECOMP_INLINE_SITES=1|0` (recomp.py; `1`, the default, = pointer-extent stack promotion / the inline copies;
+`RECOMP_INLINE_TSV=0` leaves out the profile sites of `tools/recomp/inline_sites.tsv`).
 
 Citra tests: `tools/citra/replay.ps1 -Name battle|campaign|2v2` plays recorded input
 deterministically (see `docs/performance.md`, "How performance is measured");

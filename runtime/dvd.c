@@ -160,8 +160,7 @@ void sdk_DVDCloseDir(void) { LOG(); R[3] = 1; }
  * point, as with a slow disc. Citra's SD model (0.6 ms + 183 ns/byte) stays
  * inside the budget, so replays deliver every callback where they did before.
  * sdmc:/cr_dvdasync_off.txt: the game waits for each read at issue, no limit
- * (the old timing). sdmc:/cr_dvd_stalltest.txt: every 64th read of an .hps
- * music stream takes 3 s more (the late path without waiting for a real stall). */
+ * (the old timing). */
 static struct req {
     u32 fi, cb, addr, len, off, e, r_issue, r_late;
     s32 result;
@@ -176,7 +175,7 @@ static volatile u32 q_head, q_work;    /* free-running: requests issued, finishe
 static u32 q_tail;                     /* requests delivered */
 static LightSemaphore q_sem;
 static LightEvent q_ev;                /* the reader finished one */
-static int reader_ok, async_off, stall_test;
+static int reader_ok, async_off;
 
 /* 50 ms + 2.5 MB/s, about a GameCube drive's seek and transfer */
 static u64 read_budget(u32 len) { return SYSCLOCK_ARM11 / 20 + (u64)len * (SYSCLOCK_ARM11 / 2500000); }
@@ -211,8 +210,6 @@ static void do_read(struct req *r) {
     u64 t1 = recomp_ticks();
     fseek(f, r->off, SEEK_SET);
     u64 t2 = recomp_ticks();
-    static u32 nhps;
-    if (stall_test && strstr(paths[r->e], ".hps") && ++nhps % 64 == 0) svcSleepThread(3000000000LL);   /* a hw-run-like SD stall */
     size_t got = fread(ram + (r->addr & RAM_MASK), 1, r->len, f);
     u64 t3 = recomp_ticks();
     if (got < r->len) memset(ram + ((r->addr + got) & RAM_MASK), 0, r->len - got);   /* padding past EOF */
@@ -239,16 +236,14 @@ static int file_exists(const char *path) { FILE *f = fopen(path, "rb"); if (f) f
 
 static void reader_start(void) {
     async_off = file_exists("sdmc:/cr_dvdasync_off.txt");
-    stall_test = file_exists("sdmc:/cr_dvd_stalltest.txt");
     LightSemaphore_Init(&q_sem, 0, MAXPENDING);
     LightEvent_Init(&q_ev, RESET_ONESHOT);
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
     reader_ok = recomp_aux_thread(reader, 0x4000, prio - 1) != NULL;
-    recomp_log("# DVD: %s%s\n", !reader_ok ? "no reader thread, reads on the game thread at issue"
+    recomp_log("# DVD: %s\n", !reader_ok ? "no reader thread, reads on the game thread at issue"
                : async_off ? "reader thread, game waits for each read at issue (cr_dvdasync_off.txt)"
-               : "reader thread, game waits up to 50 ms + 2.5 MB/s per read, then goes on",
-               stall_test ? "; stall test: every 64th .hps read +3 s (cr_dvd_stalltest.txt)" : "");
+               : "reader thread, game waits up to 50 ms + 2.5 MB/s per read, then goes on");
 }
 
 /* 1 once r is done; until then waits while its read has run less than its budget (force: no limit) */

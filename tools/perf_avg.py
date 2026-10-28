@@ -1,5 +1,5 @@
-"""Per-scene averages of the '# perf' windows (runtime/perfctr.c: ARM11 core 0 counters per frame, sdmc:/cr_perfctr.txt or
-the bottom-screen button "Perf counters"), next to the '# time' game ms of the same window.
+"""Per-scene averages of the '# perf' windows (runtime/perfctr.c: ARM11 core 0 counters per frame, sdmc:/cr_perfctr.txt),
+next to the '# time' game ms of the same window.
 Windows with a bottom-screen toggle inside ('# menu r<n>:') are dropped, as in time_avg.py.
     PYTHONUTF8=1 python tools/perf_avg.py logs/<log> [--from 4300]
 --from N: only windows ending at retrace >= N."""
