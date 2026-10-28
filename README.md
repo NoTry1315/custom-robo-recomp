@@ -46,8 +46,8 @@ The New 3DS is the target; original/Old 3DS models are untested.
 - The attract movie remains slower than real time due to video decoding and disc-read
   wait.
 - Some graphics are not fully reproduced, including EFB-to-texture copies and
-  specular lighting. Widescreen has known 2D edge artifacts and has not been checked
-  frame-by-frame on hardware.
+  specular lighting. Widescreen leaves some 2D at the old 4:3 edges (for example a
+  white wedge at the left edge in the 2-v-2 battle).
 - One hardware run showed a story text box with missing letters followed by a hang.
   It has not been reproduced; its cause is unknown.
 - SD-card stalls have occurred. Music is prefetched to reduce mid-song audio issues,
@@ -63,7 +63,8 @@ See [Known problems and implementation details](./README.detailed.md#known-probl
 - Your own legally obtained *Custom Robo* USA GameCube disc (GXCE01) and a way to
   extract its files. The repository does not include the game, a disc image, or
   extracted game data.
-- The 3DS DSP firmware file `dspfirm.cdc`, which is not included.
+- The 3DS DSP firmware file `sdmc:/3ds/dspfirm.cdc`, dumped from your own 3DS with
+  DSP1; it is not included, and without it there is no sound.
 
 This project is not affiliated with or endorsed by Nintendo, Noise, or HAL Laboratory.
 All game names and trademarks belong to their respective owners.
@@ -107,7 +108,7 @@ from the user's disc and is translated by this project's recompilation tools.
 - [Dolphin](https://dolphin-emu.org/) provides the reference behavior.
 - [devkitPro](https://devkitpro.org/), including devkitARM, libctru, and citro3d,
   provides the 3DS build and runtime libraries.
-- [Citra](https://github.com/citra-emu/citra) is used for deterministic emulation
+- Citra (the 3DS emulator) is used for deterministic emulation
   tests; [libjpeg-turbo](https://libjpeg-turbo.org/) decodes the attract movie.
 - Technical references and prior art include
   [YAGCD](https://www.gc-forever.com/yagcd/),

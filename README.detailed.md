@@ -98,7 +98,7 @@ Hardware replay: put the 2v2 save in sdmc:/custom-robo/save/ (back up the real o
 tools/citra/pad_2v2.log) and `cr_dvdasync_off.txt` on the SD root, launch, hands off. The route must match the
 Citra log's scene and pad lines before the timings count.
 
-Known problems:
+### Known problems
 
 - A story text box can break (letters missing, even spacing) and the event then stops
   (seen once, hardware run 30 in event `snr_t_06`; not reproduced in Citra, cause unknown, see
@@ -116,8 +116,8 @@ Known problems:
   sections of `docs/recomp_unknowns.md`.
 - Widescreen (on by default since 2026-10-27): 2D the game places in 4:3 screen space ends at the old 4:3 edge (e.g. a white
   wedge next to a robot at the left edge in the 2v2), textured full-screen 2D (backgrounds, the movie) keeps black
-  sides, and objects the game culls against its 4:3 view may pop in at the sides (not seen so far). Not yet tried
-  on hardware. See `docs/recomp_unknowns.md` "Widescreen".
+  sides, and objects the game culls against its 4:3 view may pop in at the sides (not seen so far). Played on
+  hardware since 2026-10-28: one "camera too low" report went away on relaunch and has not been reproduced. See `docs/recomp_unknowns.md` "Widescreen".
 - Old 3DS models are untested; the build targets the New 3DS's 804 MHz mode.
 
 ## What you need
@@ -372,7 +372,7 @@ list in the same change whenever something new is borrowed.
 - [Docker](https://www.docker.com/): the build runs in a devkitARM container.
 - [libjpeg-turbo](https://libjpeg-turbo.org/) (devkitPro portlibs `libturbojpeg`): linked into
   the build, decodes the attract movie's frames (`runtime/thp.c`).
-- [Citra](https://github.com/citra-emu/citra), the 3DS emulator (installed through
+- Citra, the 3DS emulator (its original repository is no longer online) (installed through
   [EmuDeck](https://www.emudeck.com/)): every change is tested in Citra first
   (`tools/citra/`), with recorded pad input replayed.
 - [Dolphin](https://dolphin-emu.org/): the reference runs, logs and dumps (see above).
