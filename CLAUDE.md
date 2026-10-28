@@ -561,7 +561,8 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   copies), 0 = plain. Kept flag files: cr_gxthread_off, cr_dlcache_off, cr_dlclean_off, cr_vramtex_off, cr_vtxpack_off,
   cr_perfctr + test tools (pad script/replay, dvdasync_off, audio_rt_*, card_off, fbdump, memdump, audio_dump, bench,
   stereo_force, ax_stall, widescreen_off). Citra boot/battle/campaign/2v2 logs + fb dumps identical to main@0d54bd2,
-  2v2 game 36.9 -> 36.8 ms; .3dsx +0.65%. Not yet on hardware. New A/B switches: flag files only, no buttons (user).
+  2v2 game 36.9 -> 36.8 ms; .3dsx +0.65%. New A/B switches: flag files only, no buttons (user). Release main@4c4f218 on
+  the SD (previous kept as ..._2026-10-28_pre-flag-cleanup-6538484.3dsx.bak); not yet played on hardware.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
