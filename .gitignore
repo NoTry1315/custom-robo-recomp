@@ -9,3 +9,5 @@ __pycache__/
 gen/
 build.log
 *.map
+/tools/hw/agent/source/main.c
+/tools/hw_loop.py
