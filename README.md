@@ -71,6 +71,23 @@ See [Known problems and implementation details](./README.detailed.md#known-probl
 This project is not affiliated with or endorsed by Nintendo, Noise, or HAL Laboratory.
 All game names and trademarks belong to their respective owners.
 
+## Reporting a freeze or bug
+
+If the game freezes, crashes or shows something wrong, please
+[open an issue](https://github.com/alexander-clawthorne/custom-robo-recomp/issues) with:
+
+1. **`sdmc:/cr_autotest.log`** from the SD card. Each start overwrites it, so copy it
+   off the SD card (or rename it) before you start the game again.
+2. **The dump, if you can take it:** while the problem is on screen, tap **Dump RAM** on
+   the bottom screen and wait a few seconds. Attach `cr_dump_r<number>.txt` and
+   `cr_fb_<number>.bmp` from the SD card root.
+3. What you were doing, what you expected, your 3DS model, and the build id shown at the
+   top of the bottom screen.
+
+**Do not attach `cr_dump_r<number>_ram.bin` or `cr_dump_r<number>_aram.bin`.** They
+hold the game's own code and data from memory, so they must not be posted publicly.
+Keep them; if they are needed, the issue will say how to share them privately.
+
 ## Build and install
 
 The build requires the devkitPro/devkitARM toolchain and the Python tools used to

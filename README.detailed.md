@@ -195,6 +195,15 @@ is stretched to the full width (artifacts under Known problems).
 game's RAM (24 MB), ARAM (16 MB), the disc reads still in flight and the next frame to the SD card
 root as `cr_dump_r<retrace>_*` and `cr_fb_<frame>.bmp` (the game stops for a few seconds).
 
+### Reporting a freeze or bug
+
+Open an [issue](https://github.com/alexander-clawthorne/custom-robo-recomp/issues) and attach
+`sdmc:/cr_autotest.log` (copy it before the next start, which overwrites it). If the problem is
+still on screen, tap "Dump RAM" first and also attach `cr_dump_r<retrace>.txt` and
+`cr_fb_<frame>.bmp`. Add what you were doing, the 3DS model and the build id from the bottom
+screen. Never attach `cr_dump_r<retrace>_ram.bin` or `_aram.bin` publicly: they contain the
+game's code and data from memory. Keep them and share them privately only if asked.
+
 ## Controls
 
 | 3DS | GameCube |
