@@ -141,8 +141,11 @@ make -j20 CARDUI=0                                                    # test bui
 With Docker, from Git Bash on Windows:
 
 ```
-MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/proj" -w /proj <devkitarm-image> make -j20
+MSYS_NO_PATHCONV=1 docker run --rm -v "$PWD:/proj" -w /proj devkitpro/devkitarm make -j20
 ```
+
+The stock `devkitpro/devkitarm` image has everything the build needs (libctru, citro3d,
+libjpeg-turbo, picasso, Python 3); checked with `devkitpro/devkitarm:20260610` from a fresh clone.
 
 Every build runs `tools/check_3dsx.py`, which fails the build on a relocation
 the 3dsx loader would reject. Release builds use the default card layout of the bottom screen
