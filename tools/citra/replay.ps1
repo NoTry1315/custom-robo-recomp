@@ -16,7 +16,7 @@
 # directly, while other sessions may run.
 param([Parameter(Mandatory)][ValidateSet('battle', 'campaign', 'boot', '2v2')][string]$Name, [string]$Tag = 'run',
       [string]$Out = 'logs\perf', [string[]]$Flags = @(), [int]$Shots = 0, [string]$Save = '', [string]$Pad = '',
-      [int]$RunLen = 0, [string]$Fb = '', [string]$RecLog = '')
+      [int]$RunLen = 0, [string]$Fb = '', [string]$RecLog = '', [switch]$Background, [switch]$Watch)
 $sp = Split-Path $MyInvocation.MyCommand.Path
 $repo = Resolve-Path "$sp\..\.."
 $citra = 'C:\Users\Alexander\AppData\Roaming\EmuDeck\Emulators\citra\user'
@@ -59,6 +59,8 @@ try {
     $a = @('-Fast', '-Timeout', '1200', '-Pad', $padArg)
     if ($rec[$Name]) { $a += @('-Replay', $(if ([IO.Path]::IsPathRooted($rec[$Name])) { $rec[$Name] } else { Join-Path $sd $rec[$Name] })) }
     if ($Shots -gt 0) { $a += @('-Shots', "$Shots", '-Dir', (Join-Path $Out "$Tag-shots")) } else { $a += @('-Shots', '0') }
+    if ($Background) { $a += '-Background' }   # Citra kept out of the way for this run (autotest.ps1)
+    if ($Watch) { $a += '-Watch' }
     & powershell -ExecutionPolicy Bypass -File (Join-Path $sp 'autotest.ps1') @a
     Copy-Item (Join-Path $repo 'build\cr_autotest.log') (Join-Path $Out "$Tag-$Name.log") -Force -ErrorAction SilentlyContinue
     Get-ChildItem $sd -Filter 'cr_fb_*.bmp' | ForEach-Object { Move-Item $_.FullName (Join-Path $Out "$Tag-$Name-$($_.Name)") -Force }

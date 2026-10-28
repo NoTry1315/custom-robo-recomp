@@ -2,7 +2,8 @@
 # usage: capture.ps1 -Out name.png            (capture only, never focuses)
 #        capture.ps1 -SendToBack               (push Citra behind other windows)
 #        capture.ps1 -SendToBack -Width 2560 -Height 940   (and resize it, at 0,0)
-param([string]$Name = 'citra-qt', [string]$Out, [switch]$SendToBack, [int]$Width = 0, [int]$Height = 0)
+#        capture.ps1 -Place -Width 2560 -Height 940        (resize it at 0,0, staying in front)
+param([string]$Name = 'citra-qt', [string]$Out, [switch]$SendToBack, [switch]$Place, [int]$Width = 0, [int]$Height = 0)
 Add-Type -AssemblyName System.Drawing
 Add-Type @'
 using System; using System.Runtime.InteropServices;
@@ -19,6 +20,10 @@ if ($SendToBack) {
     $flags = if ($Width -gt 0) { 0x10 } else { 0x13 }
     [CW]::SetWindowPos($h, [IntPtr]1, 0, 0, $Width, $Height, $flags) | Out-Null
     "sent to back"
+}
+if ($Place) {
+    [CW]::SetWindowPos($h, [IntPtr]::Zero, 0, 0, $Width, $Height, 0x4) | Out-Null   # SWP_NOZORDER
+    "placed"
 }
 if ($Out) {
     $r = New-Object CW+RECT; [CW]::GetWindowRect($h, [ref]$r) | Out-Null

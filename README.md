@@ -259,7 +259,10 @@ deterministically (see `docs/performance.md`, "How performance is measured");
 battle, the heaviest scene so far. `tools/citra/autotest.ps1 -Root <dir> -Exe <name>` runs a private
 portable Citra copy with a renamed exe, so two sessions running Citra at once do not share its config,
 sdmc or log, or stop each other's process. `replay.ps1 -Name boot -Save <dir> -RecLog <log>` replays a
-hardware log's pad lines from a save (how the run 30 story event was replayed).
+hardware log's pad lines from a save (how the run 30 story event was replayed). Citra opens in front
+for each run by default (watch); `tools/citra/background.ps1 on` makes every run, from any session, start
+it minimized and hand focus straight back, for working while tests run (`off` to watch again;
+`replay.ps1 -Background` / `-Watch` picks for one run).
 
 Profiling tools: `tools/time_avg.py` (per-scene `# time` averages, split by toggle), `tools/perf_avg.py` (per-scene
 `# perf` hardware counter averages next to game ms), `tools/callcost.py` (the call-boundary instructions of every
