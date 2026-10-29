@@ -1,12 +1,12 @@
 name: Build Custom Robo 3DSX
 
 on:
-  workflow_dispatch: # Memicu tombol build manual di tab Actions
+  workflow_dispatch:
 
 jobs:
   build-3ds:
     runs-on: ubuntu-latest
-    container: devkitpro/devkitarm:latest # Menggunakan server Docker yang sudah berisi devkitARM otomatis
+    container: devkitpro/devkitarm:latest
 
     steps:
     - name: Checkout Source Code
@@ -16,13 +16,12 @@ jobs:
 
     - name: Install 3DS Build Dependencies
       run: |
-        # Memasang library grafis dan sistem dasar untuk Nintendo 3DS
+        # Memasang paket utama 3ds-dev yang sudah mencakup libctru, citro3d, dan citro2d secara otomatis
         dkp-pacman -Syu --noconfirm
-        dkp-pacman -S --needed --noconfirm 3ds-dev 3ds-libctru 3ds-citro3d 3ds-citro2d
+        dkp-pacman -S --needed --noconfirm 3ds-dev
 
     - name: Compile to 3DSX
       run: |
-        # Memulai proses rakit file .3dsx langsung di server
         make -f Makefile.3ds
       continue-on-error: true
 
