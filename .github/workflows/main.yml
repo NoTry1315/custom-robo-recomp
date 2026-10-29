@@ -14,16 +14,43 @@ jobs:
       with:
         submodules: recursive
 
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+    - name: Download ISO and Extract Game Data
+      run: |
+        # Buat folder ekstraksi sesuai instruksi README
+        mkdir -p data/extracted
+        
+        # Mengunduh file ISO langsung ke server GitHub (GANTI LINK DI BAWAH DENGAN LINK ISO ANDA)
+        curl -L "https://archive.org/download/GC_US_Arquivista/Custom%20Robo%20%28US%29.iso" -o game.iso
+        
+        # Jalankan skrip dekompilasi/ekstraksi (sesuaikan nama file jika bukan recomp.py langsung)
+        python tools/recomp/recomp.py game.iso
+
     - name: Compile to 3DSX
       run: |
-        # Langsung jalankan kompilasi di folder utama karena Makefile sudah dipindahkan ke sini
+        export DEVKITPRO=/opt/devkitpro
+        export DEVKITARM=$DEVKITPRO/devkitARM
+        export PATH=$DEVKITPRO/tools/bin:$DEVKITARM/bin:$PATH
+        
+        # Jalankan kompilasi menggunakan Makefile asli di folder tools/hw
+        cd tools/hw
         make
+      shell: bash
 
     - name: Upload Finished 3DSX (Artifacts)
       uses: actions/upload-artifact@v4
       with:
         name: Custom-Robo-3DSX-Build
         path: |
-          *.3dsx
-          *.smdh
+          tools/hw/*.3dsx
+          tools/hw/*.smdh
           
