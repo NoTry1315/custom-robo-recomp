@@ -11,12 +11,6 @@ game download.
 https://github.com/user-attachments/assets/a8ba9f9a-421b-475a-82e8-414a922148c8
 )
 
-## Brief gameplay
-
-[▶ Watch the brief gameplay (MP4)](
-https://github.com/user-attachments/assets/96eba946-1e7c-4d51-91f9-2093529518a7
-)
-
 The translator preserves the original game code; the project does not hand-port game
 logic. The runtime implements the GameCube SDK and hardware services needed by the
 game—graphics, disc reads, controller input, operating-system services, audio, video,
@@ -48,6 +42,12 @@ hardware qualification of the current repository snapshot.
 
 The game advances one logic step per frame, so scenes below 60 fps run in slow motion.
 The New 3DS is the target; original/Old 3DS models are untested.
+
+## Brief gameplay
+
+[▶ Watch the brief gameplay (MP4)](
+https://github.com/user-attachments/assets/96eba946-1e7c-4d51-91f9-2093529518a7
+)
 
 ### Known limitations
 
