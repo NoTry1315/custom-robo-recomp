@@ -1,0 +1,43 @@
+name: Build Custom Robo Recomp
+
+on:
+  workflow_dispatch: # Memungkinkan Anda menjalankan build secara manual kapan saja
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout Source Code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive # Mengunduh semua library internal game dependencies
+
+    - name: Setup MSBuild (Compiler)
+      uses: microsoft/setup-msbuild@v2
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if (Test-Path requirements.txt) { pip install -r requirements.txt }
+
+    - name: Compile Project
+      run: |
+        # Mengompilasi source code menjadi file executable (.exe)
+        msbuild custom-robo-recomp.sln /p:Configuration=Release /p:Platform=x64
+      continue-on-error: true
+
+    - name: Upload Finished Build (Artifacts)
+      uses: actions/upload-artifact@v4
+      with:
+        name: Custom-Robo-Recomp-Windows
+        path: |
+          bin/
+          build/
+          *.exe
+          
