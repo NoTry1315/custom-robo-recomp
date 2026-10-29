@@ -14,14 +14,9 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Install 3DS Build Dependencies
-      run: |
-        # Memasang paket utama 3ds-dev yang sudah mencakup libctru, citro3d, dan citro2d secara otomatis
-        dkp-pacman -Syu --noconfirm
-        dkp-pacman -S --needed --noconfirm 3ds-dev
-
     - name: Compile to 3DSX
       run: |
+        # Langsung jalankan kompilasi tanpa mengunduh ulang dependensi
         make -f Makefile.3ds
       continue-on-error: true
 
