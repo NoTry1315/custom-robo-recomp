@@ -102,6 +102,10 @@ Citra log's scene and pad lines before the timings count.
 
 ### Known problems
 
+- Fixed 2026-10-28, not yet checked on hardware: after the HOME menu the 3D view could stay shifted up or down
+  (looked like the camera pitched) until relaunch. The stereo `eye` shader uniform is written raw, so citro3d did
+  not resend it on resume; gx.c now resends it after every resume (`docs/recomp_unknowns.md` "Eye uniform after
+  the HOME menu").
 - Fixed 2026-10-28: story text boxes that lost their first letters and never finished (A did nothing, the event
   stopped). The hand-written GXInitTexObj replacements left stack bytes in each texture object, and the game
   compares whole texture objects to number its text sprites; those SDK functions are now translated from
@@ -122,7 +126,8 @@ Citra log's scene and pad lines before the timings count.
 - Widescreen (on by default since 2026-10-27): 2D the game places in 4:3 screen space ends at the old 4:3 edge (e.g. a white
   wedge next to a robot at the left edge in the 2v2), textured full-screen 2D (backgrounds, the movie) keeps black
   sides, and objects the game culls against its 4:3 view may pop in at the sides (not seen so far). Played on
-  hardware since 2026-10-28: one "camera too low" report went away on relaunch and has not been reproduced. See `docs/recomp_unknowns.md` "Widescreen".
+  hardware since 2026-10-28: one "camera too low" report went away on relaunch; probably the HOME-menu eye uniform
+  bug above, not widescreen. See `docs/recomp_unknowns.md` "Widescreen".
 - Old 3DS models are untested; the build targets the New 3DS's 804 MHz mode.
 
 ## What you need

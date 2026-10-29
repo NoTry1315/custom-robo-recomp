@@ -174,8 +174,11 @@ static void pend_flush(void) { last_end = NULL; pend_issue(); }
 
 static C3D_RenderTarget *target_r;   /* right eye; allocated here, before VRAM textures can fill VRAM */
 static int st_out;                     /* target_r's output is set (the slider was raised once) */
+static void eye_apt_hook(APT_HookType type, void *param);
+static aptHookCookie eye_apt_cookie;
 void recomp_gx_init(void) {
     C3D_Init(C3D_DEFAULT_CMDBUF_SIZE * 8);   /* 2 MB: battle frames need over 1 MB (~112 words per draw) */
+    aptHook(&eye_apt_cookie, eye_apt_hook, NULL);   /* only sets a flag: order against citro3d's hook does not matter */
     target = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
     target_r = C3D_RenderTargetCreate(240, 400, GPU_RB_RGBA8, GPU_RB_DEPTH24_STENCIL8);
     C3D_RenderTargetSetOutput(target, GFX_TOP, GFX_LEFT,
@@ -307,6 +310,14 @@ static void sr_close(void) {
     if (!sr_open) return;
     if (sr_k < SR_MAX) { sr_a[sr_k] = sr_open; sr_n[sr_k++] = cb_pos() - sr_open; } else sr_bad = 1;
     sr_open = NULL;
+}
+/* The eye uniform is written raw, so citro3d's restore hook does not resend it: after the
+ * HOME menu (or sleep) its register holds whatever the system's shaders left there, and
+ * every perspective draw shifts until stereo is toggled. Resend it at the next frame.
+ * Runs on the game thread inside aptMainLoop, while the GX thread is idle. */
+static void eye_apt_hook(APT_HookType type, void *param) {
+    (void)param;
+    if (type == APTHOOK_ONRESTORE || type == APTHOOK_ONWAKEUP) eye_init = 0;
 }
 static void eye_write(float s) {
     C3D_FVec v; v.x = 0; v.y = s * st_sep; v.z = st_conv; v.w = 0;

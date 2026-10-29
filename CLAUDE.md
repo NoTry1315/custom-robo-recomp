@@ -611,6 +611,11 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   3ds/custom-robo-recomp.3dsx (previous kept as custom-robo-recomp_2026-10-28_pre-gx-texobj.3dsx.bak). The SD save is
   now the 2026-10-26 replay save (user's choice); the user's newer save is in
   data/saves/2026-10-28_sd-backup-before-texobj-replay and sdmc:/custom-robo/save_backup_2026-10-28_before-texobj-replay.
+- Eye uniform after HOME (2026-10-28, branch task/2026-10-28-home-eye-uniform): the "camera shifted after the HOME
+  menu" report was the raw-written stereo `eye` uniform, which citro3d's restore hook does not resend; the game's
+  camera state matched a Citra replay of the same play (save data/saves/2026-10-26_sd-backup-before-hw-replay, hw log
+  pad lines). gx.c now clears eye_init in an APT restore/wakeup hook. Citra logs + fb identical (hook never runs
+  there); not yet checked on hardware. Details: unknowns "Eye uniform after the HOME menu".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
