@@ -16,8 +16,7 @@ jobs:
 
     - name: Compile to 3DSX
       run: |
-        # Masuk ke folder tempat Makefile berada lalu jalankan kompilasi
-        cd tools/hw
+        # Langsung jalankan kompilasi di folder utama karena Makefile sudah dipindahkan ke sini
         make
 
     - name: Upload Finished 3DSX (Artifacts)
@@ -25,6 +24,6 @@ jobs:
       with:
         name: Custom-Robo-3DSX-Build
         path: |
-          tools/hw/*.3dsx
-          tools/hw/*.smdh
+          *.3dsx
+          *.smdh
           
