@@ -16,15 +16,15 @@ jobs:
 
     - name: Compile to 3DSX
       run: |
-        # Langsung jalankan kompilasi tanpa mengunduh ulang dependensi
-        make -f Makefile.3ds
-      continue-on-error: true
+        # Masuk ke folder tempat Makefile berada lalu jalankan kompilasi
+        cd tools/hw
+        make
 
     - name: Upload Finished 3DSX (Artifacts)
       uses: actions/upload-artifact@v4
       with:
         name: Custom-Robo-3DSX-Build
         path: |
-          *.3dsx
-          *.smdh
+          tools/hw/*.3dsx
+          tools/hw/*.smdh
           
