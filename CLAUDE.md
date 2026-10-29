@@ -607,7 +607,10 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   NOT palette-indexed in texobj_read; NATIVE_STACK_READS empty. 193 hand-written SDK bodies (was 198). Citra
   2v2/battle/campaign/boot = main (logging aside, fb identical, 2v2 game 30.3 -> 30.4 ms); hw run 58 (dialog replay):
   route = Citra, box complete, event finished. Citra-only: dialogue box background sometimes missing (main too).
-  Details: unknowns "GXTexObj bytes and the story text boxes".
+  Details: unknowns "GXTexObj bytes and the story text boxes". Release main@61c5d55 on the SD as
+  3ds/custom-robo-recomp.3dsx (previous kept as custom-robo-recomp_2026-10-28_pre-gx-texobj.3dsx.bak). The SD save is
+  now the 2026-10-26 replay save (user's choice); the user's newer save is in
+  data/saves/2026-10-28_sd-backup-before-texobj-replay and sdmc:/custom-robo/save_backup_2026-10-28_before-texobj-replay.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
