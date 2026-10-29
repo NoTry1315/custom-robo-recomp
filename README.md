@@ -98,7 +98,8 @@ extract and translate the disc. The high-level steps are:
 
 1. Extract the disc into `data/extracted/`.
 2. Run `tools/recomp/recomp.py` to generate translated C under `gen/`.
-3. Build the `.3dsx` with `make`.
+3. Build the `.3dsx` with `make`. Plain `make` gives the release build; `make CARDUI=0`
+   gives a test build with the full stats console on the bottom screen.
 4. Put the `.3dsx`, `dspfirm.cdc`, and the extracted system and game files on the SD
    card in the paths documented in the detailed instructions.
 
