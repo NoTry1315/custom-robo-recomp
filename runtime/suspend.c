@@ -1,11 +1,12 @@
 /* HOME / sleep transitions, traced (2026-10-29: on hardware, pressing HOME in scene 8.3 crashed the whole 3DS:
  * Luma dump = svcBreak(PANIC) in HOME Menu itself, pc 0x136f28, with the 3dsx app's title id on its stack; the
  * game log just stops). The game log is buffered and does not survive a system crash, so every step of the
- * handover is appended to sdmc:/cr_suspend.log and the file closed at once (FS commits it): libctru's own steps
+ * handover goes to sdmc:/cr_suspend.log, file closed after each batch (FS commits it): libctru's own steps
  * through --wrap (GSPGPU_SaveVramSysArea / ReleaseRight / AcquireRight / RestoreVramSysArea, Makefile), the APT
  * and DSP hooks, and what our other threads (GX thread, AX mix worker, DVD reader / prefetcher) are doing. While
- * the game is suspended a monitor thread adds a line 0.1, 0.5, 1, 2 and 5 s after the suspend (few SD writes while HOME
- * Menu starts, so the trace barely changes the timing it records).
+ * the game is suspended the writer thread adds a line 0.1, 0.5, 1, 2 and 5 s after the suspend. The steps only copy
+ * a line into memory; the writer thread (core 2) does the SD writes: one open/write/close took ~250 ms on hardware
+ * (run 60), and writing on the game thread delayed the HOME handover by ~1.2 s.
  * Every 300 retraces "# mem" logs the free memory of each region: HOME Menu allocates from SYSTEM.
  * sdmc:/cr_home_jump.txt "<retrace>" = call aptJumpToHomeMenu at that retrace (the HOME button's path, for a
  * test with nobody at the console; the 3DS then stays in HOME Menu). */
@@ -19,8 +20,12 @@ static aptHookCookie apt_cookie;
 static dspHookCookie dsp_cookie;
 static u64 t_suspend;
 static u32 home_jump_at;
-static int monitor_ok;
-static LightEvent mon_ev;
+static int writer_ok;
+static LightEvent wr_ev;
+#define TR_LINES 64
+static char tr_buf[TR_LINES][512];   /* lines not yet written: tr_r..tr_w */
+static volatile u32 tr_w, tr_r, tr_dropped;
+static LightLock tr_lock = 1;        /* 1 = unlocked (LightLock_Init) */
 
 void recomp_ax_suspend_state(char *s, size_t n);
 void recomp_gx_suspend_state(char *s, size_t n);
@@ -32,23 +37,34 @@ static void mem_state(char *s, size_t n) {
              (unsigned long)(linearSpaceFree() >> 10), (unsigned long)(vramSpaceFree() >> 10));
 }
 
-/* one line, file closed at once; the threads' state with it */
+/* the writer thread (or the caller, without one): append the pending lines, close the file */
+static void tr_flush(void) {
+    u32 w = tr_w;
+    if (tr_r == w) return;
+    __dmb();   /* the lines up to w are complete */
+    FILE *f = fopen("sdmc:/cr_suspend.log", "a");
+    for (; tr_r != w; tr_r++) if (f) fputs(tr_buf[tr_r % TR_LINES], f);
+    if (f) { if (tr_dropped) fprintf(f, "(%lu lines dropped: buffer full)\n", (unsigned long)tr_dropped); tr_dropped = 0; fclose(f); }
+}
+
+/* one line with the threads' state, queued for the writer thread */
 static void trace(const char *what, long res) {
-    static LightLock lock = 1;   /* 1 = unlocked (LightLock_Init) */
     char ax[96], gx[96], dvd[96], mem[128];
     recomp_ax_suspend_state(ax, sizeof ax);
     recomp_gx_suspend_state(gx, sizeof gx);
     recomp_dvd_suspend_state(dvd, sizeof dvd);
     mem_state(mem, sizeof mem);
     u64 now = svcGetSystemTick();
-    LightLock_Lock(&lock);
-    FILE *f = fopen("sdmc:/cr_suspend.log", "a");
-    if (f) {
-        fprintf(f, "r%lu +%lu ms %s %08lx | %s | %s | %s | %s\n", (unsigned long)recomp_retrace_count(),
-                t_suspend ? (unsigned long)((now - t_suspend) / CPU_TICKS_PER_MSEC) : 0ul, what, (unsigned long)res, ax, gx, dvd, mem);
-        fclose(f);
-    }
-    LightLock_Unlock(&lock);
+    LightLock_Lock(&tr_lock);
+    if (tr_w - tr_r < TR_LINES) {
+        snprintf(tr_buf[tr_w % TR_LINES], sizeof tr_buf[0], "r%lu +%lu ms %s %08lx | %s | %s | %s | %s\n", (unsigned long)recomp_retrace_count(),
+                 t_suspend ? (unsigned long)((now - t_suspend) / CPU_TICKS_PER_MSEC) : 0ul, what, (unsigned long)res, ax, gx, dvd, mem);
+        __dmb();   /* the line before its index */
+        tr_w++;
+    } else tr_dropped++;
+    LightLock_Unlock(&tr_lock);
+    if (writer_ok) LightEvent_Signal(&wr_ev);
+    else tr_flush();
 }
 
 static void on_apt(APT_HookType hook, void *param) {
@@ -57,7 +73,6 @@ static void on_apt(APT_HookType hook, void *param) {
     if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) {
         t_suspend = svcGetSystemTick();
         recomp_suspended = 1;
-        if (monitor_ok) LightEvent_Signal(&mon_ev);
     }
     trace(hook < 5 ? names[hook] : "apt ?", hook);
     recomp_log("# suspend r%lu: %s\n", (unsigned long)recomp_retrace_count(), hook < 5 ? names[hook] : "apt ?");
@@ -96,28 +111,29 @@ Result __wrap_GSPGPU_AcquireRight(u8 flags) {
     return r;
 }
 
-/* while suspended: 5 lines, so the last line before a system crash brackets when it was */
-static void monitor(void *arg) {
+/* writes the queued lines; while suspended also adds 5 lines, so the last line before a system crash brackets when
+ * it was */
+static void writer(void *arg) {
     (void)arg;
     static const u16 at_ms[] = { 100, 500, 1000, 2000, 5000 };
+    u64 seen = 0;
+    unsigned next = 0;
     for (;;) {
-        LightEvent_Wait(&mon_ev);
-        u16 prev = 0;
-        for (unsigned i = 0; i < sizeof at_ms / sizeof at_ms[0] && recomp_suspended; i++) {
-            svcSleepThread((s64)(at_ms[i] - prev) * 1000000);
-            prev = at_ms[i];
-            if (recomp_suspended) trace("suspended", at_ms[i]);
-        }
+        LightEvent_WaitTimeout(&wr_ev, recomp_suspended && next < 5 ? 20000000LL : 1000000000LL);
+        u64 ts = t_suspend;
+        if (ts != seen) { seen = ts; next = 0; }
+        if (recomp_suspended && ts && next < 5 && (svcGetSystemTick() - ts) / CPU_TICKS_PER_MSEC >= at_ms[next]) trace("suspended", at_ms[next++]);
+        tr_flush();
     }
 }
 
 void recomp_suspend_init(void) {
     aptHook(&apt_cookie, on_apt, NULL);
     dspHook(&dsp_cookie, on_dsp);
-    LightEvent_Init(&mon_ev, RESET_ONESHOT);
+    LightEvent_Init(&wr_ev, RESET_ONESHOT);
     s32 prio = 0x30;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
-    monitor_ok = recomp_aux_thread(monitor, 0x2000, prio - 1) != NULL;
+    writer_ok = recomp_aux_thread(writer, 0x2000, prio - 1) != NULL;
     FILE *f = fopen("sdmc:/cr_home_jump.txt", "rb");
     if (f) {
         unsigned long v = 0;

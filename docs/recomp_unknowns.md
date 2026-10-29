@@ -3200,7 +3200,16 @@ closed at once, since the game log is buffered and is lost in a system crash: th
 GSPGPU_SaveVramSysArea / ReleaseRight / AcquireRight / RestoreVramSysArea through `--wrap` (Makefile), each with the
 result, the GX queue and thread state, AX jobs pending and worker state, DVD reads queued and prefetch state, and the
 free memory of every region. While suspended a monitor thread adds a line 0.1, 0.5, 1, 2 and 5 s after the suspend
-(was every 100 ms for 5 s in hw run 60; cut to 5 writes so the trace barely changes the handover timing). The main log gets
+(was every 100 ms for 5 s in hw run 60; cut to 5 writes so the trace barely changes the handover timing).
+The steps only queue a line in memory; that writer thread (core 2) appends them to the file and closes it.
+
+**Run 60's trace** (logs/2026-10-29_exit-crash/cr_suspend_hw-run60.log): the scripted HOME at r6000, a resume about 7 h
+later, a second (real) HOME at r6372, then Close (`dsp ONCANCEL`, then `# DONE APT exit` in the game log, no new Luma
+dump). Every result 0; at each step the GX queue was empty with no frame open, no AX jobs pending, no DVD read queued.
+SYSTEM free drops 81592 -> 75448 KB about 2 s into HOME Menu and is back after the resume. In that build each trace
+line was an open/write/close on the game thread at ~250 ms each, so ONSUSPEND -> ReleaseRight took ~1.2 s (hooks,
+SaveVramSysArea, DSP sleep). The writes now run on the writer thread, so the handover is not slowed (not yet
+measured on hardware). The main log gets
 `# suspend r<n>: apt ONSUSPEND` (etc.) and `# mem r<n>:` lines. log.c's watchdog no longer declares a guest hang
 while HOME Menu is up. Next time it crashes: the last `cr_suspend.log` line says how far the handover got and what
 our threads were doing; compare with a good HOME in the same file.
