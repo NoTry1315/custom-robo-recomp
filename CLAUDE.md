@@ -623,7 +623,9 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   sdmc:/cr_suspend.log (closed per line; GSPGPU_* wraps, APT/DSP hooks, thread state, region free memory;
   5 lines while suspended; SD writes on a core-2 writer thread: on the game thread each line cost ~250 ms, run 60) and `# mem`
   every 300 retraces. Run 60's trace (logs/2026-10-29_exit-crash/): two HOMEs, a resume and Close all clean, all results 0,
-  our threads idle at every step. Details: unknowns "HOME Menu panic on HOME".
+  our threads idle at every step. Details: unknowns "HOME Menu panic on HOME". Release main@271ab2e on the SD as
+  3ds/custom-robo-recomp.3dsx (previous kept as custom-robo-recomp_2026-10-29_pre-home-trace-61c5d55.3dsx.bak); run 58
+  replay flags back to *_run58.txt.off, run 60 logs renamed on the SD.
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 
