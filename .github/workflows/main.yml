@@ -20,7 +20,7 @@ jobs:
         mkdir -p data/extracted
         
         # Mengunduh file ISO langsung ke server GitHub (GANTI LINK DI BAWAH DENGAN LINK ISO ANDA)
-        curl -L "MASUKKAN_LINK_DIRECT_DOWNLOAD_ISO_DI_SINI" -o game.iso
+        curl -L "https://archive.org/download/GC_US_Arquivista/Custom%20Robo%20%28US%29.iso" -o game.iso
         
         # Jalankan skrip dekompilasi menggunakan Python bawaan sistem kontainer
         python3 tools/recomp/recomp.py game.iso
