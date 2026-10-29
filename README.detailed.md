@@ -11,6 +11,8 @@ libctru and citro3d. No game files are included: bring your own disc.
 
 Playable on a New 3DS from boot to the title, menus, campaign and Vs. battle,
 with sound, memory card saves, stereoscopic 3D, the attract movie and the HOME button.
+Story text boxes that broke and stopped the event are fixed (2026-10-28: GXInitTexObj and the TPL texture-object
+functions are now translated from main.dol instead of hand-written; checked in Citra and on hardware, run 58).
 
 Frame rates on hardware (New 3DS, averages of the in-game `# time` windows from
 `tools/time_avg.py`). Each run was played by hand, so the scenes differ from run to run:
@@ -100,10 +102,13 @@ Citra log's scene and pad lines before the timings count.
 
 ### Known problems
 
-- A story text box can break (letters missing, even spacing) and the event then stops
-  (seen once, hardware run 30 in event `snr_t_06`; not reproduced in Citra, cause unknown, see
-  `docs/recomp_unknowns.md` "Run 30 text hang"). If it happens, tap "Dump RAM" on the bottom
-  screen before quitting.
+- Fixed 2026-10-28: story text boxes that lost their first letters and never finished (A did nothing, the event
+  stopped). The hand-written GXInitTexObj replacements left stack bytes in each texture object, and the game
+  compares whole texture objects to number its text sprites; those SDK functions are now translated from
+  main.dol (`docs/recomp_unknowns.md` "GXTexObj bytes and the story text boxes"). If a box still breaks, tap
+  "Dump RAM" on the bottom screen before quitting.
+- In Citra only, the dark background behind dialogue text is sometimes missing (the same on builds before the
+  text box fix); the 3DS draws it.
 - The SD card sometimes stalls for ~6 s (cause unknown: our log writes are not ruled out). Music no
   longer repeats in a stall in the middle of a song: the next ~12 s of each music stream are read
   ahead into memory (`docs/recomp_unknowns.md` "Music stream prefetch"). A stall exactly when a new

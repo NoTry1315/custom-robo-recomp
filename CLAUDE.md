@@ -600,6 +600,14 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   in runtime/libm.c). Releases are source-only: never attach a .3dsx/.elf or gen/ to a GitHub release (a build holds
   the translated game code). Release notes in docs/releases/. /logs/, /logs_keep/, /build_releasecheck/ ignored
   (session checkpoint refs had captured a guest RAM dump from untracked logs/).
+- GXTexObj fix (2026-10-28, branch task/2026-10-28-gx-texobj-sdk): story text boxes losing their first letters and
+  hanging were the hand-written GXInitTexObj natives leaving stack bytes in the GXTexObj (no memset, +0x10/+0x1c/+0x1e
+  never written); 0x8008ee68 compares whole texobjs to number text sprites, so the key drifted. GXInitTexObj/CI/LOD
+  and TPLGetGXTexObjFromPalette(CI) now translated (recomp.py TRANSLATE_SDK_RANGES), natives removed, +0x1f bit 2 =
+  NOT palette-indexed in texobj_read; NATIVE_STACK_READS empty. 193 hand-written SDK bodies (was 198). Citra
+  2v2/battle/campaign/boot = main (logging aside, fb identical, 2v2 game 30.3 -> 30.4 ms); hw run 58 (dialog replay):
+  route = Citra, box complete, event finished. Citra-only: dialogue box background sometimes missing (main too).
+  Details: unknowns "GXTexObj bytes and the story text boxes".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).
 

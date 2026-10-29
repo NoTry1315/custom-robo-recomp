@@ -23,7 +23,8 @@ The game boots and is playable on New 3DS hardware through the title, menus, cam
 and Vs. battles. Sound, saves, the HOME button, stereoscopic 3D, widescreen, and the
 attract movie are implemented. It is still an active compatibility project, not a
 finished, fully verified release: some scenes run below full speed and graphics and
-other issues remain.
+other issues remain. Story text boxes that lost their first letters and stopped the event
+are fixed (2026-10-28, checked on hardware).
 
 The following are measured hardware results from the latest documented runs for each
 scene. Results can vary with the fight and route. The latest music-stream-prefetch work
@@ -50,8 +51,6 @@ The New 3DS is the target; original/Old 3DS models are untested.
 - Some graphics are not fully reproduced, including EFB-to-texture copies and
   specular lighting. Widescreen leaves some 2D at the old 4:3 edges (for example a
   white wedge at the left edge in the 2-v-2 battle).
-- One hardware run showed a story text box with missing letters followed by a hang.
-  It has not been reproduced; its cause is unknown.
 - SD-card stalls have occurred. Music is prefetched to reduce mid-song audio issues,
   but stalls at the start of a song are still possible.
 

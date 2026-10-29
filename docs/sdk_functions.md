@@ -495,11 +495,11 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80155dec | 0xb8 | GXSetChanCtrl | high | XF 0x100e.., 25 ext callers |
 | 0x80155ea4 | 0x15c | GX_unk_80155ea4 | unk | in module range, no name match; callers=3 ext=3 callees=0 |
 | 0x80156000 | 0xc8 | GX_unk_80156000 | unk | in module range, no name match; callers=1 callees=0 |
-| 0x801560c8 | 0x24c | GXInitTexObj | high | memset + 8 ext callers |
-| 0x80156314 | 0x48 | GXInitTexObjCI | medium | calls GXInitTexObj |
-| 0x8015635c | 0x164 | GXInitTexObjLOD | medium | GXTexture.c order |
-| 0x801564c0 | 0x8 | GX_unk_801564c0 | unk | in module range, no name match; callers=1 callees=0 |
-| 0x801564c8 | 0x18 | GX_unk_801564c8 | unk | in module range, no name match; callers=1 callees=0 |
+| 0x801560c8 | 0x24c | GXInitTexObj | high | memset + 8 ext callers; **translated** from main.dol (recomp.py TRANSLATE_SDK_RANGES, 2026-10-28: the game compares whole GXTexObjs) |
+| 0x80156314 | 0x48 | GXInitTexObjCI | medium | calls GXInitTexObj; clears +0x1f bit 2 (set = not palette-indexed); **translated** |
+| 0x8015635c | 0x164 | GXInitTexObjLOD | medium | GXTexture.c order; **translated** |
+| 0x801564c0 | 0x8 | GX_unk_801564c0 | unk | in module range, no name match; callers=1 callees=0; returns +0x14 (fmt): GXGetTexObjFmt? empty stub, not called in the replays |
+| 0x801564c8 | 0x18 | GX_unk_801564c8 | unk | in module range, no name match; callers=1 callees=0; returns +0x1f bit 1 (mipmap): GXGetTexObjMipMap? empty stub, not called in the replays |
 | 0x801564e0 | 0x17c | GXLoadTexObjPreLoaded | medium | BP tex regs |
 | 0x8015665c | 0x54 | GXLoadTexObj | high | calls GXLoadTexObjPreLoaded |
 | 0x801566b0 | 0x38 | GXInitTlutObj | high | fills GXTlutObj: fmt<<10, (lut>>5)|0x64<<24 (BP 0x64 loadtlut0), n_entries; no FIFO |
@@ -569,8 +569,8 @@ SDK build dates seen in the version strings: OS 2003-07-23, DVD 2003-09-16, VI/A
 | 0x80158aec | 0x848 | GX_unk_80158aec | unk | in module range, no name match; callers=1 hw=8000 callees=0 |
 | 0x80159334 | 0x10 | GX_unk_80159334 | unk | in module range, no name match; callers=1 callees=0 |
 | 0x80159344 | 0x10 | TPLGet | medium | returns pal->desc + id*8 (pal+8) |
-| 0x80159354 | 0xd4 | TPLGetGXTexObjFromPalette | medium | TPL desc: GXInitTexObj (0x801560c8) + GXInitTexObjLOD |
-| 0x80159428 | 0x108 | TPLGetGXTexObjFromPaletteCI | medium | TPL desc (pal+8, 8B/entry): GXInitTlutObj + GXInitTexObjCI + GXInitTexObjLOD |
+| 0x80159354 | 0xd4 | TPLGetGXTexObjFromPalette | medium | TPL desc: GXInitTexObj (0x801560c8) + GXInitTexObjLOD; **translated** (2026-10-28) |
+| 0x80159428 | 0x108 | TPLGetGXTexObjFromPaletteCI | medium | TPL desc (pal+8, 8B/entry): GXInitTlutObj + GXInitTexObjCI + GXInitTexObjLOD; **translated** (2026-10-28) |
 
 ## AI
 

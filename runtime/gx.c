@@ -3215,44 +3215,24 @@ void sdk_GXLoadLightObjImm(void) {
 }
 
 /* ---------------------------------------------------------------- textures */
-/* GXTexObj, SDK layout (0x20 bytes, big-endian): +0 mode0 (wrap s/t, mag, min,
- * LOD bias s2.5 in bits 9-16), +4 mode1 (min LOD, max LOD u4.4), +8 image0 (w-1, h-1, fmt), +0xc image3 (address >> 5), +0x10 user data,
- * +0x14 fmt, +0x18 tlut name, +0x1f flags (1 mipmap, 2 CI).
+/* GXTexObj, SDK layout (0x20 bytes, big-endian; built by the translated GXInitTexObj/CI/LOD):
+ * +0 mode0 (wrap s/t, mag, min, LOD bias s2.5 in bits 9-16), +4 mode1 (min LOD, max LOD u4.4), +8 image0
+ * (w-1, h-1, fmt), +0xc image3 (address >> 5), +0x10 user data, +0x14 fmt, +0x18 tlut name, +0x1c load count,
+ * +0x1e load format, +0x1f flags (1 mipmap, 2 NOT palette-indexed: GXInitTexObj sets it, GXInitTexObjCI clears it).
  * GXTlutObj (0xc): +0 fmt << 10, +4 address >> 5 | 0x64 << 24, +8 entries. */
 static const u8 min_hw[6] = {0, 4, 1, 5, 2, 6};   /* GXTexFilter -> TX_SETMODE0 encoding */
-static void texobj_init(u32 o, u32 img, u32 w, u32 h, u32 fmt, u32 ws, u32 wt, u32 mip, int ci, u32 tlut) {
-    /* as the SDK's GXInitTexObj: mipmaps = LIN_MIP_LIN (LIN_MIP_NEAR for CI), max LOD log2 of the larger side */
-    u32 lg = 0;
-    for (u32 v = w > h ? w : h; v > 1; v >>= 1) lg++;
-    wr32(o + 0, (ws & 3) | (wt & 3) << 2 | 1 << 4 | (mip ? (fmt >= 8 && fmt <= 10 ? 5u : 6u) : 4u) << 5);
-    wr32(o + 4, mip ? (lg * 16 & 0xff) << 8 : 0);
-    wr32(o + 8, ((w - 1) & 0x3ff) | ((h - 1) & 0x3ff) << 10 | (fmt & 15) << 20);
-    wr32(o + 0xc, (img & RAM_MASK) >> 5);
-    wr32(o + 0x14, fmt);
-    wr32(o + 0x18, tlut);
-    wr8(o + 0x1f, (mip ? 1 : 0) | (ci ? 2 : 0));
-}
-static u32 lod16(float v) { return v < 0 ? 0 : v > 10 ? 160 : (u32)(v * 16); }
-static void texobj_lod(u32 o, u32 min_f, u32 mag_f, float min_lod, float max_lod, float bias) {
-    s32 b = bias < -4 ? -128 : bias > 3.99f ? 127 : (s32)(bias * 32);
-    wr32(o, (rd32(o) & ~0x1fff0u) | (mag_f & 1) << 4 | min_hw[min_f < 6 ? min_f : 1] << 5 | ((u32)b & 0xff) << 9);
-    wr32(o + 4, lod16(min_lod) | lod16(max_lod) << 8);
-}
 static TexMap texobj_read(u32 o) {
     u32 m0 = rd32(o), i0 = rd32(o + 8), hw_min = (m0 >> 5) & 7, min_f = 1;
     for (int i = 0; i < 6; i++) if (min_hw[i] == hw_min) min_f = i;
     return (TexMap){0x80000000u | rd32(o + 0xc) << 5, (u16)((i0 & 0x3ff) + 1), (u16)(((i0 >> 10) & 0x3ff) + 1),
                     (u8)((i0 >> 20) & 15), (u8)(m0 & 3), (u8)((m0 >> 2) & 3), (u8)min_f, (u8)((m0 >> 4) & 1),
-                    (u8)((rd8(o + 0x1f) & 2) != 0), rd32(o + 0x18), (u8)rd32(o + 4), (u8)(rd32(o + 4) >> 8), (s8)(m0 >> 9)};
+                    (u8)((rd8(o + 0x1f) & 2) == 0), rd32(o + 0x18), (u8)rd32(o + 4), (u8)(rd32(o + 4) >> 8), (s8)(m0 >> 9)};
 }
 static void tlutobj_init(u32 o, u32 lut, u32 fmt, u32 n) {
     wr32(o, (fmt & 3) << 10);
     wr32(o + 4, (lut & RAM_MASK) >> 5 | 0x64u << 24);
     wr16(o + 8, (u16)n);
 }
-void sdk_GXInitTexObj(void) { LOG(); texobj_init(R[3], R[4], R[5], R[6], R[7], R[8], R[9], R[10] & 0xff, 0, 0); }
-void sdk_GXInitTexObjCI(void) { LOG(); texobj_init(R[3], R[4], R[5], R[6], R[7], R[8], R[9], R[10] & 0xff, 1, rd32(R[1] + 8)); }
-void sdk_GXInitTexObjLOD(void) { LOG(); texobj_lod(R[3], R[4], R[5], (float)F[1].ps0, (float)F[2].ps0, (float)F[3].ps0); }   /* clamp/edge/aniso not kept */
 static void x_GXLoadTexObj(const u32 *p) { memcpy(&gx.map[p[0]], p + 1, sizeof(TexMap)); }   /* texmap id, the TexMap read at the call */
 void sdk_GXLoadTexObj(void) {
     LOG();
@@ -3279,27 +3259,8 @@ static u32 tex_region_cb, tlut_region_cb;
 void sdk_GXSetTexRegionCallback(void) { LOG(); u32 o = tex_region_cb; tex_region_cb = R[3]; R[3] = o; }
 void sdk_GXSetTlutRegionCallback(void) { LOG(); u32 o = tlut_region_cb; tlut_region_cb = R[3]; R[3] = o; }
 
-/* TPL helpers (TPL library, SDK): descriptors are {image header*, palette header*};
- * image header: +0 h, +2 w, +4 fmt, +8 data, +0xc/+0x10 wrap s/t, +0x14/+0x18 min/mag,
- * +0x1c LOD bias (f32), +0x21/+0x22 min/max LOD (mipmap when they differ) */
+/* TPL (SDK): descriptors are {image header*, palette header*}; TPLGetGXTexObjFromPalette(CI) are translated */
 void sdk_TPLGet(void) { LOG(); R[3] = rd32(R[3] + 8) + R[4] * 8; }
-static void tpl_texobj(u32 obj, u32 img, int ci, u32 tlut) {
-    texobj_init(obj, rd32(img + 8), rd16(img + 2), rd16(img), rd32(img + 4), rd32(img + 0xc), rd32(img + 0x10),
-                rd8(img + 0x21) != rd8(img + 0x22), ci, tlut);
-    u32 bb = rd32(img + 0x1c); float bias; memcpy(&bias, &bb, 4);
-    texobj_lod(obj, rd32(img + 0x14), rd32(img + 0x18), rd8(img + 0x21), rd8(img + 0x22), bias);
-}
-void sdk_TPLGetGXTexObjFromPalette(void) {
-    LOG();
-    u32 d = rd32(R[3] + 8) + R[5] * 8;
-    tpl_texobj(R[4], rd32(d), 0, 0);
-}
-void sdk_TPLGetGXTexObjFromPaletteCI(void) {
-    LOG();
-    u32 d = rd32(R[3] + 8) + R[7] * 8, pal = rd32(d + 4);
-    tlutobj_init(R[5], rd32(pal + 8), rd32(pal + 4), rd16(pal));
-    tpl_texobj(R[4], rd32(d), 1, R[6]);
-}
 
 /* ---------------------------------------------------------------- TEV */
 static TevSide *side(const u32 *r, int alpha) { return r[3] < 16 ? (alpha ? &gx.tev[r[3]].a : &gx.tev[r[3]].c) : NULL; }

@@ -1314,7 +1314,7 @@ Citra results (pause-ok campaign and rec-to-battle replays, fb dumps 1500/1980/2
 - Inventory: the game uses **no mipmaps**. Every texture (campaign 57, battle 45 distinct) has min
   LINEAR (4 RGBA8 are NEAR), LOD 0..0. So the mip path is inert in this game and min filters are already
   plain LINEAR; the "minified textures thrash the cache" idea has nothing to act on here. (Assumes no
-  game code edits TexObj bits without the SDK calls, which are hand-written.)
+  game code edits TexObj bits without the SDK calls, which were hand-written then; translated since 2026-10-28.)
 - Formats (campaign): CI8 46, CMPR 24, RGBA8 23, RGB5A3 8, I4 2. Lossless pick: LA4 3, LA8 11,
   RGBA5551 4, RGBA8 39. CMPR almost never fits 565 (interpolated colours are not 5/6/5 values).
 - Resident texture memory at frame 2100: campaign 9995 -> 9809 KB (-1.9%), battle 7751 -> 7547 KB
@@ -1814,7 +1814,10 @@ PSMTXMultVec 1.4%, GXLoadPosMtxImm 1.2%, GXBegin 1.6 -> 1.2%, sin 1.2%. Game cod
    schedule; bit-identical by construction, measurable only on hardware (`cr_bench`).
 5. I-cache layout (hot functions first) and PGO: hardware only; PGO would need to be the main build.
 
-## Run 30 text hang: not the audio skip (2026-10-25, open)
+## Run 30 text hang: not the audio skip (2026-10-25, solved 2026-10-28)
+
+**Solved:** the cause was the hand-written GXInitTexObj natives leaving stack bytes in the GXTexObj, see
+"GXTexObj bytes and the story text boxes" below. The notes here are the history of the search.
 
 Hardware run 30 (`logs/cr_autotest_2026-10-25_hw-run30-t06-text-hang.log`, `logs/hw-run30-shots/`, build of
 2v2-perf-2): story event `snr_t_06` (read r14274), the "Awex!" box after A at r14975 shows no text, A/B do
@@ -3093,10 +3096,57 @@ late. Title (cubog39.hps, 8 blocks): the whole song is in memory after one pass.
 45 ms. b with "600 6000": the stall never fired (no SD read after r600), hashes as a. A real stall in play is the
 remaining check.
 
+## GXTexObj bytes and the story text boxes (2026-10-28, fixed, branch task/2026-10-28-gx-texobj-sdk)
+
+Symptom (hardware runs 30, 2026-10-28 play; rarely in Citra): a story text box loses its first letters, the rest is
+drawn with even spacing, the box never finishes and A does nothing (event snr_t_06 "Awex!", Harry's "Now you see
+what she has to go through..." box, others). Evidence and replays: `logs/2026-10-28_dialog/` (hardware log
+`hw-r8509-harry-box.log`, RAM dumps in hw2/ and hw3/).
+
+**Cause.** 0x8008ee68 builds a GXTexObj on its stack (GXInitTexObj 0x801560c8 + GXInitTexObjLOD 0x8015635c), then
+searches a table of earlier texture objects comparing all 8 words and adds an entry when none matches; the index
+is the box's per-sprite key. The SDK's GXInitTexObj memsets the 0x20 bytes and writes every field. Our natives
+(`texobj_init`, `texobj_lod`, `tpl_texobj` in runtime/gx.c) did not memset and never wrote +0x10 (user data),
++0x1c (load count, u16) or +0x1e (load format), so leftover stack bytes decided whether two identical textures
+matched. The table grew, the key drifted and the body text took the name tag's key. Which bytes were left there
+depends on what ran before on that stack, so it showed on hardware and rarely in Citra.
+
+**Fix.** GXInitTexObj, GXInitTexObjCI, GXInitTexObjLOD (0x801560c8-0x801564c0) and TPLGetGXTexObjFromPalette(CI)
+(0x80159354-0x80159530) are translated from main.dol (recomp.py TRANSLATE_SDK_RANGES); the five natives and their
+helpers are gone, `texobj_read` (GXLoadTexObj) still decodes the object. SDK layout facts that came with it:
++0x1f bit 2 means NOT palette-indexed (GXInitTexObj sets it, GXInitTexObjCI clears it; the natives had it the other
+way round, so `texobj_read` now tests `(rd8(o + 0x1f) & 2) == 0`; reading it the old way loses the HUD, health and
+dialogue backgrounds); GXInitTexObjLOD also sets mode0 bit 8 (edge LOD off), bias clamp and max aniso bits, which
+`texobj_read` ignores as before. recomp.py NATIVE_STACK_READS is now empty (it named the removed
+sdk_GXInitTexObjCI; recomp.py exits with an error for a stale entry, which leaves gen/ stale: check its exit
+status). 0x801564c0 (returns +0x14) and 0x801564c8 (+0x1f bit 1) look like GXGetTexObjFmt / GXGetTexObjMipMap;
+they stay empty stubs and are not called in any replay. Translated 2742 -> 2747 functions, hand-written SDK
+bodies 198 -> 193.
+
+**Checks.** Citra dialog replay (`replay.ps1 -Name boot -Save data\saves6-10-26_sd-backup-before-hw-replay
+-RecLog logs6-10-28_dialog\hw-r8509-harry-box.log -RunLen 9620 -Fb '8340 9560'`): frame 8340 shows the whole
+"Now you see what she has to go through every time she does this..." (main drops "Now yo"), 9560 the city map (the
+event ends; in the 2026-10-28 investigation main stayed in Marcia's "No...I'll go!" box). In GXLoadTexObj at frame 8340 both builds load the same
+images with the same decoded state (format, wrap, filters, LOD, CI, tlut); the branch has 9 more font-sheet loads
+(more glyphs drawn). Citra 2v2 / battle / campaign / boot replays vs main@7387074 (`logs/2026-10-28_texobj/`): same
+SDK calls, scenes and pad lines apart from the logging (the removed natives' lines, and GXInitTlutObj lines now that
+the translated TPL CI function calls that native), fb dumps identical (2v2 HUD included); Citra 2v2 game 30.3 ->
+30.4 ms (noise). Hardware run 58 (the same dialog replay with cr_pad_script / cr_pad_replay / cr_dvdasync_off /
+cr_fbdump): route identical to Citra, box complete with its background, event finished, no crash; the two ~12.5 s
+`# stall` lines at r8342 / r9562 are the fb dump writes (GX thread busy), not the game.
+
+**Citra only: dialogue box background.** In Citra the dark box behind the text is missing in boxes around r8200-8508
+of this replay, on main and on this branch alike; hardware run 58 draws it at r8340 (the 12.5k pixels that differ
+from the Citra frame are that background). Not investigated further (user: minor).
+
+**Debug tools** from the search (`make STACKVERIFY=1`, `sdmc:/cr_watch.txt` write watch) are on branch
+task/2026-10-28-stackverify-tools (ac676e3), not in main. A first attempt changed the translator (stack-slot write
+back, non-volatile register stores): irrelevant to this bug and +6-12% game time, not kept.
+
 <!-- generated -->
 ## Generated by tools/recomp/recomp.py
 
-Functions translated: 2742. SDK stubs: 1054. MetroTRK entries skipped: 184. Jump tables as switch: 52.
+Functions translated: 2747. SDK stubs: 1043. MetroTRK entries skipped: 184. Jump tables as switch: 53.
 
 ### flow into non-translated code that is not a known entry (1)
 
@@ -3122,9 +3172,9 @@ Functions translated: 2742. SDK stubs: 1054. MetroTRK entries skipped: 184. Jump
 
 0x8000f414 table 0x801e64fc
 
-### mtlr from a non-stack value (blr treated as return) (3)
+### mtlr from a non-stack value (blr treated as return) (4)
 
-0x800031f0, 0x8000341c, 0x8013938c
+0x800031f0, 0x8000341c, 0x8013938c, 0x8015630c
 
 ### system SPR access in translated code (4)
 

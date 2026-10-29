@@ -106,9 +106,6 @@ sdk_GXSetZMode	r5	value	gx.c:3302 numeric/enum/handle/callback-code use only
 sdk_GXSetTevSwapMode	r3	value	gx.c:3294 numeric/enum/handle/callback-code use only
 sdk_GXSetTevSwapMode	r4	value	gx.c:3294 numeric/enum/handle/callback-code use only
 sdk_GXSetTevSwapMode	r5	value	gx.c:3294 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObjLOD	r3	ptr 8	gx.c:3178 texobj_lod rd32/wr32 at +0, wr32 +4
-sdk_GXInitTexObjLOD	r4	value	gx.c:3197 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObjLOD	r5	value	gx.c:3197 numeric/enum/handle/callback-code use only
 sdk_GXLoadTexMtxImm	r3	ptr 48	gx.c:3033 load_mtx 2x4 or 3x4 words, max 12 words (no read when r4>=64)
 sdk_GXLoadTexMtxImm	r4	value	gx.c:3030 numeric/enum/handle/callback-code use only
 sdk_GXLoadTexMtxImm	r5	value	gx.c:3030 numeric/enum/handle/callback-code use only
@@ -130,14 +127,6 @@ sdk_GXSetTevColor	r4	ptr 4	gx.c:3102 color_word reads 4 bytes (copied into recor
 sdk_LCStoreData	r3	unknown	os.c:236 copy_lines dst, length r5 rounded to 32
 sdk_LCStoreData	r4	unknown	os.c:236 copy_lines src, length r5
 sdk_LCStoreData	r5	value	os.c:233 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObj	r3	ptr 32	gx.c:3165 texobj_init writes +0..+0x1f
-sdk_GXInitTexObj	r4	unknown	gx.c:3171 image address kept in texobj (+0xc), decoded at draw time
-sdk_GXInitTexObj	r5	value	gx.c:3195 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObj	r6	value	gx.c:3195 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObj	r7	value	gx.c:3195 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObj	r8	value	gx.c:3195 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObj	r9	value	gx.c:3195 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObj	r10	value	gx.c:3195 numeric/enum/handle/callback-code use only
 sdk_GXInitLightPos	r3	ptr 52	gx.c:3114 lset at +0x28..+0x33
 sdk_GXInitLightColor	r3	ptr 16	gx.c:3116 wr32 at +0xc
 sdk_GXInitLightColor	r4	ptr 4	gx.c:3116 rd32(R[4])
@@ -186,26 +175,10 @@ sdk_GXSetTevKColorSel	r4	value	gx.c:3290 numeric/enum/handle/callback-code use o
 sdk_AXAcquireVoice	r3	value	ax.c:67 numeric/enum/handle/callback-code use only
 sdk_AXAcquireVoice	r4	value	ax.c:74 callback code address stored in VPB
 sdk_AXAcquireVoice	r5	unknown	ax.c:74 context stored into VPB (+0x14) for guest use, may be a pointer
-sdk_TPLGetGXTexObjFromPalette	r3	ptr 12	gx.c:3236 rd32(r3+8); further reads go through loaded pointers
-sdk_TPLGetGXTexObjFromPalette	r4	ptr 32	gx.c:3228 tpl_texobj -> texobj_init/texobj_lod write +0..+0x1f
-sdk_TPLGetGXTexObjFromPalette	r5	value	gx.c:3234 numeric/enum/handle/callback-code use only
-sdk_TPLGetGXTexObjFromPaletteCI	r3	ptr 12	gx.c:3241 rd32(r3+8); further reads go through loaded pointers
-sdk_TPLGetGXTexObjFromPaletteCI	r4	ptr 32	gx.c:3243 tpl_texobj writes +0..+0x1f
-sdk_TPLGetGXTexObjFromPaletteCI	r5	ptr 10	gx.c:3242 tlutobj_init writes +0..+9
-sdk_TPLGetGXTexObjFromPaletteCI	r6	value	gx.c:3239 numeric/enum/handle/callback-code use only
-sdk_TPLGetGXTexObjFromPaletteCI	r7	value	gx.c:3239 numeric/enum/handle/callback-code use only
 sdk_GXSetTevKAlphaSel	r3	value	gx.c:3292 numeric/enum/handle/callback-code use only
 sdk_GXSetTevKAlphaSel	r4	value	gx.c:3292 numeric/enum/handle/callback-code use only
 sdk_GXSetTevKColor	r3	value	gx.c:3288 numeric/enum/handle/callback-code use only
 sdk_GXSetTevKColor	r4	ptr 4	gx.c:3102 color_word reads 4 bytes (copied into record)
-sdk_GXInitTexObjCI	r3	ptr 32	gx.c:3165 texobj_init writes +0..+0x1f
-sdk_GXInitTexObjCI	r4	unknown	gx.c:3171 image address kept in texobj (+0xc), decoded at draw time
-sdk_GXInitTexObjCI	r5	value	gx.c:3196 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObjCI	r6	value	gx.c:3196 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObjCI	r7	value	gx.c:3196 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObjCI	r8	value	gx.c:3196 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObjCI	r9	value	gx.c:3196 numeric/enum/handle/callback-code use only
-sdk_GXInitTexObjCI	r10	value	gx.c:3196 numeric/enum/handle/callback-code use only
 sdk_OSAllocFromHeap	r3	value	os.c:111 numeric/enum/handle/callback-code use only
 sdk_OSAllocFromHeap	r4	value	os.c:111 numeric/enum/handle/callback-code use only
 sdk_OSSetArenaLo	r3	unknown	os.c:25 stored in arena_lo, later handed out as allocations

@@ -86,7 +86,12 @@ BODY_NATIVE = MTX_NATIVE | MSL_NATIVE | THP_NATIVE
 TRANSLATE_SDK_RANGES = [(0x801409b0, 0x80140c64),   # ClampStick 0x1a8 + PADClamp 0x10c
                         # THP decoders (video 0x801aeb40.., audio 0x801b60a8..); THPInit
                         # 0x801b6008 is native (runtime/thp.c: locked cache at LC_BASE)
-                        (0x801aeb40, 0x801b6008), (0x801b60a8, 0x801b65d8)]   # 0x801b65d8: padding
+                        (0x801aeb40, 0x801b6008), (0x801b60a8, 0x801b65d8),   # 0x801b65d8: padding
+                        # GXInitTexObj / GXInitTexObjCI / GXInitTexObjLOD and TPLGetGXTexObjFromPalette(CI):
+                        # the game compares whole GXTexObjs (all 8 words, 0x8008ee68) to find earlier ones,
+                        # so every byte must be the SDK's (memset, user data, load count/format); a native
+                        # that left stack bytes in them broke story text boxes on hardware (2026-10-28)
+                        (0x801560c8, 0x801564c0), (0x80159354, 0x80159530)]
 TRANSLATE_SDK = {0x80140b58, 0x801409b0}
 # Functions only reached through pointers the scans miss (leaf, no prologue; address built
 # far from its addi). Seen as recomp_bad call_indirect in a played log.
@@ -1266,8 +1271,8 @@ def drop_nv_saves(fns):
 
 
 SP_SIZE = {'8': 1, '16': 2, '32': 4, '64': 8}
-# natives that read their caller's stack: GXInitTexObjCI's 9th argument at r1 + 8 (runtime/gx.c)
-NATIVE_STACK_READS = {'sdk_GXInitTexObjCI': {8}}
+# natives that read their caller's stack (name -> r1 offsets); none since GXInitTexObjCI is translated
+NATIVE_STACK_READS = {}
 STWU_RE = re.compile(r'\{ u32 ea = R\[1\] - (\d+); wr32_ram\(ea, R\[1\]\); R\[1\] = ea; \}')
 R1_ACC = re.compile(r'\b(?:(?P<op>rd|wr)(?P<w>8|16|32|64)_sp\(|psq_(?P<q>ld|st)0_sp\((?:F\[\d+\], )?)R\[1\], (?P<k>-?\d+)')
 DERIVE_RE = re.compile(r'R\[(\d+)\] = R\[(\d+)\](?: ([+-]) (\d+|R\[\d+\]))?;')
