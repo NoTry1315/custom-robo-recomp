@@ -102,6 +102,11 @@ Citra log's scene and pad lines before the timings count.
 
 ### Known problems
 
+- Open (2026-10-29): pressing HOME sometimes crashes the whole 3DS (Luma3DS exception screen). The crash is in
+  HOME Menu itself (a panic, `svcBreak`), not in the game, and the game log just stops. Seen twice; a scripted
+  HOME in the same scene did not crash it. The cause is not found yet. The build now records every step of a HOME
+  / sleep transition in `sdmc:/cr_suspend.log` (see "Reporting a freeze or bug"); `docs/recomp_unknowns.md`
+  "HOME Menu panic on HOME".
 - Fixed 2026-10-28, not yet checked on hardware: after the HOME menu the 3D view could stay shifted up or down
   (looked like the camera pitched) until relaunch. The stereo `eye` shader uniform is written raw, so citro3d did
   not resend it on resume; gx.c now resends it after every resume (`docs/recomp_unknowns.md` "Eye uniform after
@@ -214,7 +219,8 @@ Open an [issue](https://github.com/alexander-clawthorne/custom-robo-recomp/issue
 `sdmc:/cr_autotest.log` (copy it before the next start, which overwrites it). If the problem is
 still on screen, tap "Dump RAM" first and also attach `cr_dump_r<retrace>.txt` and
 `cr_fb_<frame>.bmp`. Add what you were doing, the 3DS model and the build id from the bottom
-screen. Never attach `cr_dump_r<retrace>_ram.bin` or `_aram.bin` publicly: they contain the
+screen. If HOME crashed the whole 3DS, attach `sdmc:/cr_suspend.log` and the newest
+`sdmc:/luma/dumps/arm11/crash_dump_*.dmp` too. Never attach `cr_dump_r<retrace>_ram.bin` or `_aram.bin` publicly: they contain the
 game's code and data from memory. Keep them and share them privately only if asked.
 
 ## Controls
@@ -252,6 +258,7 @@ can be compared with a feature on and off:
 | `cr_audio_dump.txt` | also write the audio mix to `cr_audio.wav` |
 | `cr_audio_rt_off.txt`, `cr_audio_rt_on.txt` | audio paced per retrace (autotest default) or by real time (interactive default) |
 | `cr_memdump.txt` | retraces, ascending, one per line: a "Dump RAM" snapshot at each (the Citra side of a comparison) |
+| `cr_home_jump.txt` | "retrace": take the HOME button's path (`aptJumpToHomeMenu`) at that retrace, once (the file is renamed `.done`); the 3DS then stays in HOME Menu. For a HOME test with nobody at the console |
 | `cr_ax_stall.txt` | "retrace ms [sleep]": inject a stall like a HOME/Rosalina pause (Citra tests) |
 | `cr_pad_script.txt`, `cr_pad_replay.txt` | scripted input or replay of a logged run (autotests; fixed run length) |
 

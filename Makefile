@@ -91,8 +91,10 @@ endif
 CXXFLAGS	:= $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 ASFLAGS	:=	-g $(ARCH)
 # --wrap=linear*: a lock around libctru's linear heap, which the game and GX threads both use (runtime/gx.c)
+# --wrap=GSPGPU_*Vram*/*Right: HOME / sleep steps traced to sdmc:/cr_suspend.log (runtime/suspend.c)
 LDFLAGS	=	-specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,--wrap=svcBreak \
-			-Wl,--wrap=linearAlloc,--wrap=linearMemAlign,--wrap=linearFree
+			-Wl,--wrap=linearAlloc,--wrap=linearMemAlign,--wrap=linearFree \
+			-Wl,--wrap=GSPGPU_SaveVramSysArea,--wrap=GSPGPU_RestoreVramSysArea,--wrap=GSPGPU_ReleaseRight,--wrap=GSPGPU_AcquireRight
 ifeq ($(LTO),1)
 # -ffunction-sections again at link time: without it the LTO output has no .text.f_* sections for hot_order.ld
 LDFLAGS	+=	-flto=20 -ffunction-sections -mword-relocations

@@ -3368,3 +3368,9 @@ void sdk_GXCopyDisp(void) {
     recomp_wr_epoch = game_frames + 1;
     if (recomp_gx_thread) { gq_publish(); gq_wait(gq_copy_prev); gq_copy_prev = gq_wl; }   /* at most one frame queued */
 }
+
+/* runtime/suspend.c: the GX thread at a HOME / sleep step */
+void recomp_gx_suspend_state(char *s, size_t n) {
+    snprintf(s, n, "gx queue %lu words thread %s frame_open %d", (unsigned long)(gq_w - gq_r),
+             recomp_gx_thread ? (gq_sleeping ? "idle" : "busy") : "off", frame_open);
+}

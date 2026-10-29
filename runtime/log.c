@@ -410,13 +410,14 @@ void recomp_done(const char *why) {
     longjmp(recomp_exit_jmp, 1);
 }
 
+extern volatile int recomp_suspended;   /* runtime/suspend.c */
 static void watchdog(void *arg) {
     (void)arg;
     u32 last = heartbeat - 1;
     while (!finished) {
         svcSleepThread((s64)HANG_MS * 1000000);
         if (finished) break;
-        if (heartbeat == last) {
+        if (heartbeat == last && !recomp_suspended) {   /* nothing is logged while HOME Menu is up */
             finished = 1;
             recomp_log("# nothing new logged for %d ms: guest hang\n", HANG_MS);
             summary();

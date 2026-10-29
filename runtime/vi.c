@@ -39,6 +39,7 @@ void sdk_VIGetTvFormat(void) { LOG(); R[3] = 0; }     /* VI_NTSC, from boot info
 void sdk_VIGetDTVStatus(void) { LOG(); R[3] = 0; }    /* no component cable */
 
 /* the retrace interrupt: counter, then pre and post callbacks with the count */
+void recomp_suspend_retrace(u32 retrace);   /* runtime/suspend.c */
 void sdk_VIWaitForRetrace(void) {
     LOG();
     if (retrace == 0) run_length_init();
@@ -57,5 +58,6 @@ void sdk_VIWaitForRetrace(void) {
      * citro3d's APT hooks run in there: the GX thread must be idle (it normally is,
      * GXDrawDone waited for it). A bottom-screen tap's GX thread on/off is applied here too. */
     recomp_gx_retrace();
+    recomp_suspend_retrace(retrace);
     if (!aptMainLoop()) recomp_done("APT exit");
 }

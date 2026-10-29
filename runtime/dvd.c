@@ -348,11 +348,14 @@ static int pf_step(void) {
     return 1;
 }
 
+static volatile int pf_busy;   /* runtime/suspend.c state line */
 static void prefetcher(void *arg) {
     (void)arg;
     for (;;) {
         LightEvent_Wait(&pf_ev);
+        pf_busy = 1;
         while (pf_step()) ;
+        pf_busy = 0;
     }
 }
 
@@ -643,4 +646,9 @@ void sdk_DVDCancel(void) {
         if (r->fi == R[3]) { wait_read(r, 1); r->cb = 0; wr32(R[3] + 0x0c, DVD_STATE_CANCELED); }
     }
     R[3] = 0;
+}
+
+/* runtime/suspend.c: SD reads at a HOME / sleep step */
+void recomp_dvd_suspend_state(char *s, size_t n) {
+    snprintf(s, n, "dvd reads queued %lu prefetch %s", (unsigned long)(q_head - q_work), pf_busy ? "busy" : "idle");
 }

@@ -9,6 +9,7 @@ void cpu_init(void);
 void recomp_mtx_init(void);
 void recomp_libm_init(void);
 void recomp_thp_init(void);
+void recomp_suspend_init(void);
 void f_80003154(void); /* __start (DOL entry) */
 extern jmp_buf recomp_exit_jmp;
 u32 __stacksize__ = 1024 * 1024;  /* translated code nests one host frame per guest call */
@@ -52,6 +53,7 @@ int main(int argc, char **argv) {
     recomp_log_open();
     recomp_prof_sampler_start();
     recomp_gx_start();
+    recomp_suspend_init();   /* HOME / sleep trace (runtime/suspend.c), after the GX init: its APT hook runs after citro3d's */
     recomp_log("# custom-robo-recomp phase 6: audio\n");
     /* New 3DS: 804 MHz + L2 cache; without this it runs in old-3DS mode (268 MHz) */
     osSetSpeedupEnable(true);

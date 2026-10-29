@@ -758,3 +758,9 @@ void recomp_ax_close(void) {
     wav_close();
     if (ndsp_ok == 1) { ndspExit(); ndsp_ok = 0; }
 }
+
+/* runtime/suspend.c: what the mix worker is doing at a HOME / sleep step */
+void recomp_ax_suspend_state(char *s, size_t n) {
+    snprintf(s, n, "ax jobs pending %lu worker %s ndsp %d", (unsigned long)(job_w - job_r),
+             job_worker == 1 ? (job_sleeping ? "idle" : "busy") : "none", ndsp_ok);
+}
