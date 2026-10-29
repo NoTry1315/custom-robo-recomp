@@ -3199,7 +3199,8 @@ scene 8.3) left the 3DS in HOME Menu, still answering ping (on the exception scr
 closed at once, since the game log is buffered and is lost in a system crash: the APT and DSP hooks, libctru's
 GSPGPU_SaveVramSysArea / ReleaseRight / AcquireRight / RestoreVramSysArea through `--wrap` (Makefile), each with the
 result, the GX queue and thread state, AX jobs pending and worker state, DVD reads queued and prefetch state, and the
-free memory of every region. While suspended a monitor thread adds a line every 100 ms for 5 s. The main log gets
+free memory of every region. While suspended a monitor thread adds a line 0.1, 0.5, 1, 2 and 5 s after the suspend
+(was every 100 ms for 5 s in hw run 60; cut to 5 writes so the trace barely changes the handover timing). The main log gets
 `# suspend r<n>: apt ONSUSPEND` (etc.) and `# mem r<n>:` lines. log.c's watchdog no longer declares a guest hang
 while HOME Menu is up. Next time it crashes: the last `cr_suspend.log` line says how far the handover got and what
 our threads were doing; compare with a good HOME in the same file.

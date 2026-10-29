@@ -51,6 +51,8 @@ The New 3DS is the target; original/Old 3DS models are untested.
 - Some graphics are not fully reproduced, including EFB-to-texture copies and
   specular lighting. Widescreen leaves some 2D at the old 4:3 edges (for example a
   white wedge at the left edge in the 2-v-2 battle).
+- Pressing HOME has twice crashed the whole 3DS (a panic in HOME Menu itself; cause not
+  found yet). See "Reporting a freeze or bug" below for the files that help.
 - SD-card stalls have occurred. Music is prefetched to reduce mid-song audio issues,
   but stalls at the start of a song are still possible.
 
@@ -80,7 +82,9 @@ If the game freezes, crashes or shows something wrong, please
 2. **The dump, if you can take it:** while the problem is on screen, tap **Dump RAM** on
    the bottom screen and wait a few seconds. Attach `cr_dump_r<number>.txt` and
    `cr_fb_<number>.bmp` from the SD card root.
-3. What you were doing, what you expected, your 3DS model, and the build id shown at the
+3. **If pressing HOME crashed the whole 3DS** (Luma3DS exception screen): also attach
+   `sdmc:/cr_suspend.log` and the newest `sdmc:/luma/dumps/arm11/crash_dump_*.dmp`.
+4. What you were doing, what you expected, your 3DS model, and the build id shown at the
    top of the bottom screen.
 
 **Do not attach `cr_dump_r<number>_ram.bin` or `cr_dump_r<number>_aram.bin`.** They

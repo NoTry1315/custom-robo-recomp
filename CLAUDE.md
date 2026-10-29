@@ -616,11 +616,12 @@ Static recompilation of Custom Robo (GameCube, GXCE01) to New 3DS.
   camera state matched a Citra replay of the same play (save data/saves/2026-10-26_sd-backup-before-hw-replay, hw log
   pad lines). gx.c now clears eye_init in an APT restore/wakeup hook. Citra logs + fb identical (hook never runs
   there); not yet checked on hardware. Details: unknowns "Eye uniform after the HOME menu".
-- HOME Menu panic (2026-10-29, branch task/2026-10-29-home-menu-crash, open, not merged): pressing HOME in scene 8.3 on
+- HOME Menu panic (2026-10-29, open; trace merged to main 2026-10-29 at the user's request, cause not found): pressing HOME in scene 8.3 on
   main@61c5d55 crashed the whole 3DS. Luma dump = svcBreak(PANIC) in HOME Menu (pc 0x136f28, lr 0x164200; older dump 11
   same site), not the game. Ruled out: SYSTEM-memory leak (hw run 59: SYSTEM free 81592 KB constant), HOME always
   failing (hw run 60: cr_home_jump.txt at r6000 left HOME Menu up). runtime/suspend.c traces every HOME/sleep step to
-  sdmc:/cr_suspend.log (closed per line; GSPGPU_* wraps, APT/DSP hooks, thread state, region free memory) and `# mem`
+  sdmc:/cr_suspend.log (closed per line; GSPGPU_* wraps, APT/DSP hooks, thread state, region free memory;
+  5 monitor lines while suspended) and `# mem`
   every 300 retraces. Run 60's cr_suspend.log is still on the SD (unread). Details: unknowns "HOME Menu panic on HOME".
 - `make clean` deletes build/ including logs: keep measurement logs elsewhere. `make` does not notice a changed
   FNPROF/flag: after `make FNPROF=1`, `make clean` before a normal build (else runtime/ keeps the FNPROF objects).

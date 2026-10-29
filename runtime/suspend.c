@@ -4,7 +4,8 @@
  * handover is appended to sdmc:/cr_suspend.log and the file closed at once (FS commits it): libctru's own steps
  * through --wrap (GSPGPU_SaveVramSysArea / ReleaseRight / AcquireRight / RestoreVramSysArea, Makefile), the APT
  * and DSP hooks, and what our other threads (GX thread, AX mix worker, DVD reader / prefetcher) are doing. While
- * the game is suspended a monitor thread adds a line every 100 ms for 5 s (then stops writing).
+ * the game is suspended a monitor thread adds a line 0.1, 0.5, 1, 2 and 5 s after the suspend (few SD writes while HOME
+ * Menu starts, so the trace barely changes the timing it records).
  * Every 300 retraces "# mem" logs the free memory of each region: HOME Menu allocates from SYSTEM.
  * sdmc:/cr_home_jump.txt "<retrace>" = call aptJumpToHomeMenu at that retrace (the HOME button's path, for a
  * test with nobody at the console; the 3DS then stays in HOME Menu). */
@@ -95,14 +96,17 @@ Result __wrap_GSPGPU_AcquireRight(u8 flags) {
     return r;
 }
 
-/* while suspended: a line every 100 ms for 5 s, so the last line before a system crash says when it was */
+/* while suspended: 5 lines, so the last line before a system crash brackets when it was */
 static void monitor(void *arg) {
     (void)arg;
+    static const u16 at_ms[] = { 100, 500, 1000, 2000, 5000 };
     for (;;) {
         LightEvent_Wait(&mon_ev);
-        for (int i = 0; i < 50 && recomp_suspended; i++) {
-            svcSleepThread(100000000LL);
-            if (recomp_suspended) trace("suspended", i);
+        u16 prev = 0;
+        for (unsigned i = 0; i < sizeof at_ms / sizeof at_ms[0] && recomp_suspended; i++) {
+            svcSleepThread((s64)(at_ms[i] - prev) * 1000000);
+            prev = at_ms[i];
+            if (recomp_suspended) trace("suspended", at_ms[i]);
         }
     }
 }
